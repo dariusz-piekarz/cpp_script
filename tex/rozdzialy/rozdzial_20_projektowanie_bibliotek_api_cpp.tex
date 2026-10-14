@@ -1,0 +1,706 @@
+% Rozdzial 20. Fragment do \input; bez preambuly.
+% Wymaga listings, enumitem, tabularx, booktabs, hyperref i makr
+% \code, \term, \nota. Bazowo C++20.
+\chapter{Projektowanie bibliotek i nowoczesnych interfejsów API}
+\label{chap:cpp20-api}
+
+\section{Czym jest dobry interfejs biblioteki?}
+
+Biblioteka to nie tylko poprawny algorytm, lecz przede wszystkim
+\emph{umowa} między jej autorem a użytkownikiem. Umowa obejmuje typy,
+sygnatury, ograniczenia, własność zasobów, czas życia, obsługę błędów,
+bezpieczeństwo wyjątkowe, własności współbieżne i kompatybilność wersji.
+Każda decyzja ujawniona w publicznym nagłówku może stać się
+kosztownym zobowiązaniem na lata. Celem jest interfejs, w którym
+\emph{poprawne użycie jest naturalne, a błędne możliwie trudne}.
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}p{0.30\textwidth}X@{}}
+\toprule
+Własność API & Pytanie kontrolne \\
+\midrule
+Kontrakt & Co jest dozwolonym wejściem, a co wynikiem? \\
+Własność & Kto posiada obiekt, kto go zwalnia i kiedy? \\
+Bezpieczeństwo & Czy błędne wejście może spowodować UB albo wyciek? \\
+Wyjątki & Jakie gwarancje pozostają po niepowodzeniu? \\
+Współbieżność & Co wolno wywoływać równocześnie i co jest synchronizowane? \\
+Wydajność & Jakie kopiowania, alokacje i synchronizacje są narzucane? \\
+Kompatybilność & Które zmiany są zgodne źródłowo i binarnie? \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\nota{Rozdziały o smart pointerach, concepts, type erasure, wyjątkach,
+linkowaniu i ABI dostarczają narzędzi. Tu rozpatrujemy je razem, jako
+wybory projektowe podejmowane przy budowaniu stabilnych bibliotek.}
+
+\section{Granica interfejsu: dane, widoki i własność}
+\label{sec:cpp20-ownership}
+
+Najpierw wybieramy, czy argument jest \emph{wejściem}, \emph{wyjściem},
+\emph{stanem współdzielonym} czy \emph{zasobem przekazywanym na własność}.
+Dopiero potem wybieramy konkretny typ C++.
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}p{0.37\textwidth}X@{}}
+\toprule
+Parametr & Interpretacja w typowym interfejsie \\
+\midrule
+\code{T} & Wartość własna; przekazanie lub przejęcie kopii/przeniesienia. \\
+\texttt{const T\&} & Pożyczony, niezmieniany obiekt, który musi przeżyć wywołanie. \\
+\texttt{T\&} & Obowiązkowy, modyfikowalny obiekt pożyczony. \\
+\code{T*} & Zwykle opcjonalny, niewłasnościowy dostęp; dopuszcza \code{nullptr}. \\
+\code{unique_ptr<T>} & Przeniesienie lub przechowywanie wyłącznej własności. \\
+\code{shared_ptr<T>} & Współdzielona własność, nie sam odczyt obiektu. \\
+\code{span<T>} & Pożyczony widok ciągłego bufora, bez informacji o własności. \\
+\code{string_view} & Pożyczony widok tekstu, możliwy problem czasu życia. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\subsection{Parametry i brak zbędnej alokacji}
+
+\begin{lstlisting}[caption={Interfejs operujacy na dowolnym ciaglym buforze (C++20).}]
+#include <numeric>
+#include <span>
+#include <stdexcept>
+
+// Nie przechowuje span po powrocie z funkcji.
+double weighted_sum(std::span<const double> a,
+                    std::span<const double> b) {
+    if (a.size() != b.size())
+        throw std::invalid_argument("size mismatch");
+    double sum = 0.0;
+    for (std::size_t i = 0; i < a.size(); ++i)
+        sum += a[i] * b[i];
+    return sum;
+}
+\end{lstlisting}
+
+W tym fragmencie należy dołączyć \code{<stdexcept>} do pliku, w którym
+umieszczamy definicję. Stosowanie \code{span} pozwala przyjmować
+\code{vector}, \code{array} i tablice bez narzucania własności.
+Jednocześnie nie wolno zachować widoku dłużej niż trwa jego bufor.
+
+\subsection{Wartość czy referencja?}
+
+Dla małych i tanio kopiowanych typów (np. \code{int}) przekazanie przez
+wartość jest często najlepsze. Dla tekstu, który ma być zapisany
+wewnątrz obiektu, idiom \code{std::string} przez wartość i
+\code{std::move} do pola może uprościć przeciążenia konstruktorów.
+Nie jest jednak bezwarunkowo najszybszy dla każdego rozkładu wejść:
+dla samych \emph{lvalue} może wykonać dodatkowe kopiowanie.
+
+\begin{lstlisting}[caption={Jeden konstruktor obslugujacy lvalue i rvalue (C++11).}]
+#include <string>
+#include <utility>
+
+class Person {
+    std::string name_;
+public:
+    explicit Person(std::string name)
+        : name_(std::move(name)) {}
+    const std::string& name() const noexcept { return name_; }
+};
+\end{lstlisting}
+
+\section{Wyrażanie kontraktów w systemie typów}
+\label{sec:cpp20-contracts}
+
+Silny typ eliminuje klasę błędów polegających na pomyleniu wartości o
+tej samej reprezentacji. \code{explicit} blokuje niepożądaną konwersję
+niejawną. \code{[[nodiscard]]} pomaga wykryć ignorowanie wyniku;
+nie gwarantuje jednak obowiązkowego ostrzeżenia we wszystkich trybach.
+
+\begin{lstlisting}[caption={Strong types rozrozniajace dwa identyfikatory (C++20).}]
+#include <cstdint>
+
+struct UserId {
+    std::uint64_t value;
+    explicit constexpr UserId(std::uint64_t v) : value(v) {}
+    friend constexpr bool operator==(UserId, UserId) = default;
+};
+
+struct OrderId {
+    std::uint64_t value;
+    explicit constexpr OrderId(std::uint64_t v) : value(v) {}
+    friend constexpr bool operator==(OrderId, OrderId) = default;
+};
+
+[[nodiscard]] constexpr bool valid(UserId id) noexcept {
+    return id.value != 0;
+}
+
+static_assert(valid(UserId{1}));
+// valid(OrderId{1}); // blad kompilacji
+\end{lstlisting}
+
+\subsection{Concepts: wymóg składniowy nie zawsze jest wymogiem semantycznym}
+
+\code{requires} pozwala sprawdzić, czy wyrażenie ma poprawną składnię,
+ale nie dowodzi prawa matematycznego, np. przechodniości porządku,
+asocjatywności czy stabilności haszowania. Dokumentacja musi dopowiadać
+wymagania semantyczne. Przykładowo komparator dla sortowania musi
+realizować \emph{strict weak ordering}; przypadkowy predykat typu
+\code{bool(const T&,const T&)} nie wystarcza.
+
+\begin{lstlisting}[caption={Ograniczenie generycznego sumowania (C++20).}]
+#include <concepts>
+#include <ranges>
+#include <type_traits>
+
+template<class R>
+concept SummableRange = std::ranges::input_range<R> &&
+    requires(std::ranges::range_value_t<R> a,
+             std::ranges::range_value_t<R> b) {
+        { a + b } -> std::convertible_to<std::ranges::range_value_t<R>>;
+    };
+
+template<SummableRange R>
+auto sum_values(R&& range) {
+    using T = std::ranges::range_value_t<R>;
+    T result{}; // dodatkowy wymog: T musi byc default-initializable
+    for (auto&& value : range) result = result + value;
+    return result;
+}
+\end{lstlisting}
+
+Powyższy przykład umyślnie ujawnia ważną lekcję: użycie \texttt{T result\{\}}
+dodaje wymóg domyślnej inicjalizacji, którego koncept nie sprawdza.
+Poprawny kontrakt produkcyjny powinien go dopisać lub przyjmować
+wartość początkową od wywołującego.
+
+\section{Obsługa błędów: wyjątki, typ wyniku i status}
+
+W C++20 podstawowymi wyborami są wyjątki oraz jawne typy wyniku,
+np. \code{optional<T>} dla naturalnego braku wartości. Od C++23
+\code{expected<T,E>} reprezentuje wartość lub opis błędu. Żadna
+strategia nie jest uniwersalna: trzeba ustalić politykę dla całej
+warstwy biblioteki, a nie mieszać bez powodu sposoby sygnalizowania.
+
+\begin{lstlisting}[caption={Jawny blad jako typ wyniku w C++20.}]
+#include <optional>
+#include <string_view>
+
+std::optional<unsigned> parse_digit(std::string_view x) {
+    if (x.size() != 1 || x[0] < '0' || x[0] > '9')
+        return std::nullopt;
+    return static_cast<unsigned>(x[0] - '0');
+}
+\end{lstlisting}
+
+\begin{lstlisting}[caption={Rozbudowany blad jako expected (C++23; fragment).}]
+#include <expected>
+#include <string>
+
+std::expected<int, std::string> parse_id(std::string text) {
+    if (text.empty())
+        return std::unexpected("empty identifier");
+    return static_cast<int>(text.size());
+}
+\end{lstlisting}
+
+\subsection{Gwarancje wyjątkowe i \texttt{noexcept}}
+
+Funkcja modyfikująca stan może gwarantować: \emph{brak skutków po
+niepowodzeniu} (silna gwarancja), zachowanie niezmienników mimo częściowej
+zmiany (podstawowa gwarancja) albo brak wyjątków (\code{noexcept}).
+\code{noexcept} nie znaczy, że błąd jest niemożliwy: nieobsłużony
+wyjątek kończy wtedy program przez \code{std::terminate}.
+
+\begin{lstlisting}[caption={Silna gwarancja przez przygotowanie kopii.}]
+#include <string>
+#include <utility>
+
+class Settings {
+    std::string data_;
+public:
+    void update(std::string next) {
+        // Wszystkie kosztowne operacje wykonano przy
+        // tworzeniu argumentu 'next'. Swap string ma noexcept.
+        data_.swap(next);
+    }
+    const std::string& get() const noexcept { return data_; }
+};
+\end{lstlisting}
+
+\section{Krycie implementacji: PImpl i granica ABI}
+\label{sec:cpp20-pimpl}
+
+Nagłówki udostępniające wszystkie pola klas narzucają zależności
+kompilacyjne, a zmiana ich układu może naruszać ABI bibliotek
+współdzielonych. Idiom PImpl (\\emph{pointer to implementation})
+przenosi szczegóły do osobnego typu. Cena: alokacja, pośredni dostęp
+i potrzeba poprawnego zarządzania funkcjami specjalnymi.
+
+\begin{lstlisting}[caption={widget.hpp -- publiczny naglowek.}]
+#pragma once
+#include <memory>
+#include <string>
+
+class Widget {
+public:
+    explicit Widget(std::string name);
+    ~Widget();
+    Widget(Widget&&) noexcept;
+    Widget& operator=(Widget&&) noexcept;
+    Widget(const Widget&) = delete;
+    Widget& operator=(const Widget&) = delete;
+    std::string name() const;
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
+\end{lstlisting}
+
+\begin{lstlisting}[caption={widget.cpp -- pelna definicja ukrytego typu.}]
+#include "widget.hpp"
+#include <utility>
+
+struct Widget::Impl {
+    std::string name;
+    explicit Impl(std::string n) : name(std::move(n)) {}
+};
+
+Widget::Widget(std::string name)
+    : impl_(std::make_unique<Impl>(std::move(name))) {}
+Widget::~Widget() = default;
+Widget::Widget(Widget&&) noexcept = default;
+Widget& Widget::operator=(Widget&&) noexcept = default;
+std::string Widget::name() const { return impl_->name; }
+\end{lstlisting}
+
+\begin{lstlisting}[caption={main.cpp -- uzycie niezalezne od szczegolow Impl.}]
+#include "widget.hpp"
+#include <iostream>
+
+int main() {
+    Widget w("sample");
+    std::cout << w.name() << '\n';
+}
+\end{lstlisting}
+
+Destruktor \code{Widget} jest definiowany \emph{po} pełnej definicji
+\code{Impl}. Jest to istotne dla destrukcji \code{unique_ptr<Impl>}.
+Wersja z domyślnym przenoszeniem dopuszcza obiekt \code{Widget}
+w stanie \emph{moved-from} z pustym \code{impl_}; użytkownik nie może
+wtedy wywoływać \code{name()} bez dodatkowo określonego kontraktu.
+Jeśli wymagane jest, by każdy \code{Widget} zawsze miał implementację,
+należy inaczej zaprojektować przenoszenie.
+
+\subsection{Stabilność ABI nie jest automatyczna}
+
+PImpl stabilizuje \emph{układ prywatnego stanu}, ale samo w sobie nie
+zapewnia zgodności między kompilatorami, standardowymi bibliotekami,
+wersjami runtime ani opcjami kompilacji. Publiczne typy
+\code{std::string} lub \code{std::vector} mogą również wpływać na ABI.
+Na granicy modułów współdzielonych wymagających zgodności wielu
+środowisk warto rozważyć wąski interfejs C: nieprzezroczysty uchwyt,
+stałe formaty danych i jawne funkcje tworzenia/niszczenia.
+
+\section{Polimorfizm: dynamiczny, statyczny i wymazywanie typów}
+
+Do rozszerzalnego API można zastosować wirtualną klasę bazową,
+typ generyczny oparty na concepts, \code{variant} dla zamkniętego
+zbioru alternatyw lub \emph{type erasure}. Mechanizmy różnią się
+kosztami, możliwością rozbudowy i wymaganiami własności.
+
+\begin{lstlisting}[caption={Interfejs dynamiczny i bezpieczne niszczenie polimorficzne.}]
+#include <memory>
+#include <string>
+
+struct Renderer {
+    virtual ~Renderer() = default;
+    virtual std::string render(int value) const = 0;
+};
+
+struct SimpleRenderer final : Renderer {
+    std::string render(int value) const override {
+        return std::to_string(value);
+    }
+};
+
+std::unique_ptr<Renderer> make_renderer() {
+    return std::make_unique<SimpleRenderer>();
+}
+\end{lstlisting}
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}p{0.25\textwidth}X@{}}
+\toprule
+Mechanizm & Atuty i koszty \\
+\midrule
+\code{virtual} & Otwarta hierarchia, wywołania pośrednie, ABI wrażliwe na zmianę interfejsu. \\
+\code{template}/concept & Weryfikacja i specjalizacja przy kompilacji, więcej instancji kodu. \\
+\code{variant} & Zamknięta lista typów, jawna obsługa przypadków, możliwy wzrost rozmiaru obiektu. \\
+Type erasure & Jednolity typ opakowania, ukryta implementacja, zwykle pośredni dispatch i ewentualna alokacja. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\section{Punkty dostosowania: ADL, hidden friends i CPO}
+\label{sec:cpp20-adl}
+
+\emph{Argument-dependent lookup} (ADL) wyszukuje wolne funkcje
+w przestrzeniach nazw związanych z typami argumentów. Pozwala
+implementować operacje jak \code{swap}, \code{begin} czy
+\code{operator==} bez modyfikowania biblioteki głównej.
+\emph{Hidden friend} jest funkcją zaprzyjaźnioną zdefiniowaną
+wewnątrz klasy; można ją odnaleźć przez ADL, ale nie przez zwykłe
+wyszukiwanie nazwy bez odpowiedniego argumentu.
+
+\begin{lstlisting}[caption={Hidden friend i idiom wywolywania swap przez ADL.}]
+#include <utility>
+
+namespace geom {
+struct Point {
+    int x{};
+    int y{};
+    friend bool operator==(const Point&, const Point&) = default;
+    friend void swap(Point& a, Point& b) noexcept {
+        using std::swap;
+        swap(a.x, b.x);
+        swap(a.y, b.y);
+    }
+};
+}
+
+template<class T>
+void exchange(T& a, T& b) {
+    using std::swap;
+    swap(a, b); // moze znalezc geom::swap przez ADL
+}
+\end{lstlisting}
+
+Nowoczesna biblioteka Ranges stosuje \emph{customization point objects}
+(CPO), np. \code{std::ranges::begin}. Nie należy utożsamiać ich
+z dowolnymi wolnymi funkcjami; obiekt CPO ma własne reguły wywołania,
+weryfikacji wymagań i wyszukiwania implementacji.
+
+\subsection{Wzorzec \texttt{tag\_invoke} -- nie standardowe API}
+
+\code{tag_invoke} jest popularną konwencją proponowaną dla rozszerzalnych
+CPO, ale \emph{nie jest standardową funkcją C++20 ani C++23}.
+W bibliotekach, które ją przyjmują, użytkownik implementuje
+\code{tag_invoke(tag, arguments...)} w przestrzeni nazw swego typu,
+a biblioteka znajduje ją za pośrednictwem ADL. Bez własnej implementacji
+mechanizmu nie wolno pisać \code{std::tag_invoke}.
+
+\begin{lstlisting}[caption={Minimalna ilustracja konwencji tag\_invoke (fragment).}]
+struct serialize_tag {};
+
+namespace model {
+struct Record { int id; };
+
+// Odnajdywane przez ADL, gdy argumentem jest Record.
+int tag_invoke(serialize_tag, const Record& r) {
+    return r.id;
+}
+}
+
+int serialize(const model::Record& r) {
+    return tag_invoke(serialize_tag{}, r);
+}
+\end{lstlisting}
+
+\section{Policy-based design i wstrzykiwanie zależności}
+
+W \emph{policy-based design} strategia jest parametrem typu.
+Wybrana implementacja może zostać wbudowana przez kompilator,
+ale zwiększa liczbę instancji szablonów i zależności od nagłówków.
+W \emph{dependency injection} obiekt otrzymuje zależności w konstruktorze
+lub jako argument, zamiast samodzielnie tworzyć globalne usługi.
+
+\begin{lstlisting}[caption={Polityka zapisu z kontrola w czasie kompilacji (C++20).}]
+#include <concepts>
+#include <string_view>
+
+struct NullSink {
+    void write(std::string_view) const noexcept {}
+};
+
+struct CounterSink {
+    int* counter;
+    void write(std::string_view) const noexcept { ++*counter; }
+};
+
+template<class T>
+concept Sink = requires(T s, std::string_view text) {
+    { s.write(text) } -> std::same_as<void>;
+};
+
+template<Sink S>
+class Logger {
+    S sink_;
+public:
+    explicit Logger(S sink) : sink_(sink) {}
+    void log(std::string_view text) { sink_.write(text); }
+};
+\end{lstlisting}
+
+Ograniczenie kompilacyjne nie zastępuje dokumentacji: każda polityka
+\code{Sink} musi sama zapewniać odpowiednie własności współbieżne,
+a \code{Logger} nie powinien obiecywać większej odporności na błędy
+niż implementacja przekazanej polityki.
+
+\section{Bezpieczeństwo wątkowe i reentrancy}
+
+\emph{Thread-safe} nie jest jednoznacznym stwierdzeniem bez określenia
+zakresu. Dokumentacja powinna mówić, czy dwa wątki mogą jednocześnie
+wywoływać metody na tym samym obiekcie, czy tylko na różnych obiektach,
+oraz czy zezwala się na jednoczesne czytanie i modyfikowanie.
+\emph{Reentrant} oznacza, że wywołanie może bezpiecznie nakładać się
+z kolejnym wywołaniem tej samej funkcji w określonym modelu; nie jest
+automatycznym synonimem pełnej \emph{thread safety}.
+
+Warto jawnie określić, czy callback dostarczony przez użytkownika
+jest uruchamiany pod blokadą. Wywołanie obcego kodu przy zablokowanym
+mutexie może spowodować deadlock, rekurencję lub trudny do przewidzenia
+czas trzymania blokady.
+
+\section{Publiczny nagłówek, moduły i konfiguracja CMake}
+
+Czytelna biblioteka oddziela pliki \code{include/}, \code{src/},
+\code{tests/} i \code{examples/}. W publicznym nagłówku umieszczamy
+minimalny zbiór deklaracji potrzebnych odbiorcy, a nie \code{using
+namespace std;} ani zależności od szczegółów implementacji.
+
+\begin{lstlisting}[caption={Przykladowe CMakeLists.txt dla biblioteki publicznej.},language={}]
+cmake_minimum_required(VERSION 3.20)
+project(geometry VERSION 1.0 LANGUAGES CXX)
+
+add_library(geometry src/geometry.cpp)
+target_compile_features(geometry PUBLIC cxx_std_20)
+target_include_directories(geometry PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>)
+
+add_executable(example examples/main.cpp)
+target_link_libraries(example PRIVATE geometry)
+\end{lstlisting}
+
+\nota{Deklaracje modułów C++20 mogą zmniejszyć zależność od klasycznego
+preprocesora, ale same w sobie nie zapewniają stabilności ABI.
+Konfiguracja modułów i dostępność \code{import std;} zależą od
+wersji narzędzi; szczegóły omówiono w rozdziale 17.}
+
+\section{Wersjonowanie i testowanie kontraktu}
+
+Zmiana kodu wewnętrznego nie jest zmianą API, dopóki zachowuje
+zewnętrznie obiecane zachowanie. Zmiana przeciążenia, domyślnego
+argumentu, wyjątków, czasu życia zwracanych referencji lub układu
+publicznej klasy może mieć znacznie większe konsekwencje niż sugeruje
+rozmiar poprawki. Warto odróżniać zgodność źródłową, ABI oraz zgodność
+semantyczną.
+
+\begin{enumerate}
+\item Testuj kontrakt na granicy publicznych interfejsów, a nie wyłącznie
+      metody prywatne; dodawaj testy przypadków błędnych.
+\item Kompiluj testowego klienta w osobnym projekcie, korzystając tylko
+      z publicznych nagłówków lub eksportowanych modułów.
+\item Sprawdzaj zachowanie dla lvalue, rvalue, typów const oraz wyjątków
+      we wszystkich operacjach z własnością zasobów.
+\item Jeśli biblioteka obiecuje ABI, testuj zmianę wersji z programem
+      zlinkowanym względem poprzedniego wydania.
+\item Mierz koszt użycia biblioteki: narzut alokacji, wielkość binarium,
+      opóźnienia i zachowanie w wielu wątkach.
+\end{enumerate}
+
+\section{Studium przypadku: API biblioteki numerycznej}
+
+Załóżmy, że biblioteka oblicza iloczyn skalarny i przechowuje operator
+liniowy. Dobry interfejs rozdziela widok danych od stanu własnego,
+kontroluje zgodność wymiarów i określa zachowanie dla wyjątków.
+
+\begin{lstlisting}[caption={Niewlasnosciowe wejscie do funkcji numerycznej (C++20).}]
+#include <span>
+#include <stdexcept>
+
+[[nodiscard]] double dot(std::span<const double> lhs,
+                         std::span<const double> rhs) {
+    if (lhs.size() != rhs.size())
+        throw std::invalid_argument("dimension mismatch");
+    double acc = 0;
+    for (std::size_t i = 0; i != lhs.size(); ++i)
+        acc += lhs[i] * rhs[i];
+    return acc;
+}
+\end{lstlisting}
+
+Przy zastosowaniach wymagających powtarzalności numerycznej trzeba
+udokumentować metodę sumowania i ewentualne przestawianie operacji.
+Implementacja równoległa nie musi dać bitowo identycznego wyniku jak
+sekwencyjna. Jeżeli biblioteka ma wspierać akceleratory i macierze
+wielowymiarowe, należy oddzielić interfejs algorytmu od szczegółów
+alokacji i układu pamięci.
+
+\section{C API jako granica bibliotek współdzielonych}
+
+Kiedy biblioteka ma być używana przez różne języki lub kompilatory,
+wąski interfejs C bywa stabilniejszą granicą niż publiczna klasa C++.
+Użytkownik nie musi znać rozmiaru obiektu, a biblioteka zachowuje
+pełną kontrolę nad alokacją i zniszczeniem. Dwa podstawowe warunki to
+\emph{nieprzekraczanie granicy przez wyjątki C++} oraz jawny kontrakt
+zwalniania każdego zasobu.
+
+\begin{lstlisting}[caption={calc\_api.h -- przyklad nieprzezroczystego uchwytu.}]
+#pragma once
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef struct calc_handle calc_handle;
+calc_handle* calc_create(int initial_value);
+int calc_get(const calc_handle* handle, int* output);
+void calc_destroy(calc_handle* handle);
+
+#ifdef __cplusplus
+}
+#endif
+\end{lstlisting}
+
+\begin{lstlisting}[caption={calc\_api.cpp -- implementacja z obsluga bledu alokacji.}]
+#include "calc_api.h"
+#include <new>
+
+struct calc_handle { int value; };
+
+extern "C" calc_handle* calc_create(int value) {
+    return new (std::nothrow) calc_handle{value};
+}
+extern "C" int calc_get(const calc_handle* h, int* out) {
+    if (!h || !out) return 1;
+    *out = h->value;
+    return 0;
+}
+extern "C" void calc_destroy(calc_handle* h) {
+    delete h;
+}
+\end{lstlisting}
+
+Interfejs jest ilustracyjny. W realnym systemie warto wprowadzić
+kody błędów, wersję ABI, zasady bezpieczeństwa wątkowego i politykę
+alokacji. Nie należy zakładać, że wyjątki C++ mogą bezpiecznie
+przechodzić przez granicę C lub modułu skompilowanego innym
+kompilatorem. Szczególnie ważne jest, aby obiekt utworzony przez
+\code{calc_create} zawsze niszczyć przez \code{calc_destroy},
+a nie przez \code{free} ani \code{delete} po stronie klienta.
+
+\section{Projektowanie wydajności: alokatory, PMR i batching}
+
+Interfejs może narzucać niepotrzebne alokacje przez zwracanie
+osobnych kontenerów dla każdej małej operacji. Często warto
+rozważyć wariant zapisujący do bufora dostarczonego przez
+wywołującego albo przetwarzanie wsadowe (\emph{batching}). Nie znaczy
+to jednak, że każde API powinno przyjmować ręcznie zarządzane wskaźniki:
+lepsza wydajność musi być uzasadniona pomiarem.
+
+Biblioteka \code{std::pmr} pozwala oddzielić politykę alokacji od
+typu danych. Przyjmowanie \code{std::pmr::memory_resource*} oznacza
+jednak dodatkowe zobowiązanie: zasób pamięci musi istnieć co najmniej
+tak długo, jak kontenery wykorzystujące go do zwalniania pamięci.
+
+\begin{lstlisting}[caption={Kontener PMR z buforem przydzielonym przez klienta (C++17).}]
+#include <array>
+#include <cstddef>
+#include <memory_resource>
+#include <vector>
+
+int main() {
+    std::array<std::byte, 2048> storage{};
+    std::pmr::monotonic_buffer_resource pool(
+        storage.data(), storage.size());
+    std::pmr::vector<int> values(&pool);
+    for (int i = 0; i < 100; ++i) values.push_back(i);
+}
+\end{lstlisting}
+
+\section{Dokumentacja API na przykładzie kontraktu operacji}
+
+Dla każdej publicznej funkcji warto zapisać krótki, ale precyzyjny
+kontrakt. W przypadku funkcji \code{dot(span,span)} może on brzmieć:
+
+\begin{description}[style=nextline]
+\item[Warunki wstępne] Obydwa widoki wskazują istniejące, czytelne
+bufory, których czas życia obejmuje całe wywołanie.
+\item[Wynik] Iloczyn skalarny w arytmetyce \code{double}.
+\item[Błędy] Dla różnych długości zgłaszany jest
+\code{std::invalid_argument}.
+\item[Wyjątki] Przy błędzie argumentów żaden bufor nie jest
+modyfikowany; sama funkcja nie przejmuje własności.
+\item[Współbieżność] Równoczesne wywołania są dozwolone,
+jeśli inni uczestnicy nie modyfikują tych samych elementów
+w sposób powodujący wyścig danych.
+\item[Wydajność] Koszt liniowy względem liczby elementów,
+bez konieczności dodatkowej alokacji.
+\end{description}
+
+Umowa nie powinna obiecywać braku zależności od kolejności dodawania
+dla liczb zmiennoprzecinkowych. Jeżeli kod ma gwarantować określony
+błąd numeryczny, taki warunek trzeba jawnie sformułować i uzasadnić.
+
+\section{Ewolucja API i polityka kompatybilności}
+
+Podczas wydawania kolejnej wersji warto rozważyć odrębnie:
+\emph{source compatibility}, \emph{binary compatibility} i
+\emph{behavioral compatibility}. Na przykład dodanie publicznego
+przeciążenia może prowadzić do niejednoznaczności wcześniej
+poprawnego wywołania, mimo że żadna stara sygnatura nie została
+usunięta. Zmiana wartości domyślnego argumentu może z kolei
+prowadzić do innego zachowania po kompilacji klienta, choć ABI
+pozostaje bez zmian.
+
+W projektach opartych na bibliotekach współdzielonych stosuje się
+niekiedy \emph{symbol versioning} lub oddzielne numery wersji ABI.
+Nie ma jednak jednego mechanizmu przenośnego między wszystkimi
+platformami. Dla bibliotek publicznych szczególnie przydatne są
+przykłady minimalnych klientów kompilowane w macierzy wersji oraz
+testy odtwarzające zachowanie poprzedniej wersji.
+
+\section{Lista kontrolna przeglądu biblioteki}
+
+\begin{enumerate}
+\item Czy publiczne nagłówki kompilują się samodzielnie bez przypadkowych
+zależności pośrednich?
+\item Czy własność, możliwość \code{nullptr}, czas życia oraz
+odpowiedzialność za zwalnianie zasobów są jednoznaczne?
+\item Czy koncepty odpowiadają wszystkim wymaganym operacjom kodu?
+\item Czy zachowanie przy błędzie jest testowane, łącznie z wyjątkami
+z konstruktorów i callbacków użytkownika?
+\item Czy funkcje \code{noexcept} naprawdę nie przepuszczają wyjątków?
+\item Czy zbędne alokacje i niejawne kopiowanie są zmierzone, a nie
+tylko zakładane?
+\item Czy API można przetestować z implementacją testową zależności,
+bez uruchamiania sieci ani bazy danych?
+\item Czy publiczne typy nie ujawniają szczegółów, które trzeba
+będzie zmienić w przyszłości?
+\item Czy dokumentacja dokładnie określa dopuszczalne wywołania
+współbieżne?
+\end{enumerate}
+
+
+\section*{Podsumowanie rozdziału}
+\addcontentsline{toc}{section}{Podsumowanie rozdziału}
+
+Projektowanie bibliotek C++ polega przede wszystkim na precyzyjnym
+wyrażeniu zobowiązań. Typy takie jak \code{span}, \code{unique_ptr},
+\code{optional}, concepts i interfejsy wirtualne są narzędziami do
+modelowania tych zobowiązań. PImpl pomaga ukryć implementację; ADL
+i CPO pomagają projektować rozszerzalność; testy, wersjonowanie
+oraz dokumentacja wyznaczają granice rzeczywistej niezawodności.
+Najważniejsza zasada brzmi: nie obiecuj silniejszych gwarancji własności,
+współbieżności, bezpieczeństwa wyjątkowego ani ABI, niż możesz
+zapewnić i przetestować.
+
+\section*{Literatura i dokumentacja}
+\addcontentsline{toc}{section}{Literatura i dokumentacja}
+\begingroup\sloppy
+\begin{itemize}
+\item ISO C++ Core Guidelines, \url{https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines}.
+\item \url{https://en.cppreference.com/w/cpp/language/adl} --- ADL i hidden friends.
+\item \url{https://en.cppreference.com/w/cpp/ranges} --- customization point objects Ranges.
+\item \url{https://en.cppreference.com/w/cpp/language/pimpl} --- idiom PImpl.
+\item \url{https://cmake.org/cmake/help/latest/guide/tutorial/} --- CMake.
+\item Klaus Iglberger, \emph{C++ Software Design}, O'Reilly, 2022.
+\end{itemize}
+\endgroup

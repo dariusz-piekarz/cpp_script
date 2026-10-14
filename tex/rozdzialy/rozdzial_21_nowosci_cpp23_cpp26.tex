@@ -1,0 +1,595 @@
+% Rozdzial 21. Samodzielna tresc rozdzialu do \input (bez preambuly).
+% Wymaga listings, enumitem, tabularx, booktabs, hyperref, makr
+% \code, \term, \nota. Przyklady: standard oznaczony przy kazdym kodzie.
+% Stan omowienia: pazdziernik 2026. Nalezy sprawdzac stan wdrozenia API.
+\chapter{Nowości C++23 i C++26: język, biblioteka i przenośność}
+\label{chap:cpp21-new}
+
+\section{Jak czytać informacje o nowym standardzie?}
+
+Zatwierdzenie funkcjonalności przez komitet C++ nie oznacza, że
+wszystkie kompilatory i biblioteki standardowe już ją dostarczają.
+W szczególności trzeba odróżniać: (1) zgodność kompilatora z regułami
+\emph{języka}, (2) implementację odpowiedniego nagłówka w \emph{bibliotece
+standardowej} oraz (3) gotowość systemu budowania i pakietowania.
+Opisy w tym rozdziale dotyczą C++23 i pakietu funkcji C++26
+według stanu na październik 2026; dostępność należy sprawdzić dla
+konkretnego środowiska GCC/libstdc++, Clang/libc++ lub MSVC/STL.
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}p{0.30\textwidth}X@{}}
+\toprule
+Warstwa & Praktyczna weryfikacja \\
+\midrule
+Standard języka & \code{-std=c++23}, \code{-std=c++2c} (lub wariant kompilatora), \code{__cplusplus} i makra \code{__cpp_*}. \\
+Biblioteka standardowa & \code{<version>}, makra \code{__cpp_lib_*}, dostępność nagłówków i linkowania. \\
+Narzędzia budowania & Wsparcie CMake, modułów, diagnostyki i zależności BMI. \\
+Platforma & Implementacja wielowątkowości, wektoryzacji, I/O, architektury procesora. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\subsection{Feature-test macros zamiast testowania numeru kompilatora}
+
+Nie należy zakładać, że \code{__cplusplus >= 202302L} oznacza obecność
+każdego nowego nagłówka. Wykrywamy \emph{konkretną funkcję}.
+\code{__has_include} sprawdza wyłącznie obecność pliku nagłówkowego;
+nie dowodzi, że zawartość została w pełni zaimplementowana.
+
+\begin{lstlisting}[caption={Bezpieczny wybor std::expected albo wariantu zgodnego z C++20.}]
+#include <version>
+#include <iostream>
+
+#if defined(__cpp_lib_expected) && __cpp_lib_expected >= 202202L
+    #include <expected>
+    #define HAS_EXPECTED 1
+#else
+    #include <optional>
+    #define HAS_EXPECTED 0
+#endif
+
+int main() {
+#if HAS_EXPECTED
+    std::expected<int, int> result = 42;
+    std::cout << result.value() << '\n';
+#else
+    std::optional<int> result = 42;
+    std::cout << *result << '\n';
+#endif
+}
+\end{lstlisting}
+
+Wartości makr zmieniają się, kiedy standard rozszerza dane API.
+W bibliotekach produkcyjnych zaleca się test konfiguracji
+\emph{compile-and-link}, a nie tylko sprawdzenie preprocesora.
+
+\section{C++23: \texttt{std::expected<T,E>} i jawne błędy}
+\label{sec:cpp21-expected}
+
+\code{std::expected<T,E>} reprezentuje wynik typu \code{T} albo błąd
+typu \code{E}. W przeciwieństwie do \code{std::optional<T>} przenosi
+informację, \emph{dlaczego} operacja się nie powiodła. Nie jest
+zamiennikiem wyjątków w każdej sytuacji: użytkownik musi obsłużyć
+stan błędu, a \code{value()} może zgłosić \code{bad_expected_access}.
+
+\begin{lstlisting}[caption={Parser z jawnym typem bledu (kompletny program C++23).}]
+#include <charconv>
+#include <expected>
+#include <iostream>
+#include <string>
+#include <string_view>
+
+std::expected<int, std::string> parse_integer(std::string_view text) {
+    int value{};
+    auto [ptr, error] = std::from_chars(text.data(),
+                                        text.data() + text.size(),
+                                        value);
+    if (error != std::errc{} || ptr != text.data() + text.size())
+        return std::unexpected("invalid integer");
+    return value;
+}
+
+int main() {
+    auto result = parse_integer("123");
+    if (result) std::cout << *result << '\n';
+    else std::cerr << result.error() << '\n';
+}
+\end{lstlisting}
+
+Nowsze operacje monadyczne \code{and_then}, \code{transform},
+\code{or_else} i \code{transform_error} można wykorzystywać po
+sprawdzeniu właściwego poziomu makra \code{__cpp_lib_expected}.
+\code{expected} daje się również stosować z \code{void} jako typem
+sukcesu, co jest przydatne w operacjach zapisujących dane.
+
+\section{C++23: \texttt{std::print}, \texttt{std::format} i formatowanie}
+
+\code{std::format} jest częścią C++20, natomiast \code{std::print}
+i \code{std::println} wprowadzono w C++23. Ich wsparcie w praktyce
+zależy głównie od wersji biblioteki standardowej. Formatowanie
+stabilnych protokołów danych nadal wymaga jawnego kontraktu, a nie
+przypadkowego wydruku do terminala.
+
+\begin{lstlisting}[caption={Formatowany wydruk C++23 (wymaga naglowka <print>).}]
+#include <print>
+
+int main() {
+    std::println("value = {:.2f}", 3.14159);
+    std::print("without newline: {}", 42);
+}
+\end{lstlisting}
+
+\code{<format>} oferuje bogatszy język formatowania niż ręczne
+sklejanie napisów, ale jego użycie dla danych nieufnych wymaga
+kontroli formatu i argumentów. Należy odróżniać tekst formatu
+znany przy kompilacji od wariantów wykorzystujących format dynamiczny.
+
+\section{C++23: \texttt{std::mdspan} i macierze wielowymiarowe}
+\label{sec:cpp21-mdspan}
+
+\code{std::mdspan} jest niewłasnościowym widokiem na pamięć
+wielowymiarową. Podobnie jak \code{std::span} nie zarządza czasem życia
+bufora. Pozwala opisać ekstensje, odwzorowanie indeksów na adresy
+i sposób dostępu. Układy \code{layout_right} i \code{layout_left}
+mają inny sposób wyliczania przesunięcia w pamięci; nie należy
+przypisywać im automatycznie takiej samej wydajności.
+
+\begin{lstlisting}[caption={Macierz 2 x 3 przechowywana w vector (C++23).}]
+#include <mdspan>
+#include <vector>
+#include <iostream>
+
+int main() {
+    std::vector<double> a{1, 2, 3, 4, 5, 6};
+    std::mdspan matrix(a.data(), 2, 3);
+    matrix[1, 2] = 10.0;  // operator indeksowania C++23
+    std::cout << a[5] << '\n';
+}
+\end{lstlisting}
+
+\nota{Dokładna składnia operatora indeksowania i dostępność nagłówka
+\code{<mdspan>} mogą być zależne od implementacji i późniejszych
+poprawek. Nie wolno zwracać \code{mdspan} do lokalnego wektora,
+który zostanie zniszczony po wyjściu z funkcji.}
+
+\section{C++23: generatory, wymazywanie typu i inne klasy użytkowe}
+
+\subsection{\texttt{std::generator}: od korutyny do zakresu}
+
+\code{std::generator<T>} z nagłówka \code{<generator>} jest standardowym
+narzędziem C++23 do leniwego przekazywania wartości przez \code{co_yield}.
+Nie każdy kompilator udostępnia tę bibliotekę nawet wtedy, gdy
+obsługuje składnię korutyn C++20. Generator nie tworzy automatycznie
+oddzielnego wątku ani mechanizmu planowania asynchronicznego.
+
+\begin{lstlisting}[caption={Leniwy generator liczb calkowitych (C++23; wymaga <generator>).}]
+#include <generator>
+#include <iostream>
+
+std::generator<int> numbers(int limit) {
+    for (int i = 0; i < limit; ++i)
+        co_yield i;
+}
+
+int main() {
+    for (int v : numbers(4))
+        std::cout << v << ' ';
+}
+\end{lstlisting}
+
+\subsection{\texttt{move\_only\_function} i koszt własności callbacku}
+
+\code{std::move_only_function<R(Args...)>} jest odpowiednikiem
+opisu wywoływalnego obiektu, który \emph{nie wymaga kopiowalności}
+przechwyconego stanu. Ma zastosowanie m.in. w kolejkach zadań
+przechowujących lambdy zawierające \code{unique_ptr}.
+
+\begin{lstlisting}[caption={Callback z obiektem posiadajacym wylaczna wlasnosc (C++23).}]
+#include <functional>
+#include <iostream>
+#include <memory>
+#include <utility>
+
+int main() {
+    auto payload = std::make_unique<int>(42);
+    std::move_only_function<int()> get =
+        [p = std::move(payload)] { return *p; };
+    std::cout << get() << '\n';
+}
+\end{lstlisting}
+
+Ponadto C++23 dodaje m.in. \code{std::byteswap}, \code{std::to_underlying},
+\code{std::forward_like}, \code{std::bind_back}, \code{std::flat_map},
+\code{std::flat_set}, \code{std::stacktrace} i \code{<spanstream>}.
+Każda z tych konstrukcji ma własny zakres użycia i niezależne
+wymagania implementacyjne.
+
+\section{C++23: Ranges i materializacja widoków}
+\label{sec:cpp21-ranges}
+
+C++23 rozbudowuje bibliotekę Ranges m.in. o \code{views::zip},
+\code{views::chunk}, \code{views::slide}, \code{views::stride},
+\code{views::enumerate} i \code{ranges::to}. Część algorytmów
+czyta wyniki leniwie; \code{ranges::to} materializuje widok w
+kontenerze. To duża zmiana ergonomii, ale reguły czasu życia
+widoków i koszt materializacji nadal obowiązują.
+
+\begin{lstlisting}[caption={Przekazanie wynikow widoku do wektora (C++23).}]
+#include <iostream>
+#include <ranges>
+#include <vector>
+
+int main() {
+    auto values = std::views::iota(0, 10)
+                | std::views::filter([](int x) { return x % 2 == 0; });
+    auto result = std::ranges::to<std::vector<int>>(values);
+    std::cout << result.size() << '\n'; // 5
+}
+\end{lstlisting}
+
+Dla funkcji, których implementacja nie wspiera jeszcze \code{ranges::to},
+można zastosować ręczną iterację i \code{push_back} albo
+\code{ranges::copy} wraz z odpowiednim inserterem.
+
+\section{C++23: składnia języka --- deducing this i \texttt{if consteval}}
+
+\emph{Explicit object parameter} (często nazywany \emph{deducing this})
+pozwala jawnie opisać obiekt, na którym wywoływana jest funkcja
+składowa. Może zastąpić rodzinę przeciążeń kwalifikowanych
+\code{&}, \code{const&} oraz \code{&&}, ale nadmierna ogólność
+może uczynić kontrakt funkcji mniej czytelnym.
+
+\begin{lstlisting}[caption={Jawny parametr obiektu (C++23).}]
+#include <iostream>
+
+struct Counter {
+    int value = 0;
+    void add(this Counter& self, int step) {
+        self.value += step;
+    }
+};
+
+int main() {
+    Counter x;
+    x.add(3);
+    std::cout << x.value << '\n';
+}
+\end{lstlisting}
+
+\code{if consteval} pozwala wykonać inną gałąź podczas ewaluacji
+stałej, bez traktowania zwykłej funkcji czasu wykonywania jako
+\code{consteval}. Trzeba jednak nadal pamiętać o ograniczeniach
+konstruowania stałych wyrażeń.
+
+\begin{lstlisting}[caption={if consteval (C++23, kompletny program).}]
+#include <iostream>
+
+constexpr int double_value(int n) {
+    if consteval {
+        return n * 2;
+    } else {
+        return n + n;
+    }
+}
+static_assert(double_value(21) == 42);
+int main() { std::cout << double_value(3) << '\n'; }
+\end{lstlisting}
+
+W rzeczywistym projekcie rozdzielenie ścieżek powinno być
+uzasadnione innym dostępnym zestawem mechanizmów na etapie
+kompilacji i wykonania, a nie sztucznym powielaniem identycznego kodu.
+
+\section{C++26: stały rozmiar przechowywania bez alokacji}
+\label{sec:cpp21-inplace}
+
+\code{std::inplace_vector<T,N>} jest kontenerem o zmiennym rozmiarze,
+którego \emph{maksymalna pojemność} wynosi \code{N}, a pamięć dla
+elementów jest umieszczona w samym obiekcie. Różni się więc od
+\code{std::array<T,N>}, która zawsze zawiera \code{N} elementów.
+Nie jest zwykłym \code{vector}: przy przekroczeniu pojemności
+nie może zwiększyć jej przez alokację.
+
+\begin{lstlisting}[caption={Kontener inplace\_vector (C++26; wymagane wsparcie biblioteki).}]
+#include <inplace_vector>
+#include <iostream>
+
+int main() {
+    std::inplace_vector<int, 8> values;
+    values.push_back(10);
+    values.push_back(20);
+    std::cout << values.size() << '\n';
+}
+\end{lstlisting}
+
+\code{std::hive} to kolejna nowa struktura kontenerowa C++26,
+ukierunkowana na efektywne wstawianie i usuwanie elementów oraz
+określone gwarancje stabilności istniejących elementów.
+Nie stanowi zamiennika \code{vector} dla obliczeń wymagających
+ciągłego bloku pamięci i lokalności odczytów.
+
+\section{C++26: SIMD, algebra liniowa i wielowątkowość}
+\label{sec:cpp21-simd}
+
+Nagłówek \code{<simd>} i typy \code{std::simd} służą do jawnego
+wyrażania obliczeń na paczkach wartości, potencjalnie mapowanych
+na instrukcje wektorowe procesora. Ich wykorzystanie nie zwalnia
+z pomiarów; wydajność zależy od architektury, wyrównania,
+przepustowości pamięci i zachowania kompilatora.
+
+\begin{lstlisting}[caption={Schemat obliczenia na SIMD (C++26, fragment pogladowy).}]
+// #include <simd>
+// Wymaga biblioteki z implementacja C++26.
+// std::simd<float> a(1.0f), b(2.0f);
+// auto c = a + b;
+// Typ i sposob ladowania zalezy od przyjetego ABI/implementacji.
+\end{lstlisting}
+
+C++26 rozwija także narzędzia algebry liniowej w \code{<linalg>}
+i mechanizmy asynchroniczne oparte na \emph{senders/receivers}
+(\code{<execution>}). Nowy model wykonania opisuje kompozycję zadań,
+obsługę błędów, anulowanie i relację z harmonogramem pracy.
+Sama obecność nagłówka nie dowodzi, że dany executor lub scheduler
+działa w pożądany sposób; szczegółowe semantyki zależą od wybranych
+operacji i implementacji.
+
+\subsection{Bezpieczne odzyskiwanie pamięci}
+
+Nagłówki \code{<hazard_pointer>} i \code{<rcu>} w C++26 mają pomóc
+w zarządzaniu czasem życia obiektów w strukturach współbieżnych.
+Nie usuwają one automatycznie problemu ABA ani nie sprawiają,
+że dowolna struktura z \code{std::atomic<T*>} jest bezpieczna.
+Należy osobno uzasadnić porządek pamięci, gwarancje postępu
+i moment fizycznego zniszczenia obiektów (por. rozdział 16).
+
+\section{C++26: język -- pack indexing, refleksja i kontrakty}
+
+C++26 wprowadza mechanizm \emph{pack indexing}, czyli wybór
+określonego elementu pakietu parametrów bez rekurencyjnego
+rozpakowywania. Jego wsparcie zależy od kompilatora.
+
+\begin{lstlisting}[caption={Indeksowanie pakietu typow (C++26, tylko kompilator ze wsparciem).}]
+template<class... Ts>
+using first_type = Ts...[0];
+
+static_assert(sizeof(first_type<int, double>) == sizeof(int));
+\end{lstlisting}
+
+W C++26 rozwijane są również: \emph{static reflection} (nagłówek
+\code{<meta>} i odpowiednia składnia refleksji) oraz
+\emph{kontrakty} (np. asercje kontraktowe i wsparcie z
+\code{<contracts>}). Są to znaczące nowe możliwości,
+ale składnia i zakres praktycznego użycia wymagają konkretnego
+kompilatora z odpowiednim wsparciem. Nie podajemy tu pozornie
+przenośnego przykładu refleksji lub kontraktów, który mógłby
+nie kompilować się w typowej instalacji C++26.
+
+\subsection{Co dzieje się z \texttt{constexpr}?}
+
+W kolejnych rewizjach standardu zwiększa się zakres dozwolonych
+obliczeń stałych. Nie wynika z tego, że wszystkie operacje I/O,
+zasoby systemowe i dynamiczne struktury mogą automatycznie istnieć
+w stałym wyrażeniu. Warto oddzielać możliwość \emph{wykonania obliczenia}
+przy kompilacji od zdolności utworzenia \emph{trwałego obiektu}
+z zasobami zarządzanymi dynamicznie.
+
+\section{Jak wdrażać C++23/26 do istniejącej biblioteki?}
+\label{sec:cpp21-migration}
+
+Włączenie nowego standardu dla całego projektu z dnia na dzień jest
+często mniej korzystne niż migracja etapami. Proponujemy strategię:
+
+\begin{enumerate}
+\item Spisać minimalne wersje obsługiwanych GCC, Clang, MSVC oraz
+      implementacji bibliotek standardowych.
+\item Dla każdego nowego API dodać test \emph{compile-and-link},
+      a nie tylko sprawdzenie \code{__cplusplus}.
+\item Rozróżnić funkcje opcjonalne (np. wygodniejszy wydruk) i wymagane
+      dla poprawności (np. określony model zarządzania pamięcią).
+\item Zachować wspierany wariant alternatywny, jeśli API ma nadal działać
+      z C++20 lub starszym środowiskiem.
+\item Wprowadzić osobne zadania CI z różnymi kompilatorami,
+      architekturami i wariantami standardowej biblioteki.
+\item Przed zmianą interfejsu publicznego przeanalizować kompatybilność
+      źródłową, ABI, wyjątki, alokację i obietnice dotyczące czasu życia.
+\end{enumerate}
+
+\begin{lstlisting}[caption={Weryfikacja obecnosci nowych funkcji biblioteki (C++23).}]
+#include <iostream>
+#include <version>
+
+int main() {
+#ifdef __cpp_lib_expected
+    std::cout << "expected: " << __cpp_lib_expected << '\n';
+#else
+    std::cout << "expected unavailable\n";
+#endif
+#ifdef __cpp_lib_mdspan
+    std::cout << "mdspan: " << __cpp_lib_mdspan << '\n';
+#else
+    std::cout << "mdspan unavailable\n";
+#endif
+#ifdef __cpp_lib_print
+    std::cout << "print: " << __cpp_lib_print << '\n';
+#else
+    std::cout << "print unavailable\n";
+#endif
+}
+\end{lstlisting}
+
+\section{Zestawienie funkcjonalności i rekomendacje}
+\begin{center}\footnotesize
+\begin{tabularx}{\textwidth}{@{}p{0.33\textwidth}p{0.11\textwidth}X@{}}
+\toprule
+Funkcjonalność & Standard & Główne zastosowanie \\
+\midrule
+\code{expected}, \code{print} & C++23 & Jawny wynik/błąd; formatowane I/O. \\
+\code{mdspan}, \code{generator} & C++23 & Widoki wielowymiarowe; leniwe zakresy korutyn. \\
+\code{move_only_function} & C++23 & Wywoływalne obiekty tylko przenoszalne. \\
+\code{ranges::to}, \code{views::zip} & C++23 & Składanie i materializacja zakresów. \\
+Deducing this, \code{if consteval} & C++23 & Ergonomia szablonów i ewaluacja stała. \\
+\code{inplace_vector}, \code{hive} & C++26 & Kontenery o szczególnych gwarancjach pamięci i stabilności. \\
+SIMD, linalg, senders/receivers & C++26 & Obliczenia i asynchroniczne wykonanie. \\
+Refleksja, kontrakty & C++26 & Metaprogramowanie i opis warunków poprawności. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\nota{Powyższe przyporządkowanie do wersji standardu nie jest
+obietnicą dostępności w dowolnej instalacji C++23/C++26. Najlepszym
+źródłem danych o narzędziu jest wynik własnego testu kompilacji,
+zgodny z dokumentacją danej standardowej biblioteki.}
+
+\section{C++23: kontenery uporządkowane o zwartej reprezentacji}
+
+\code{std::flat_map} i \code{std::flat_set} to adaptery kontenerowe,
+których klucze i wartości są przechowywane w sekwencyjnych
+strukturach danych, a nie w węzłach drzewa takich jak \code{std::map}.
+Pozwala to uzyskać dobrą lokalność danych i efektywne wyszukiwanie,
+zwłaszcza gdy zbiór jest stosunkowo statyczny. Z drugiej strony
+wstawianie lub usuwanie w środku może wymagać przesuwania elementów.
+
+\begin{lstlisting}[caption={Mapa o sekwencyjnym przechowywaniu (C++23).}]
+#include <flat_map>
+#include <iostream>
+
+int main() {
+    std::flat_map<int, int> lookup;
+    lookup.emplace(2, 20);
+    lookup.emplace(1, 10);
+    std::cout << lookup.at(2) << '\n';
+}
+\end{lstlisting}
+
+Dla zastosowań numerycznych często opłaca się samemu porównać
+\code{flat_map}, \code{unordered_map} i posortowany \code{vector}
+z wyszukiwaniem \code{lower_bound}. Wynik zależy m.in. od liczby
+rekordów, częstotliwości modyfikacji i wielkości elementów.
+
+\section{C++23: \texttt{spanstream}, \texttt{stacktrace} i funkcje pomocnicze}
+
+\code{std::spanstream} umożliwia operacje strumieniowe na zewnętrznym,
+ciągłym buforze. Nie przejmuje jego własności, dlatego po zakończeniu
+czasu życia bufora korzystanie ze strumienia jest błędem.
+\code{std::stacktrace} ułatwia uzyskanie śladu wywołań; jakość
+symbolizacji i obecność informacji o nazwach funkcji są zależne
+od platformy, opcji kompilacji oraz sposobu linkowania.
+
+Mniejsze, lecz praktyczne ułatwienia obejmują:
+\begin{description}[style=nextline]
+\item[\code{std::byteswap}] Odwrócenie kolejności bajtów dla
+odpowiedniego typu całkowitego, przydatne w kodowaniu protokołów.
+\item[\code{std::to_underlying}] Jawna konwersja wartości typu wyliczeniowego
+na jego typ bazowy.
+\item[\code{std::forward_like}] Przenoszenie wzorca kwalifikatorów
+\code{const} i kategorii wartości z jednego typu na inne wyrażenie,
+przydatne przy pisaniu generycznych adapterów.
+\item[\code{std::bind_back}] Wygodne częściowe wiązanie argumentów
+od prawej strony listy parametrów.
+\end{description}
+
+\begin{lstlisting}[caption={Konwersja enum i zamiana kolejnosci bajtow (C++23).}]
+#include <bit>
+#include <cstdint>
+#include <iostream>
+#include <utility>
+
+enum class Status : std::uint32_t { ready = 0x12345678u };
+
+int main() {
+    auto raw = std::to_underlying(Status::ready);
+    auto swapped = std::byteswap(raw);
+    std::cout << std::hex << raw << ' ' << swapped << '\n';
+}
+\end{lstlisting}
+
+\section{C++26: \texttt{function\_ref} i funkcje bez własności}
+
+\code{std::function_ref} reprezentuje niewłasnościowy widok na
+obiekt wywoływalny. Przydaje się, gdy funkcja przyjmuje callback
+na czas jednego wywołania i nie zamierza go zachować.
+W odróżnieniu od \code{std::function}, nie przejmuje własności
+lambdy ani jej przechwyconych danych. Podstawowym zagrożeniem
+jest zatem pozostawienie widoku po zakończeniu życia callbacku.
+
+\begin{lstlisting}[caption={Przyklad zastosowania function\_ref (C++26; fragment).}]
+#include <functional>
+
+void repeat(int n, std::function_ref<void(int)> callback) {
+    for (int i = 0; i < n; ++i)
+        callback(i);
+}
+\end{lstlisting}
+
+Jest to typ zgodny z celem opisanym w rozdziale 20: odróżniamy
+przekazanie callbacku na czas wywołania od przechowywania go we
+współdzielonym stanie zadań.
+
+\section{C++26: interpretacja nowego modelu wykonania}
+
+Model \emph{senders/receivers} wprowadza pojęcia opisujące wynik
+operacji asynchronicznej oraz jej kontynuację. W odróżnieniu od
+prostego \code{std::async}, wyrażenie złożone z wielu etapów może
+przenosić informacje o błędzie i anulowaniu, a wykonanie może być
+zależne od schedulera dostarczonego przez bibliotekę.
+
+Nie należy jednak utożsamiać wyrażenia opisującego zadanie z natychmiast
+uruchomioną pracą. Ważne są trzy oddzielne momenty:
+\begin{enumerate}
+\item utworzenie opisu obliczenia (\emph{sender});
+\item połączenie z odbiorcą wyniku (\emph{receiver});
+\item rozpoczęcie operacji w wybranym środowisku wykonawczym.
+\end{enumerate}
+
+Gdy aplikacja ma już własny executor i korutyny, migracja powinna
+zacząć się od próbnego adaptera i testów anulowania, a nie od
+mechanicznego zastąpienia wszystkich \code{future}. Biblioteki
+systemowe mogą udostępniać własne executory, często o innym modelu
+kolejek i innych gwarancjach zamknięcia.
+
+\section{Eksperymentalne wdrażanie nowego API bez utraty przenośności}
+
+Niektóre biblioteki \code{<experimental/...>} dostarczały wybrane
+mechanizmy przed przyjęciem ich do standardu. Nie należy zakładać,
+że ich typy, przestrzenie nazw czy ABI są identyczne ze standardowymi.
+Dla kodu produkcyjnego możliwe są trzy strategie:
+
+\begin{enumerate}
+\item Pozostać przy C++20, używając bibliotek zewnętrznych dla brakujących
+funkcji i oddzielając te zależności od interfejsu publicznego.
+\item Wymagać C++23 i wskazanych minimalnych wersji standardowej
+biblioteki, walidowanych w systemie CI.
+\item Udostępniać implementację warunkową dla różnych standardów,
+przy czym wszystkie warianty muszą zachowywać ten sam kontrakt i
+przechodzić wspólny zestaw testów.
+\end{enumerate}
+
+Dla funkcji odwołujących się do kompilatora lub sprzętu warto
+budować niezależne zestawy benchmarków. Mechanizm szybszy na
+maszynie deweloperskiej może okazać się mniej korzystny na systemie
+o innym cache, szerokości SIMD albo liczbie rdzeni.
+
+
+\section*{Podsumowanie rozdziału}
+\addcontentsline{toc}{section}{Podsumowanie rozdziału}
+
+C++23 wyraźnie ulepsza projektowanie interfejsów (\code{expected}),
+pracę na danych (\code{mdspan}), korutyny (\code{generator}) oraz
+programowanie zakresowe. C++26 rozwija kontenery, wektoryzację,
+wykonanie asynchroniczne i mechanizmy metaprogramowania.
+Najważniejszą umiejętnością nie jest jednak mechaniczne używanie
+najświeższej składni, lecz świadome odróżnianie gwarancji
+standardu, stanu wdrożenia i wymagań aplikacji.
+
+\section*{Literatura i dokumentacja}
+\addcontentsline{toc}{section}{Literatura i dokumentacja}
+\begingroup\sloppy
+\begin{itemize}
+\item \url{https://en.cppreference.com/w/cpp/23} --- zestawienie C++23.
+\item \url{https://en.cppreference.com/w/cpp/26} --- zestawienie C++26.
+\item \url{https://en.cppreference.com/w/cpp/compiler_support} --- wsparcie kompilatorów i bibliotek.
+\item \url{https://en.cppreference.com/w/cpp/feature_test} --- makra do testowania funkcjonalności.
+\item \url{https://en.cppreference.com/w/cpp/utility/expected} --- \code{std::expected}.
+\item \url{https://en.cppreference.com/w/cpp/container/mdspan} --- \code{std::mdspan}.
+\item \url{https://wg21.link} --- oficjalne dokumenty WG21 i propozycje standardu.
+\end{itemize}
+\endgroup

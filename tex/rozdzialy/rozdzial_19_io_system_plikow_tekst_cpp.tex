@@ -1,0 +1,654 @@
+% Rozdzial 19. Wymaga makr \code, \term, \nota oraz pakietow:
+% listings, tabularx, booktabs, enumitem, hyperref, amsmath.
+% Fragment rozdzialu (bez preambuly). C++20; nowsze API zaznaczono.
+\chapter{Wejście, wyjście, system plików i przetwarzanie tekstu}
+\label{chap:cpp19-io}
+
+\section{Wprowadzenie: dane, reprezentacja i granice odpowiedzialności}
+
+Operacje wejścia i wyjścia (\emph{I/O}) przenoszą dane między programem
+oraz jego otoczeniem: terminalem, plikiem, potokiem czy urządzeniem.
+W odróżnieniu od zwykłych obliczeń mogą zakończyć się częściowym sukcesem,
+błędem systemu albo blokowaniem. Dobrze zaprojektowany kod oddziela trzy
+warstwy: \emph{pozyskanie bajtów}, \emph{parsowanie reprezentacji} oraz
+\emph{przetworzenie obiektów}. Dzięki temu test parsera nie wymaga dysku,
+a zmiana formatu pliku nie wymusza zmiany algorytmu numerycznego.
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}p{0.28\textwidth}X@{}}
+\toprule
+Mechanizm & Typowe zastosowanie \\
+\midrule
+\code{iostream}, \code{fstream} & Formatowany tekst, prosta obsługa plików, strumienie. \\
+\code{filesystem} & Ścieżki, katalogi, metadane, operacje na plikach. \\
+\code{string}, \code{string_view} & Własność tekstu i nieposiadający go widok. \\
+\code{charconv} & Szybkie parsowanie i formatowanie liczb bez ustawień regionalnych. \\
+\code{format} (C++20) & Składanie tekstu według opisu formatowania. \\
+\code{print} (C++23) & Wygodne formatowane wypisywanie; zależy od implementacji biblioteki. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\nota{Przykłady są pisane dla C++20. W tym rozdziale \code{std::filesystem}
+nie oznacza, że każda operacja jest atomowa ani że istnieją uprawnienia
+do każdego wskazanego pliku. Kod obsługujący niezaufane ścieżki wymaga
+osobnej analizy bezpieczeństwa.}
+
+\section{Strumienie: stan, formatowanie i buforowanie}
+\label{sec:cpp19-streams}
+
+\code{std::istream} jest interfejsem odczytu, a \code{std::ostream}
+interfejsem zapisu. \code{std::cin}, \code{std::cout}, \code{std::cerr}
+i \code{std::clog} to gotowe strumienie standardowe. Operatory
+\code{>>} i \code{<<} wykonują zwykle operacje \emph{formatowane}.
+Strumień przechowuje także bity stanu: \code{goodbit}, \code{eofbit},
+\code{failbit} i \code{badbit}. Stan jest obserwowalny przez
+\code{good()}, \code{eof()}, \code{fail()}, \code{bad()} i \code{rdstate()}.
+
+\subsection{Poprawna pętla odczytu}
+
+Nie należy pisać \code{while (!in.eof())}: wskaźnik końca pliku jest
+ustawiany \emph{po nieudanej próbie odczytu}, a nie przed nią.
+Warunkiem pętli powinien być sam odczyt.
+
+\begin{lstlisting}[caption={Odczyt liczb i kontrola bledu formatu (kompletny program, C++20).}]
+#include <iostream>
+#include <sstream>
+
+int main() {
+    std::istringstream in("10 20 30");
+    int value = 0;
+    int sum = 0;
+    while (in >> value)
+        sum += value;
+
+    if (!in.eof()) {
+        std::cerr << "Invalid input\n";
+        return 1;
+    }
+    std::cout << sum << '\n'; // 60
+}
+\end{lstlisting}
+
+Odczyt \code{int} ignoruje początkowe białe znaki. Gdy napotka
+\code{abc}, ustawia \code{failbit}; naprawienie \emph{stanu strumienia}
+przez \code{clear()} nie usuwa automatycznie błędnego tekstu z bufora.
+Połączenie \code{>>} z \code{getline} wymaga uwzględnienia pozostawionego
+znaku końca linii.
+
+\begin{lstlisting}[caption={Liczba, a potem pelna linia (kompletny program).}]
+#include <iostream>
+#include <limits>
+#include <sstream>
+#include <string>
+
+int main() {
+    std::istringstream in("7\nhello world\n");
+    int id{};
+    in >> id;
+    in.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+    std::string line;
+    std::getline(in, line);
+    std::cout << id << ":" << line << '\n';
+}
+\end{lstlisting}
+
+\subsection{Flagi formatowania i wyjątki strumieni}
+
+Manipulatory \code{std::fixed}, \code{std::scientific},
+\code{std::setprecision}, \code{std::setw}, \code{std::setfill} i
+\code{std::boolalpha} zmieniają sposób prezentacji. Część ustawień
+pozostaje w strumieniu na kolejne operacje; \code{setw} dotyczy tylko
+następnego pola. Ustawienie \code{exceptions(mask)} sprawia, że zmiana
+odpowiednich bitów stanu może zgłosić \code{std::ios_base::failure}.
+
+\begin{lstlisting}[caption={Lokalne formatowanie bez zmieniania std::cout.}]
+#include <iomanip>
+#include <iostream>
+#include <sstream>
+
+int main() {
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(2) << 3.14159;
+    std::cout << out.str() << '\n'; // 3.14
+}
+\end{lstlisting}
+
+\nota{\code{std::endl} nie jest tylko nową linią: dodatkowo opróżnia
+bufor. W pętli wypisującej wiele rekordów używamy zwykle \code{'\\n'},
+a \code{flush} wywołujemy, gdy rzeczywiście wymagamy wypchnięcia bufora.
+\code{flush} nie oznacza trwałego zapisania danych na fizycznym nośniku.}
+
+\subsection{Formatowanie a ustawienia regionalne}
+
+Operatory strumieni zależą od przypisanej im lokalizacji
+(\code{std::locale}); separator dziesiętny i grupowanie cyfr mogą się
+różnić. Do stabilnego formatu wymiany danych należy jawnie wybrać
+konwencję, najlepiej niezależną od regionalnych ustawień użytkownika.
+\code{std::format} (C++20) zapewnia formatowanie według tekstu formatu,
+lecz dostępność nagłówka \code{<format>} zależy od biblioteki.
+
+\begin{lstlisting}[caption={Formatowanie C++20 -- wymaga obslugi <format>.}]
+#include <format>
+#include <string>
+
+std::string describe(int n, double x) {
+    return std::format("n={}, x={:.3f}", n, x);
+}
+\end{lstlisting}
+
+\section{Pliki tekstowe i binarne}
+\label{sec:cpp19-files}
+
+\code{std::ifstream} czyta plik, \code{std::ofstream} zapisuje,
+a \code{std::fstream} obsługuje oba kierunki. Otwarcie odbywa się
+w konstruktorze lub przez \code{open}; destruktor zamyka uchwyt
+zgodnie z RAII. Tryby obejmują \code{std::ios::in}, \code{out},
+\code{app}, \code{trunc}, \code{binary} i \code{ate}.
+
+\begin{lstlisting}[caption={Zapis i odczyt pliku tekstowego (kompletny program).}]
+#include <fstream>
+#include <iostream>
+#include <stdexcept>
+#include <string>
+
+int main() {
+    const std::string path = "cpp19_example.txt";
+    {
+        std::ofstream out(path, std::ios::trunc);
+        if (!out) throw std::runtime_error("open for write");
+        out << "alpha\nbeta\n";
+        out.close();
+        if (!out) throw std::runtime_error("write/close failed");
+    }
+    std::ifstream in(path);
+    if (!in) throw std::runtime_error("open for read");
+    std::string line;
+    while (std::getline(in, line))
+        std::cout << line << '\n';
+    if (in.bad()) throw std::runtime_error("read failed");
+}
+\end{lstlisting}
+
+Sprawdzanie sukcesu otwarcia nie wystarcza: zapis może zakończyć się
+błędem także po częściowym wykonaniu. Jawne \code{close()} umożliwia
+sprawdzenie stanu przed destrukcją. Sam fakt \code{close()} nie daje
+gwarancji trwałości danych na dysku (\emph{durability}).
+
+\subsection{Binarna reprezentacja obiektu nie jest formatem pliku}
+
+\code{std::ios::binary} usuwa pewne transformacje trybu tekstowego;
+nie wprowadza przenośnego sposobu kodowania struktur. Zapis
+\code{reinterpret_cast<const char*>(&obj)} pomija kwestie
+\emph{endianness}, wyrównania, paddingu, rozmiaru typów i wersji
+reprezentacji. W plikach wymiany zalecamy własny jawny format albo
+przetestowaną bibliotekę serializacji.
+
+\begin{lstlisting}[caption={Jawny zapis liczby 32-bitowej w kolejnosci little-endian (C++20).}]
+#include <array>
+#include <cstdint>
+#include <fstream>
+#include <stdexcept>
+
+void write_u32_le(std::ostream& out, std::uint32_t v) {
+    std::array<char, 4> bytes{};
+    for (unsigned i = 0; i < 4; ++i)
+        bytes[i] = static_cast<char>((v >> (8 * i)) & 0xffu);
+    out.write(bytes.data(), bytes.size());
+    if (!out) throw std::runtime_error("write failed");
+}
+\end{lstlisting}
+
+Odbiorca powinien sprawdzać długość danych, wersję protokołu,
+dozwolone zakresy i limity alokacji, zanim zacznie tworzyć obiekty.
+\code{std::bit_cast} ułatwia analizę reprezentacji typów o odpowiednich
+własnościach, ale nie rozwiązuje samoistnie problemu przenośnej serializacji.
+
+\section{System plików: \texttt{std::filesystem}}
+\label{sec:cpp19-filesystem}
+
+Nagłówek \code{<filesystem>} (C++17) udostępnia typ \code{path}
+oraz operacje na ścieżkach i katalogach. \code{path} reprezentuje
+ścieżkę w notacji systemu, nie otwiera jeszcze pliku. Operator
+\code{/} poprawnie dołącza elementy ścieżki.
+
+\begin{lstlisting}[caption={Sciezki i katalogi (kompletny program).}]
+#include <filesystem>
+#include <iostream>
+
+namespace fs = std::filesystem;
+
+int main() {
+    const fs::path base = fs::temp_directory_path();
+    const fs::path path = base / "results" / "data.csv";
+    std::cout << path.filename().string() << '\n';
+    std::cout << path.extension().string() << '\n';
+    std::cout << path.parent_path().filename().string() << '\n';
+}
+\end{lstlisting}
+
+\subsection{Wyjątki i \texttt{std::error\_code}}
+
+Wiele funkcji ma przeciążenia zgłaszające
+\code{std::filesystem::filesystem_error} oraz warianty przyjmujące
+\code{std::error_code&}. Drugie przydają się w kodzie, w którym brak
+pliku jest normalnym wynikiem, a nie wyjątkiem.
+
+\begin{lstlisting}[caption={Kontrolowany odczyt informacji o pliku.}]
+#include <filesystem>
+#include <iostream>
+#include <system_error>
+
+int main() {
+    std::error_code ec;
+    const bool exists = std::filesystem::exists("config.txt", ec);
+    if (ec) {
+        std::cerr << "filesystem error: " << ec.message() << '\n';
+        return 1;
+    }
+    std::cout << std::boolalpha << exists << '\n';
+}
+\end{lstlisting}
+
+\subsection{Iterowanie i symbole łączy}
+
+\code{directory_iterator} przechodzi po jednym poziomie, natomiast
+\code{recursive_directory_iterator} schodzi do podkatalogów.
+\code{exists}, \code{is_regular_file}, \code{is_symlink}, \code{status},
+\code{symlink_status}, \code{canonical} i \code{weakly_canonical}
+mają różne znaczenie. Domyślnie nie należy utożsamiać ścieżki
+tekstowej z tożsamością rzeczywistego pliku: łącza symboliczne,
+uprawnienia i zmiany katalogów mogą zmienić wynik.
+
+\begin{lstlisting}[caption={Wypisanie zwyklych plikow z katalogu (C++17).}]
+#include <filesystem>
+#include <iostream>
+#include <system_error>
+
+int main() {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    for (fs::directory_iterator it(fs::current_path(), ec), end;
+         !ec && it != end; it.increment(ec)) {
+        std::error_code item_ec;
+        if (it->is_regular_file(item_ec) && !item_ec)
+            std::cout << it->path().filename().string() << '\n';
+    }
+    if (ec) {
+        std::cerr << ec.message() << '\n';
+        return 1;
+    }
+}
+\end{lstlisting}
+
+\nota{Wzorzec \emph{sprawdź-then-użyj} nie zapobiega wyścigom
+\emph{TOCTOU}: między \code{exists(path)} i \code{open(path)} ktoś może
+zmienić obiekt wskazywany przez ścieżkę. Przy wymaganiach
+bezpieczeństwa potrzebne są mechanizmy systemowe pracujące na
+uchwytach do otwartych plików i właściwe polityki dostępu.}
+
+\subsection{Zapis przez plik tymczasowy i podmianę}
+
+Częsty wzorzec to zapis nowej zawartości do osobnego pliku w tym
+samym katalogu, zamknięcie go i zastąpienie pliku docelowego przez
+\code{rename}. Dokładne gwarancje atomowości podmiany, obsługę
+istniejącego celu oraz trwałości trzeba ustalić dla danego systemu
+plików i systemu operacyjnego. Sama biblioteka C++ nie tworzy
+transakcyjnego systemu plików. Dla plików poufnych konieczne jest
+również bezpieczne tworzenie unikalnego pliku tymczasowego.
+
+\section{Własność tekstu i \texttt{std::string\_view}}
+\label{sec:cpp19-text}
+
+\code{std::string} zarządza własną pamięcią. \code{std::string_view}
+przechowuje wskaźnik i długość fragmentu znaków, nie przedłużając
+czasu życia danych. Widok bywa idealnym parametrem funkcji, jeżeli
+funkcja nie zachowuje go na później.
+
+\begin{lstlisting}[caption={Widok do bufora -- bez kopiowania (kompletny program).}]
+#include <iostream>
+#include <string>
+#include <string_view>
+
+void print_prefix(std::string_view text, std::size_t n) {
+    std::cout << text.substr(0, n) << '\n';
+}
+
+int main() {
+    std::string text = "programming";
+    print_prefix(text, 7); // program
+    print_prefix("hello", 3); // hel
+}
+\end{lstlisting}
+
+\begin{lstlisting}[caption={Blad czasu zycia -- tylko ilustracja, nie uruchamiac.}]
+std::string_view bad() {
+    std::string local = "temporary";
+    return local; // dangling view po zakonczeniu funkcji
+}
+\end{lstlisting}
+
+Zmiana rozmiaru \code{std::string} może unieważnić wcześniejsze widoki.
+Dodatkowo \code{string_view::substr} nie kopiuje znaków, natomiast
+\code{string::substr} zwraca nowy \code{string}. W API akceptującym
+tekst wejściowy dobrze jest dokumentować, kto posiada pamięć i jak
+długo wywoływana funkcja może jej używać.
+
+\subsection{UTF-8, Unicode i kodowanie}
+
+\code{std::string} jest ciągiem jednostek typu \code{char}; sam z siebie
+nie jest zbiorem znaków Unicode. W UTF-8 jeden punkt kodowy może
+zajmować 1--4 bajty, a widoczny dla użytkownika znak (\emph{grapheme
+cluster}) może składać się z kilku punktów kodowych. Dlatego
+\code{text.size()} liczy bajty, a nie litery. \code{char8_t} (C++20)
+reprezentuje jednostkę kodową UTF-8, lecz \code{u8"..."} ma typ
+\code{const char8_t[N]}, nie \code{const char[N]}.
+
+\begin{lstlisting}[caption={Rozmiar w bajtach i liczba punktow kodowych UTF-8.}]
+#include <cstddef>
+#include <iostream>
+#include <string_view>
+
+std::size_t codepoints_utf8(std::string_view bytes) {
+    std::size_t n = 0;
+    for (unsigned char c : bytes)
+        if ((c & 0xc0u) != 0x80u) ++n;
+    return n;
+}
+
+int main() {
+    std::string_view text = "A\xC4\x85"; // A oraz 'a' z ogonkiem
+    std::cout << text.size() << ' ' << codepoints_utf8(text) << '\n';
+}
+\end{lstlisting}
+
+Funkcja z przykładu \emph{zakłada poprawne UTF-8} i liczy jedynie
+jednostki niebędące bajtami kontynuacji: nie jest walidatorem kodowania.
+Dla danych niezaufanych wymagane jest pełne sprawdzenie składni UTF-8,
+a przy operacjach językowych --- biblioteka z obsługą normalizacji,
+segmentacji i porównywania Unicode. \code{std::codecvt} nie jest zalecanym
+nowym API (część jego komponentów została wycofana lub uznana za
+przestarzałą).
+
+\section{Parsowanie liczb przez \texttt{from\_chars}}
+\label{sec:cpp19-charconv}
+
+Funkcje \code{std::from_chars} i \code{std::to_chars} pracują na
+przedziałach bufora, nie wymagają tworzenia strumienia i nie zależą
+od lokalizacji \code{std::locale}. Wynik \code{from_chars} zawiera
+wskaźnik na pierwszy nieprzetworzony znak oraz \code{std::errc}.
+W szczególności udany odczyt prefiksu \code{123} z \code{123abc}
+nie oznacza, że całe wejście jest poprawną liczbą.
+
+\begin{lstlisting}[caption={Poprawny parser pelnej liczby calkowitej (C++17).}]
+#include <charconv>
+#include <optional>
+#include <string_view>
+#include <system_error>
+
+std::optional<int> parse_int(std::string_view text) {
+    int value{};
+    auto result = std::from_chars(text.data(),
+                                  text.data() + text.size(), value);
+    if (result.ec != std::errc{} ||
+        result.ptr != text.data() + text.size())
+        return std::nullopt;
+    return value;
+}
+\end{lstlisting}
+
+Inaczej niż odczyt formatowany, \code{from_chars} nie pomija
+początkowych białych znaków. Dla typów zmiennoprzecinkowych należy
+uwzględnić dostępność odpowiedniej implementacji standardowej biblioteki
+oraz wymagania dotyczące wartości nieskończonych, NaN i zaokrągleń.
+
+\section{Parser pliku CSV: przykład kontraktu formatu}
+
+CSV nie jest po prostu \code{split(',')}: poprawne pola mogą zawierać
+przecinek i znaki cudzysłowu, a cytowane pola także nowe linie.
+Najpierw należy określić dialekt, kodowanie, maksymalny rozmiar pola
+i zachowanie wobec niepoprawnych danych. Poniższy prosty parser
+obsługuje jeden rekord przechowywany już jako \code{string_view},
+cudzysłowy i podwojone cudzysłowy, ale \emph{nie obsługuje wieloliniowych
+rekordów} (ich odczyt wymaga osobnej warstwy).
+
+\begin{lstlisting}[caption={Parser pojedynczego rekordu CSV (C++20).}]
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <vector>
+#include <utility>
+
+std::vector<std::string> parse_csv_record(std::string_view s) {
+    std::vector<std::string> fields;
+    std::string field;
+    bool quoted = false;
+    bool just_closed = false;
+    bool at_field_start = true;
+    for (std::size_t i = 0; i < s.size(); ++i) {
+        const char c = s[i];
+        if (quoted) {
+            if (c == '"') {
+                if (i + 1 < s.size() && s[i + 1] == '"') {
+                    field.push_back('"'); ++i;
+                } else {
+                    quoted = false;
+                    just_closed = true;
+                }
+            } else {
+                field.push_back(c);
+            }
+        } else if (c == ',' ) {
+            fields.push_back(std::move(field));
+            field.clear();
+            at_field_start = true;
+            just_closed = false;
+        } else if (c == '"' && at_field_start) {
+            quoted = true;
+            at_field_start = false;
+        } else {
+            if (just_closed || c == '"')
+                throw std::invalid_argument("invalid CSV quote");
+            field.push_back(c);
+            at_field_start = false;
+        }
+    }
+    if (quoted) throw std::invalid_argument("unclosed quote");
+    fields.push_back(std::move(field));
+    return fields;
+}
+\end{lstlisting}
+
+Istotne jest ograniczenie pamięci: parser przyjmujący dowolnie długi
+rekord może przy dużym wejściu spowodować wyczerpanie zasobów.
+Zachowanie \code{std::regex} również nie zastępuje pełnego parsera CSV;
+wyrażenia regularne nie są ponadto narzędziem do ogólnej segmentacji Unicode.
+
+\section{Wydajność i projektowanie interfejsów I/O}
+
+Koszt operacji na nośniku i koszty systemowe często dominują nad
+samymi obliczeniami. Nie należy jednak bez pomiaru utożsamiać
+\code{mmap} z szybkością, a \code{fstream} z wolnym rozwiązaniem.
+Przed optymalizacją warto mierzyć liczbę wywołań systemowych,
+wielkość bufora, przepustowość, koszt parsowania i alokacji.
+
+\begin{lstlisting}[caption={Wczytanie calego pliku binarnego z kontrola bledu (C++20).}]
+#include <fstream>
+#include <iterator>
+#include <stdexcept>
+#include <string>
+
+std::string read_all(const std::string& path) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input) throw std::runtime_error("open failed");
+    std::string result((std::istreambuf_iterator<char>(input)),
+                        std::istreambuf_iterator<char>{});
+    if (input.bad()) throw std::runtime_error("read failed");
+    return result;
+}
+\end{lstlisting}
+
+Funkcja jest prosta i przydatna dla plików o kontrolowanym rozmiarze.
+Jeśli plik może być wielogigabajtowy lub pochodzi od niezaufanego
+nadawcy, lepiej przetwarzać go strumieniowo, z limitami i obsługą
+częściowych rekordów. Dla operacji formatowania warto rozważyć
+\code{std::format} (C++20) i \code{std::print} (C++23), ale przy
+\code{std::print} należy sprawdzić wspierającą implementację.
+
+\section{Konwersja liczb w obu kierunkach: \texttt{to\_chars}}
+
+Dla protokołów tekstowych często potrzeba zamieniać liczby na tekst
+w już przydzielonym buforze. \code{std::to_chars} nie tworzy
+\code{std::string}, nie używa lokalizacji i informuje, gdzie skończył
+pisać. Użytkownik odpowiada za wielkość bufora.
+
+\begin{lstlisting}[caption={Formatowanie liczby calkowitej bez alokacji (C++17).}]
+#include <array>
+#include <charconv>
+#include <stdexcept>
+#include <string>
+#include <system_error>
+
+std::string format_integer(int value) {
+    std::array<char, 32> buffer{};
+    auto [ptr, ec] = std::to_chars(buffer.data(),
+                                   buffer.data() + buffer.size(),
+                                   value);
+    if (ec != std::errc{})
+        throw std::runtime_error("buffer too small");
+    return std::string(buffer.data(), ptr);
+}
+\end{lstlisting}
+
+Warto odróżnić brak alokacji w samej konwersji od alokacji przy
+zbudowaniu wynikowego \code{std::string}. Można zamiast tego pisać
+do bufora zarządzanego przez wywołującego; wtedy jego czas życia i
+pojemność stają się elementem kontraktu.
+
+\section{Małe protokoły binarne: odczyt kontrolowany}
+
+Zapis wersjonowany nie musi oznaczać złożonej biblioteki. Jeżeli
+format przewiduje czterobajtową liczbę little-endian, parsowanie
+powinno sprawdzić, czy rzeczywiście otrzymaliśmy dokładnie tyle
+bajtów. Należy jasno ustalić, czy nadmiarowe dane są dozwolone.
+
+\begin{lstlisting}[caption={Odczyt 32-bitowej liczby little-endian (C++20).}]
+#include <array>
+#include <cstdint>
+#include <istream>
+#include <stdexcept>
+
+std::uint32_t read_u32_le(std::istream& input) {
+    std::array<unsigned char, 4> b{};
+    for (auto& byte : b) {
+        char c{};
+        if (!input.get(c))
+            throw std::runtime_error("truncated input");
+        byte = static_cast<unsigned char>(c);
+    }
+    std::uint32_t result = 0;
+    for (unsigned i = 0; i < 4; ++i)
+        result |= std::uint32_t{b[i]} << (8 * i);
+    return result;
+}
+\end{lstlisting}
+
+W plikach o zmiennym formacie warto stosować pola: sygnaturę
+(\emph{magic}), wersję, długość rekordu i jego zawartość. Jeśli
+długość pochodzi z pliku, konieczny jest limit, kontrola przepełnienia
+przy obliczaniu rozmiaru alokacji i obsługa przerwania odczytu.
+
+\section{Wyjście wielowątkowe i \texttt{std::osyncstream}}
+
+Wielu producentów logów może wywoływać \code{std::cout} jednocześnie.
+Nawet jeśli biblioteka zapobiega wewnętrznemu wyścigowi danych,
+poszczególne znaki wielu wiadomości mogą się przeplatać.
+C++20 dostarcza \code{std::osyncstream}, który grupuje wypisywanie
+i emituje zebrany fragment przy synchronizacji bufora lub destrukcji.
+
+\begin{lstlisting}[caption={Niezachodzace na siebie linie logu (C++20).}]
+#include <iostream>
+#include <syncstream>
+#include <thread>
+#include <vector>
+
+int main() {
+    std::vector<std::jthread> workers;
+    for (int id = 0; id < 4; ++id) {
+        workers.emplace_back([id] {
+            std::osyncstream(std::cout) << "worker " << id << '\n';
+        });
+    }
+}
+\end{lstlisting}
+
+Kolejność wyświetlenia całych komunikatów nadal zależy od wykonania
+wątków. \code{osyncstream} nie służy do synchronizacji obliczeń ani
+do wymuszania kolejności zdarzeń w algorytmie.
+
+\section{Szczegóły przenośności: ścieżki i kodowanie nazw plików}
+
+Reprezentacja \code{filesystem::path} jest zależna od platformy.
+Na Windows ścieżka może mieć natywną reprezentację opartą na szerokich
+znakach, podczas gdy systemy POSIX posługują się sekwencjami bajtów.
+Nie należy utożsamiać \code{path.string()} z konwersją Unicode
+z identyczną semantyką na wszystkich platformach.
+
+Również separator katalogów, wielkość liter, dozwolone nazwy,
+obsługa ścieżek sieciowych i normalizacja są platformowe.
+\code{lexically_normal()} upraszcza składnię ścieżki, lecz
+nie wykonuje operacji I/O i nie rozstrzyga, dokąd prowadzą łącza
+symboliczne. \code{canonical()} odnosi się do faktycznego systemu
+plików, a zatem może zgłosić błąd.
+
+\section{Projektowanie parserów i diagnostyka błędów}
+
+Dobre API parsera zwraca nie tylko rezultat, ale -- gdy jest to
+potrzebne -- także pozycję błędu. Format powinien określać,
+czy dopuszcza nadmiarowe białe znaki, puste pola, separator na końcu
+i dodatkowe dane. W warstwie parsera warto rozróżnić błędny zapis
+liczby od jej przepełnienia oraz zbyt długi rekord od przedwczesnego
+końca pliku. Takie rozróżnienie ułatwia generowanie precyzyjnych
+komunikatów i testów regresyjnych.
+
+W systemach obsługujących dane niezaufane kod przetwarzający tekst
+powinien obowiązkowo mieć testy brzegowe: pusty plik, zerowy bajt,
+wielobajtowy znak na granicy bufora, cytowanie CSV, rekord przekraczający
+limit oraz zmianę pliku podczas odczytu. Dla parserów złożonych
+pomocne są fuzzery i sanitizatory opisane w rozdziale 18.
+
+
+\section{Podsumowanie: kiedy używać którego narzędzia?}
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}p{0.32\textwidth}X@{}}
+\toprule
+Potrzeba & Narzędzie i uwagi \\
+\midrule
+Niewielkie pliki konfiguracyjne & \code{ifstream}, \code{getline}, oddzielny parser, walidacja. \\
+Formatowanie komunikatów & \code{ostringstream} albo \code{format} przy dostępnej implementacji. \\
+Duże przetwarzanie liczb tekstowych & \code{from_chars}, buforowanie, pomiar narzutów. \\
+Ścieżki i metadane & \code{filesystem}, obsługa \code{error_code} i wyjątków. \\
+API odczytujące tekst & \code{string_view}, pod warunkiem poprawnego czasu życia. \\
+Trwałe dane binarne & Wersjonowany format; nie bezpośredni zapis struktur. \\
+Unicode i operacje językowe & Walidacja UTF-8 i wyspecjalizowana biblioteka. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\nota{Trzy częste błędy to: \code{while(!eof())}, ignorowanie błędu
+zapisu oraz zachowywanie \code{string_view} do zniszczonego bufora.
+Z kolei w kodzie wrażliwym na bezpieczeństwo samo sprawdzenie, czy
+ścieżka istnieje, nie zapewnia bezpiecznego otwarcia.}
+
+\section*{Literatura i dokumentacja}
+\addcontentsline{toc}{section}{Literatura i dokumentacja}
+\begingroup\sloppy
+\begin{itemize}
+\item \url{https://en.cppreference.com/w/cpp/io} --- strumienie i ich stany.
+\item \url{https://en.cppreference.com/w/cpp/filesystem} --- \code{filesystem}.
+\item \url{https://en.cppreference.com/w/cpp/utility/from_chars} --- parsowanie liczb.
+\item \url{https://en.cppreference.com/w/cpp/string/basic_string_view} --- widoki tekstowe.
+\item \url{https://en.cppreference.com/w/cpp/utility/format/format} --- formatowanie.
+\item The Unicode Consortium, \emph{The Unicode Standard}, \url{https://unicode.org/standard/standard.html}.
+\end{itemize}
+\endgroup
