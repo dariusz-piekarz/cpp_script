@@ -1,0 +1,1195 @@
+% Rozdzial 17 do skryptu "Nowoczesny C++" (C++20).
+% Plik zawiera wylacznie tresc rozdzialu: bez \documentclass i \begin{document}.
+% Wymaga pakietow: listings, amsmath, amssymb, booktabs, tabularx,
+% array, enumitem, hyperref; makr \code, \term, \nota z dotychczasowego skryptu.
+% Uzycie: \input{rozdzial_17_kompilacja_linkowanie_abi_moduly_cpp.tex}
+% Komendy powloki sa przeznaczone glownie dla GCC/Clang na Linux/ELF;
+% roznice Windows/MSVC i macOS zaznaczono w tekscie.
+
+\chapter{Kompilacja, linkowanie, ABI i moduły C++20}
+\label{chap:cpp17-build-abi-modules}
+
+\section{Dlaczego trzeba rozumieć proces budowania?}
+
+W~poprzednich rozdziałach projektowaliśmy klasy, szablony, mechanizmy
+zarządzania pamięcią i~współbieżność. Dopóki cały program mieści się
+w~jednym pliku, wystarcza zwykle wywołanie \code{g++ main.cpp -o app}.
+W~realnym projekcie kod dzieli się jednak na dziesiątki lub tysiące
+\emph{jednostek translacji}, biblioteki zewnętrzne i~moduły. To wtedy
+pojawiają się komunikaty \code{undefined reference}, \code{multiple definition},
+konflikty wersji bibliotek, długi czas budowania oraz błędy ujawniające
+się dopiero po wymianie biblioteki współdzielonej.
+
+Musimy rozdzielić trzy różne zagadnienia:
+\begin{description}[style=nextline]
+\item[Poprawność programu w~języku C++]
+Czy deklaracje, definicje, typy i~wywołania spełniają reguły C++,
+w~szczególności \emph{One Definition Rule} (ODR)?
+\item[Model budowania i~linkowania]
+Jakie pliki są kompilowane osobno, gdzie kompilator zapisuje symbole,
+w~jakiej kolejności linker przeszukuje biblioteki oraz jak ładowane są
+biblioteki dynamiczne?
+\item[Zgodność binarna (ABI)]
+Czy dwa osobno zbudowane komponenty zgadzają się co do reprezentacji
+typów, sposobu wywoływania funkcji, nazw symboli i~pozostałych reguł
+interfejsu binarnego?
+\end{description}
+
+\nota{Norma ISO C++ opisuje semantykę programu, ale nie narzuca jednego
+formatu pliku obiektowego, konwencji \emph{name mangling}, organizacji
+bibliotek \code{.so}/\code{.dll} ani poleceń linkera. Poniżej
+odróżniamy reguły języka od typowych rozwiązań narzędziowych.}
+
+\section{Od pliku źródłowego do programu}
+\label{sec:cpp17-pipeline}
+
+\subsection{Preprocesor, kompilator, asembler, linker i~loader}
+
+W~uproszczeniu klasyczny projekt z~nagłówkami przechodzi przez etapy:
+\[
+\begin{aligned}
+\text{źródła i nagłówki}&\ \longrightarrow\ \text{preprocessing}
+\ \longrightarrow\ \text{kompilacja}\\
+&\phantom{\ \longrightarrow\ }\longrightarrow\ \text{plik obiektowy}
+\ \longrightarrow\ \text{linkowanie}
+\ \longrightarrow\ \text{program}.
+\end{aligned}
+\]
+
+Na niektórych platformach kompilator wytwarza tekst asemblerowy
+(\code{.s}) jako etap pośredni; w~innych przejście do kodu maszynowego
+jest zintegrowane. Linkowanie może odbywać się przy budowaniu programu,
+a~dodatkowe rozwiązywanie symboli może następować w~czasie ładowania
+lub później.
+
+Prześledźmy etapy na samodzielnym programie.
+
+\begin{lstlisting}[caption={Plik hello.cpp: prosty program do obserwowania kompilacji.}]
+#include <iostream>
+
+int twice(int x) { return 2 * x; }
+
+int main() {
+    std::cout << twice(21) << '\n';
+}
+\end{lstlisting}
+
+\begin{lstlisting}[language=bash,caption={Wybrane etapy budowania przy uzyciu GCC/Clang.}]
+g++ -std=c++20 -E hello.cpp -o hello.ii  # Preprocesor
+# Produkt poprzedniego etapu moze byc duzy.
+g++ -std=c++20 -S hello.cpp -o hello.s   # Asembler
+
+g++ -std=c++20 -c hello.cpp -o hello.o   # Kod obiektowy
+g++ hello.o -o hello                      # Linkowanie
+./hello                                   # 42
+\end{lstlisting}
+
+Opcja \code{-c} nie tworzy wykonywalnego programu; produkuje plik
+obiektowy, który może zawierać nierozwiązane odwołania do symboli
+pochodzących z~innych jednostek translacji. Polecenie \code{-S}
+kończy budowanie na asemblerze, a~\code{-E} na wstępnym przetwarzaniu.
+Warto odróżnić program sterujący kompilacją (np.~\code{g++}) od samego
+frontendu C++, asemblera i~linkera.
+
+\subsection{Pliki obiektowe, symbole i~relokacje}
+
+Plik obiektowy zawiera zwykle kod maszynowy, dane, tablice symboli
+oraz \emph{relokacje}, czyli informacje, które adresy muszą zostać
+skorygowane po ustaleniu ostatecznego układu programu. W~środowisku
+Linux powszechny jest format ELF; Windows używa PE/COFF, a~macOS
+Mach-O. Szczegóły tych formatów nie są częścią języka C++.
+
+\begin{lstlisting}[language=bash,caption={Ogladanie symboli i relokacji (Linux/ELF).}]
+nm -C hello.o                 # Symbole; -C demangluje nazwy C++
+readelf -Ws hello.o          # Tablica symboli ELF
+readelf -r hello.o           # Relokacje
+objdump -drC hello.o         # Asembler i relokacje
+\end{lstlisting}
+
+Przykładowo litera \code{T} w~typowym wyjściu \code{nm} informuje
+o~symbolu definiowanym w~sekcji kodu, a~\code{U} o~symbolu
+niezdefiniowanym w~danym obiekcie, który trzeba rozwiązać. Nie
+należy traktować oznaczeń \code{nm} jako przenośnej własności C++.
+
+\subsection{Jednostka translacji i~kompilacja oddzielna}
+
+W~tradycyjnym modelu \emph{jednostka translacji} (\emph{translation unit},
+TU) powstaje z~pliku źródłowego po uwzględnieniu dyrektyw preprocesora,
+w~szczególności zawartości dołączanych nagłówków. Każda TU jest
+analizowana niezależnie, a~linker łączy otrzymane obiekty.
+
+Rozważmy projekt:
+\begin{lstlisting}[caption={Trzy pliki klasycznego projektu C++: API, implementacja i klient.}]
+// Plik: math.hpp
+#ifndef CPP17_MATH_HPP
+#define CPP17_MATH_HPP
+int square(int x);
+#endif
+
+// Plik: math.cpp
+#include "math.hpp"
+int square(int x) { return x * x; }
+
+// Plik: main.cpp
+#include "math.hpp"
+#include <iostream>
+int main() { std::cout << square(7) << '\n'; }
+\end{lstlisting}
+
+\begin{lstlisting}[language=bash,caption={Niezalezne budowanie TU i koncowe linkowanie.}]
+g++ -std=c++20 -Wall -Wextra -c math.cpp -o math.o
+g++ -std=c++20 -Wall -Wextra -c main.cpp -o main.o
+g++ main.o math.o -o app
+./app                        # 49
+\end{lstlisting}
+
+\code{math.hpp} dostarcza deklarację klientowi i~implementacji,
+ale nie jest zwykle oddzielnym obiektem linkowanym. Zmiana samego
+\code{math.cpp} nie musi wymuszać ponownej kompilacji \code{main.cpp},
+o~ile nie zmienił się kontrakt w~nagłówku lub pozostałe zależności.
+
+\subsection{Przykładowe komendy w~MSVC}
+
+W~\emph{Developer Command Prompt for Visual Studio} można zbudować
+analogiczny przykład za pomocą \code{cl.exe} i~\code{link.exe}:
+
+\begin{lstlisting}[language=bash,caption={Kompilacja dwóch plików w środowisku MSVC/Windows.}]
+cl /std:c++20 /EHsc /c math.cpp
+cl /std:c++20 /EHsc /c main.cpp
+link main.obj math.obj /OUT:app.exe
+app.exe
+\end{lstlisting}
+
+Przy budowaniu programów C++ w~Visual Studio warto również
+kontrolować zgodność wersji MSVC, ustawienia biblioteki uruchomieniowej
+(np.~\code{/MD} wobec \code{/MT}) i~konfigurację Debug/Release.
+Takie flagi nie mają bezpośrednich odpowiedników narzuconych przez
+standard języka; należą do konkretnego środowiska.
+
+\section{Nagłówki, makra i~zasada jednej definicji}
+\label{sec:cpp17-headers-odr}
+
+\subsection{Include guards i~\texttt{\#pragma once}}
+
+Zawartość \code{\#include} jest w~uproszczeniu wstawiana do źródła
+przez preprocesor. Wielokrotne dołączenie tego samego nagłówka
+w~jednej TU mogłoby więc prowadzić do powtórzenia definicji klasy.
+Chronimy się przez \emph{include guard}:
+
+\begin{lstlisting}[caption={Klasyczna os?ona nag?owka.}]
+#ifndef LIB_WIDGET_HPP
+#define LIB_WIDGET_HPP
+
+struct Widget {
+    int value{};
+};
+
+#endif // LIB_WIDGET_HPP
+\end{lstlisting}
+
+W~praktyce popularna jest też dyrektywa \code{\#pragma once},
+obsługiwana przez najważniejsze kompilatory, lecz niestandaryzowana
+przez ISO C++. Oba rozwiązania chronią \emph{jedną TU} przed
+powtórnym dołączeniem pliku. Nie rozwiązują automatycznie problemu
+\emph{wielu definicji tego samego nie-inline symbolu w~różnych TU}.
+
+\subsection{ODR: deklaracja kontra definicja}
+
+Deklaracja wprowadza nazwę i~informację o~typie, natomiast definicja
+zwykle dostarcza byt danej funkcji lub obiektu. Deklaracji pewnej
+funkcji może być wiele, ale \emph{nie-inline} funkcja z~zewnętrzną
+łącznością, używana w~programie w~sposób wymagający definicji,
+powinna mieć jedną definicję w~programie. Reguły ODR zawierają
+wyjątki pozwalające na identyczne definicje w~różnych TU, np. dla
+odpowiednich funkcji \code{inline}, klas i~szablonów.
+
+\begin{lstlisting}[caption={Typowa pu?apka: definicja zwyk?ej funkcji w nag?owku.}]
+// BAD: wrong.hpp, dolaczony do dwoch plikow .cpp
+int twice(int x) { return 2 * x; }
+// Dwie zewnetrzne definicje -> naruszenie ODR.
+\end{lstlisting}
+
+\begin{lstlisting}[caption={Definicja inline przeznaczona do nag?owka.}]
+// Plik: twice.hpp
+#pragma once
+inline int twice(int x) { return 2 * x; }
+\end{lstlisting}
+
+\code{inline} nie nakazuje kompilatorowi wstawienia instrukcji funkcji
+bezpośrednio w~miejscu wywołania. Jego znaczenie dla organizacji
+programu polega przede wszystkim na dopuszczeniu definicji w~wielu TU
+zgodnie z~ODR (z~odpowiednimi warunkami). Wszystkie takie definicje
+muszą być zgodne i~spełniać reguły ODR; samo dopisanie \code{inline}
+nie naprawia różniących się implementacji w~dwóch plikach.
+
+\subsection{Zmienne \texttt{extern}, \texttt{inline}, \texttt{const} i~\texttt{static}}
+
+\begin{lstlisting}[caption={Jedna definicja zmiennej globalnej, wiele deklaracji.}]
+// Plik: settings.hpp
+#pragma once
+extern int request_limit;       // Tylko deklaracja
+
+// Plik: settings.cpp
+#include "settings.hpp"
+int request_limit = 100;        // Definicja
+
+// Plik: main.cpp
+#include "settings.hpp"
+int main() { return request_limit == 100 ? 0 : 1; }
+\end{lstlisting}
+
+Od C++17 w~nagłówkach można również definiować \emph{zmienne inline}:
+\begin{lstlisting}[caption={Zmienna inline w nag?owku (C++17).}]
+#pragma once
+inline constexpr int default_timeout_ms = 250;
+inline int global_counter = 0;
+\end{lstlisting}
+
+W~tym przypadku odpowiednie definicje we wszystkich TU mogą
+wskazywać na ten sam obiekt o~zewnętrznej łączności. W~kontraście
+zmienna \code{const} zdefiniowana w~przestrzeni nazw bez \code{extern}
+ma w~typowym przypadku łączność wewnętrzną; oddzielne TU mogą mieć
+wówczas odrębne egzemplarze. \code{static} na poziomie przestrzeni
+nazw także zapewnia łączność wewnętrzną, lecz na współczesnym C++
+zwykle preferujemy anonimową przestrzeń nazw.
+
+\begin{lstlisting}[caption={Nazwy pomocnicze ograniczone do jednej TU.}]
+// Plik: helper.cpp
+namespace {
+    int internal_counter = 0;
+    int twice_local(int x) { return x * 2; }
+}
+
+int perform(int x) {
+    ++internal_counter;
+    return twice_local(x);
+}
+\end{lstlisting}
+
+\subsection{Szablony: dlaczego definicje zwykle znajdują się w~nagłówkach?}
+
+Kompilator instancjuje szablon dla określonych argumentów typowych
+w~miejscu, w~którym wymagana jest jego definicja. Samo udostępnienie
+deklaracji z~pliku \code{.hpp} i~ukrycie ogólnej definicji szablonu
+w~oddzielnym \code{.cpp} może zatem prowadzić do błędu linkera.
+
+\begin{lstlisting}[caption={Najprostszy, tradycyjny sposob udostepniania szablonu.}]
+// Plik: multiply.hpp
+#pragma once
+
+template<class T>
+T multiply(T a, T b) {
+    return a * b;
+}
+\end{lstlisting}
+
+Można także jawnie instancjować \emph{konkretne} typy w~pliku
+implementacji. Oddzielne jednostki translacji nie muszą wtedy
+instancjować tego samego kodu niezależnie:
+
+\begin{lstlisting}[caption={Jawna instancjacja okreslonego wariantu szablonu.}]
+// Plik: operation.hpp
+#pragma once
+template<class T>
+T add(T a, T b);
+extern template int add<int>(int, int);
+
+// Plik: operation.cpp
+#include "operation.hpp"
+template<class T>
+T add(T a, T b) { return a + b; }
+template int add<int>(int, int);
+
+// Plik: main.cpp
+#include "operation.hpp"
+int main() { return add(10, 32) == 42 ? 0 : 1; }
+\end{lstlisting}
+
+W~tym przykładzie klient może korzystać z~\code{add<int>}, ale
+instancjacja innych typów nie zostaje mu udostępniona automatycznie.
+Definicje szablonów umieszczane w~interfejsach modułów podlegają
+nieco innemu modelowi widoczności, który omówimy dalej.
+
+\subsection{Naruszenie ODR bez łatwego komunikatu}
+
+Nie wszystkie naruszenia ODR skutkują natychmiastowym błędem
+linkera. Szczególnie groźne jest warunkowe definiowanie tej samej
+klasy w~dwóch TU w~inny sposób, np. przy użyciu sprzecznych
+makr kompilacji:
+
+\begin{lstlisting}[caption={Przyk?ad niezgodnych definicji typu (celowo b?edny).}]
+// Plik: config.hpp
+struct Config {
+#ifdef EXTRA_FIELD
+    int extra;
+#endif
+    int value;
+};
+
+// Jedna TU z -DEXTRA_FIELD, inna bez tej flagi:
+// rozne definicje klasy -> naruszenie ODR.
+\end{lstlisting}
+
+Taki program może się nawet zlinkować, lecz pozostaje niepoprawny.
+Dlatego opcje zmieniające publiczne definicje klas i~struktur muszą
+być spójne we wszystkich TU danego programu.
+
+\section{Symbole, łączność i~typowe błędy linkera}
+\label{sec:cpp17-symbols}
+
+\subsection{Łączność a~widoczność symbolu}
+
+\emph{Linkage} w~języku C++ mówi, czy deklaracje w~różnych zakresach
+i~TU mogą nazywać tę samą encję. W~praktyce spotykamy między innymi
+łączność zewnętrzną, wewnętrzną, a~w~jednostkach modułów także
+łączność modułową. Nie należy jednak utożsamiać tej własności
+języka z~\emph{visibility} na poziomie ELF ani z~eksportem symbolu
+z~biblioteki dynamicznej.
+
+\begin{center}
+\begin{tabularx}{\textwidth}{@{}lX@{}}
+\toprule
+Mechanizm & Co określa?\\
+\midrule
+\code{static} w~przestrzeni nazw & Łączność wewnętrzna nazwy w~TU.\\
+\code{extern} & M.in. deklarowanie obiektu definiowanego w~innym miejscu.\\
+Anonimowa przestrzeń nazw & Wewnętrzna łączność elementów pomocniczych.\\
+\code{inline} & Warunki wielokrotnych definicji zgodnych z~ODR.\\
+\code{-fvisibility=hidden} & Domyślna widoczność symboli w~typowych bibliotekach ELF.\\
+\code{__declspec(dllexport)} & Udostępnianie symboli biblioteki DLL w~MSVC.\\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\subsection{Name mangling i~\texttt{extern~\textquotedbl{}C\textquotedbl{}}}
+
+C++ dopuszcza przeciążanie funkcji, przestrzenie nazw oraz rozbudowane
+typy szablonowe. Aby móc odróżniać symbole po linkowaniu,
+implementacje zwykle kodują część tych informacji w~nazwach
+binarnych (\emph{name mangling}). Dokładny sposób kodowania nie jest
+ustalony przez ISO C++.
+
+\begin{lstlisting}[caption={Przeciazanie i punkt wejscia C ABI.}]
+namespace calc {
+    int f(int x) { return x + 1; }
+    double f(double x) { return x + 1.0; }
+}
+
+extern "C" int api_add(int a, int b) {
+    return a + b;
+}
+\end{lstlisting}
+
+Na typowej platformie ELF/Itanium ABI funkcje przeciążone otrzymują
+różne symbole zakodowane przez kompilator, podczas gdy \code{api_add}
+ma nazwę zgodną z~łącznością języka C. Nie jest to gwarancja pełnej
+zgodności ABI z~dowolną biblioteką C: znaczenie mają także deklaracje
+typów i~konwencja wywołania ustalona dla danej platformy.
+
+\begin{lstlisting}[language=bash,caption={Demanglowanie i inspekcja symboli (przyk?ady narzedziowe).}]
+g++ -std=c++20 -c overload.cpp -o overload.o
+nm overload.o
+nm -C overload.o
+c++filt _Z3fooi      # Ilustracja popularnego schematu manglingu
+\end{lstlisting}
+
+\subsection{\texttt{undefined reference}, \texttt{multiple definition}}
+
+Błąd \code{undefined reference} oznacza zwykle, że linker znalazł
+odwołanie do symbolu, lecz nie znalazł odpowiedniej definicji.
+Przykładowe przyczyny to pominięcie \code{math.o}, pominięcie
+biblioteki, niezgodny podpis funkcji albo brak jawnej instancjacji
+szablonu. Z~kolei \code{multiple definition} sugeruje m.in. zwykłą
+funkcję lub zmienną zdefiniowaną w~nagłówku dołączanym do wielu TU.
+
+Przydatna lista kontrolna:
+\begin{enumerate}
+\item Sprawdź, czy wszystkie wymagane \code{.cpp} są kompilowane i~linkowane.
+\item Porównaj podpis funkcji: przestrzeń nazw, typy, kwalifikatory i~ABI.
+\item Upewnij się, że deklaracja i~definicja pochodzą z~tego samego interfejsu.
+\item Sprawdź kolejność bibliotek statycznych i~ich zależności.
+\item Dla klas polimorficznych sprawdź brakujące definicje funkcji
+      wirtualnych, w~tym destruktora wirtualnego, który może wymagać
+      definicji nawet jako funkcja \code{= 0}.
+\item Dla szablonów sprawdź dostępność definicji w~punkcie instancjacji
+      lub odpowiednią instancjację jawną.
+\end{enumerate}
+
+\section{Biblioteki statyczne}
+\label{sec:cpp17-static-libraries}
+
+\emph{Biblioteka statyczna} jest typowo archiwum plików obiektowych.
+W~Linux ma zwykle rozszerzenie \code{.a}, w~MSVC \code{.lib}.
+Biblioteka sama nie jest osobnym procesem ani automatycznie tworzonym
+wątkiem. Linker wybiera z~niej obiekty potrzebne do rozwiązania
+zależności i~tworzy wynikowy program lub inną bibliotekę.
+
+\begin{lstlisting}[language=bash,caption={Budowanie i uzycie biblioteki statycznej (Linux/GCC).}]
+g++ -std=c++20 -O2 -c math.cpp -o math.o
+ar rcs libmathstuff.a math.o
+
+g++ -std=c++20 -O2 -c main.cpp -o main.o
+g++ main.o -L. -lmathstuff -o app
+./app
+\end{lstlisting}
+
+W~typowym poleceniu GNU linkera biblioteki archiwalne warto umieszczać
+\emph{po} obiektach, które odwołują się do ich symboli. Przykładowo
+\code{g++ main.o -lmathstuff} jest zazwyczaj właściwszym porządkiem
+niż \code{g++ -lmathstuff main.o}. Linkowanie zależności cyklicznych
+bibliotek statycznych może wymagać ponownego wskazania biblioteki
+lub użycia grupy linkera (np.~\code{--start-group}/\code{--end-group}
+w~GNU ld); lepiej jednak unikać takich zależności architektonicznie.
+
+\nota{Statyczna biblioteka nie oznacza automatycznie w~pełni
+statycznego programu. Aplikacja może dalej korzystać z~bibliotek
+współdzielonych systemu i~standardowej biblioteki C++.}
+
+\section{Biblioteki współdzielone i~dynamiczne ładowanie}
+\label{sec:cpp17-shared-libraries}
+
+\subsection{Budowanie biblioteki współdzielonej}
+
+Na systemach ELF biblioteki współdzielone są zazwyczaj plikami
+\code{.so}. Obiekty wykorzystywane w~takich bibliotekach zwykle
+buduje się jako kod niezależny od położenia w~pamięci (\emph{PIC}).
+
+\begin{lstlisting}[language=bash,caption={Biblioteka .so oraz program klienta (Linux/GCC).}]
+g++ -std=c++20 -O2 -fPIC -c math.cpp -o math_pic.o
+g++ -shared math_pic.o -o libmathstuff.so
+
+g++ -std=c++20 -O2 main.cpp -L. -lmathstuff \
+    '-Wl,-rpath,$ORIGIN' -o app
+./app
+\end{lstlisting}
+
+Wyrażenie \code{\$ORIGIN} odnosi się w~typowym loaderze ELF do
+katalogu, w~którym znajduje się ładowany obiekt. Apostrofy w~poleceniu
+powłoki zapobiegają wcześniejszej ekspansji \code{\$ORIGIN} przez
+powłokę. W~projekcie produkcyjnym należy przemyśleć ścieżki
+instalacyjne, pakowanie bibliotek i~bezpieczeństwo ładowania.
+
+Biblioteki współdzielone pozwalają wielu procesom mapować ich kod
+z~tego samego pliku oraz wymieniać implementację bez konieczności
+pełnego linkowania programu w~czasie jego budowania. Nie gwarantuje
+to jednak, że \emph{dowolna} nowa wersja zachowa zgodność ABI.
+
+\subsection{Wyszukiwanie bibliotek: RPATH/RUNPATH, SONAME}
+
+Na Linux/ELF linker i~loader korzystają z~mechanizmów takich jak
+\emph{SONAME}, \emph{RPATH} i~\emph{RUNPATH}. Reguły wyszukiwania
+zależą od systemu i~konfiguracji; środowisko wykonania może również
+uwzględniać ścieżki systemowe lub zmienne środowiskowe.
+
+\begin{lstlisting}[language=bash,caption={Diagnostyka zaleznosci dynamicznych (Linux).}]
+readelf -d ./app | grep -E 'NEEDED|RPATH|RUNPATH'
+ldd ./app                  # Tylko dla zaufanych plikow
+readelf -Ws libmathstuff.so
+\end{lstlisting}
+
+Programów nieznanego pochodzenia nie należy lekkomyślnie przekazywać
+do narzędzi, które mogą uruchamiać kod lub loader; do statycznej
+inspekcji lepiej nadaje się \code{readelf}.
+
+\subsection{Eksportowanie symboli i~kontrola API}
+
+Domyślne eksportowanie zbyt wielu symboli może powodować kolizje
+nazw i~powiększać powierzchnię ABI. W~ELF można budować bibliotekę
+z~\code{-fvisibility=hidden}, a~publiczne symbole jawnie oznaczać:
+
+\begin{lstlisting}[caption={Przenosne w granicach GCC/Clang/MSVC makro eksportu.}]
+// Plik: api.hpp
+#pragma once
+
+#if defined(_WIN32)
+  #if defined(MYLIB_BUILD_SHARED)
+    #define MYLIB_API __declspec(dllexport)
+  #elif defined(MYLIB_USE_SHARED)
+    #define MYLIB_API __declspec(dllimport)
+  #else
+    #define MYLIB_API
+  #endif
+#elif defined(__GNUC__) || defined(__clang__)
+  #define MYLIB_API __attribute__((visibility("default")))
+#else
+  #define MYLIB_API
+#endif
+
+extern "C" MYLIB_API int mylib_add(int, int);
+\end{lstlisting}
+
+W~MSVC zwykle stosuje się projekt DLL oraz odpowiednią bibliotekę
+importową; na macOS biblioteki mają najczęściej rozszerzenie
+\code{.dylib}. Flagi \code{-fPIC}, \code{-shared} i~\code{-Wl,...}
+w~powyższej postaci dotyczą konkretnego toolchainu, nie ISO C++.
+
+\subsection{\texttt{dlopen}, \texttt{dlsym} i~granica interfejsu wtyczki}
+
+Bibliotekę można także załadować podczas działania procesu, bez
+linkowania jej wprost z~aplikacją. Na POSIX często używa się
+\code{dlopen}/\code{dlsym}, natomiast na Windows odpowiedników
+\code{LoadLibrary}/\code{GetProcAddress}.
+
+\begin{lstlisting}[caption={Prosta wtyczka C ABI: biblioteka i klient POSIX (dwa pliki).}]
+// Plik: plugin.cpp
+extern "C" int plugin_square(int x) {
+    return x * x;
+}
+
+// Plik: loader.cpp
+#include <dlfcn.h>
+#include <iostream>
+#include <stdexcept>
+
+int main() {
+    void* lib = dlopen("./libplugin.so", RTLD_NOW);
+    if (!lib) throw std::runtime_error(dlerror());
+
+    using Fn = int (*)(int);
+    void* address = dlsym(lib, "plugin_square");
+    if (!address) {
+        dlclose(lib);
+        throw std::runtime_error("Missing plugin_square");
+    }
+
+    // POSIX dopuszcza konwersje dlsym -> wskaznik do funkcji.
+    Fn square = reinterpret_cast<Fn>(address);
+    std::cout << square(7) << '\n'; // 49
+    dlclose(lib);
+}
+\end{lstlisting}
+
+\begin{lstlisting}[language=bash,caption={Budowanie przyk?adu wtyczki (Linux/ELF).}]
+g++ -std=c++20 -fPIC -shared plugin.cpp -o libplugin.so
+g++ -std=c++20 loader.cpp -ldl -o loader
+./loader
+\end{lstlisting}
+
+\nota{To przykład dla POSIX, a~nie w~pełni przenośna konstrukcja
+ISO C++. Również rzutowanie wyniku \code{dlsym} na wskaźnik funkcji
+opiera się na wymaganiach POSIX, a~nie na ogólnej gwarancji C++.
+Dodatkowo nie wolno wyładowywać biblioteki, dopóki jakakolwiek funkcja
+lub obiekt z~tej biblioteki nadal może być użyty. Przy bardziej
+złożonych wtyczkach potrzebny jest kontrakt wersji ABI i~zarządzania
+czasem życia.}
+
+\section{ABI --- Application Binary Interface}
+\label{sec:cpp17-abi}
+
+\subsection{API a~ABI: dwa różne kontrakty}
+
+\emph{API} opisuje przede wszystkim dostępne nazwy, typy, funkcje
+i~semantykę na poziomie źródła. \emph{ABI} określa, jak te elementy
+reprezentowane są w~kodzie maszynowym. ABI obejmuje między innymi:
+\begin{itemize}
+\item konwencje wywołania: przekazywanie parametrów, wartość zwracana,
+      rejestry i~ułożenie stosu;
+\item reprezentację i~wyrównanie obiektów, w~tym pól klas;
+\item nazwy symboli C++, RTTI, mechanizmy wyjątków i~wirtualnych wywołań;
+\item reguły udostępniania i~ładowania symboli bibliotek;
+\item ABI standardowej biblioteki oraz ustawienia kompilatora.
+\end{itemize}
+
+Dwie biblioteki mogą być zgodne źródłowo i~jednocześnie binarnie
+niezgodne. W~szczególności identyczny nagłówek nie oznacza, że plik
+\code{.so} zbudowany innym toolchainem lub z~innym zestawem opcji
+na pewno współpracuje z~aplikacją.
+
+\subsection{Zmiana układu obiektu łamie zgodność binarną}
+
+Rozważmy klasę publiczną:
+\begin{lstlisting}[caption={Zmiana prywatnych pol nadal moze zmienic ABI.}]
+// Wersja biblioteki 1
+class Record {
+    int id_{};
+public:
+    int id() const;
+};
+
+// Wersja biblioteki 2
+class Record {
+    int id_{};
+    double score_{}; // Nawet prywatne pole zmienia uklad.
+public:
+    int id() const;
+};
+\end{lstlisting}
+
+Klient kompiluje np.~\code{sizeof(Record)} według nagłówka,
+który widział podczas kompilacji. Gdy zamienimy jedynie bibliotekę
+na wersję z~innym układem \code{Record}, może dojść do naruszenia
+kontraktu pamięci, nawet jeśli \code{id()} nadal ma taki sam podpis.
+Podobne ryzyko dotyczy dodawania wirtualnych funkcji i~zmian
+hierarchii dziedziczenia.
+
+\subsection{Wzorzec PImpl}
+
+Aby zmniejszyć zależności kompilacyjne i~ukryć układ implementacji,
+można przechowywać wskaźnik do niekompletnego typu. Dzięki temu
+zmiana \emph{pól implementacyjnych} często nie zmienia rozmiaru
+publicznego obiektu.
+
+\begin{lstlisting}[caption={PImpl: plik widget.hpp.}]
+#pragma once
+#include <memory>
+
+class Widget {
+public:
+    Widget();
+    ~Widget();
+
+    Widget(Widget&&) noexcept;
+    Widget& operator=(Widget&&) noexcept;
+
+    Widget(const Widget&) = delete;
+    Widget& operator=(const Widget&) = delete;
+
+    int value() const;
+    void set_value(int value);
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
+\end{lstlisting}
+
+\begin{lstlisting}[caption={PImpl: plik widget.cpp.}]
+#include "widget.hpp"
+#include <utility>
+
+struct Widget::Impl {
+    int value = 0;
+    // Tu moga pojawiac sie dalsze pola.
+};
+
+Widget::Widget() : impl_(std::make_unique<Impl>()) {}
+Widget::~Widget() = default;
+Widget::Widget(Widget&&) noexcept = default;
+Widget& Widget::operator=(Widget&&) noexcept = default;
+
+int Widget::value() const { return impl_->value; }
+void Widget::set_value(int value) { impl_->value = value; }
+\end{lstlisting}
+
+Destruktor jest zdefiniowany w~\code{widget.cpp}, gdzie \code{Impl}
+jest kompletny; to istotne przy \code{std::unique_ptr<Impl>}.
+PImpl nie zapewnia automatycznie pełnej stabilności ABI: nadal
+liczy się zgodność kompilatora, standardowej biblioteki, eksportu
+symboli, konwencji wywołania i~pozostałych publicznych deklaracji.
+Dodatkowy wskaźnik i~alokacja na stercie mogą zwiększać koszt dostępu.
+
+\subsection{C ABI jako ostrożna granica interoperacyjności}
+
+Dla wtyczek i~bibliotek wykorzystywanych z~różnych języków często
+projektuje się wąski interfejs oparty na funkcjach \code{extern "C"}
+oraz nieprzezroczystych uchwytach (\emph{opaque handles}). Zamiast
+przekazywać \code{std::string} lub klasy z~funkcjami wirtualnymi,
+przekazuje się proste typy i~wskaźniki.
+
+\begin{lstlisting}[caption={Przyk?adowy szkic stabilniejszego interfejsu binarnego.}]
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+struct engine_handle;
+
+engine_handle* engine_create(void);
+void engine_destroy(engine_handle* p);
+int engine_eval(engine_handle* p, double x, double* result);
+
+#ifdef __cplusplus
+}
+#endif
+\end{lstlisting}
+
+Podpis funkcji nadal wymaga uzgodnienia ABI danej platformy,
+konwencji wywołania i~kontraktu błędów. Przekraczanie takiej granicy
+wyjątkami C++, pamięcią zwalnianą przez niezgodny alokator lub obiektami
+standardowej biblioteki jest niebezpieczne. Bezpieczniej zwracać
+kody błędu, a~alokację i~zwalnianie łączyć w~pary po tej samej
+stronie interfejsu.
+
+\subsection{Wersje kompilatora i~biblioteki standardowej}
+
+Istnieją różne rodziny ABI C++ (np. rodzina Itanium ABI stosowana na
+wielu platformach uniksowych oraz ABI MSVC w~Windows). Nawet w~ramach
+jednej rodziny znaczenie mają flagi kompilatora, ustawienia standardowej
+biblioteki, opcje wyjątków, RTTI i~ABI konkretnych typów.
+Przykładowo GCC/libstdc++ używa mechanizmu tzw. \emph{dual ABI}
+dla niektórych typów standardowych (m.in. \code{std::string}); mieszanie
+niezgodnych ustawień może skutkować błędami linkera lub działania.
+Nie należy zakładać, że biblioteki zbudowane dowolnymi wersjami
+GCC, Clanga i~MSVC są wymienne binarnie.
+
+\section{System budowania: CMake i~projekt wieloplikowy}
+\label{sec:cpp17-cmake}
+
+\subsection{Dlaczego targety są ważniejsze niż globalne flagi?}
+
+Ręczne wywoływanie kompilatora dobrze tłumaczy mechanikę, lecz dla
+większych projektów potrzebujemy grafu zależności, wariantów
+Debug/Release, testów i~kontroli opcji kompilatora. Współczesny
+CMake modeluje budowanie przez \emph{targety}: bibliotekę, program,
+interfejsową bibliotekę nagłówkową i~ich właściwości.
+
+Przykładowa struktura:
+\begin{lstlisting}[caption={Uk?ad plikow klasycznej biblioteki CMake.}]
+project/
+  CMakeLists.txt
+  include/
+    mathstuff/math.hpp
+  src/
+    math.cpp
+    main.cpp
+\end{lstlisting}
+
+W~tej konkretnej strukturze pliki źródłowe mogą zaczynać się od
+\code{\#include "mathstuff/math.hpp"}, a~\code{main.cpp} również
+korzysta z~tej samej ścieżki nagłówka. To dzięki
+\code{target_include_directories} kompilator znajduje katalog
+\code{include} bez wpisywania ręcznych flag \code{-I}.
+
+\begin{lstlisting}[language={},caption={CMakeLists.txt dla klasycznej biblioteki.}]
+cmake_minimum_required(VERSION 3.20)
+project(MathStuff LANGUAGES CXX)
+
+add_library(mathstuff STATIC src/math.cpp)
+target_compile_features(mathstuff PUBLIC cxx_std_20)
+target_include_directories(mathstuff PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+)
+
+add_executable(app src/main.cpp)
+target_link_libraries(app PRIVATE mathstuff)
+\end{lstlisting}
+
+\begin{lstlisting}[language=bash,caption={Konfigurowanie i budowanie projektu z CMake.}]
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+cmake --build build -j
+./build/app
+\end{lstlisting}
+
+\code{PRIVATE}, \code{PUBLIC} i~\code{INTERFACE} określają
+\emph{propagację wymagań użycia} (usage requirements) między
+targetami:
+\begin{center}
+\begin{tabularx}{\textwidth}{@{}lX@{}}
+\toprule
+Słowo & Znaczenie\\
+\midrule
+\code{PRIVATE} & Wymaganie tylko na potrzeby budowania danego targetu.\\
+\code{INTERFACE} & Wymaganie wyłącznie dla jego konsumentów.\\
+\code{PUBLIC} & Wymaganie dla targetu i~jego konsumentów.\\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+Gdy publiczny nagłówek biblioteki wymaga pewnego katalogu
+nagłówków, ten katalog powinien zwykle propagować się do klientów.
+Gdy jednak biblioteka korzysta z~zależności jedynie wewnątrz
+\code{.cpp}, często wystarcza \code{PRIVATE}. Właściwy zakres
+zależy też od tego, czy target jest biblioteką statyczną lub
+współdzieloną i~jakie zależności są konieczne przy ostatecznym
+linkowaniu.
+
+\subsection{Biblioteka nagłówkowa i~\texttt{INTERFACE}}
+
+\begin{lstlisting}[language={},caption={Header-only target i wymagania dla klientow.}]
+add_library(my_headers INTERFACE)
+target_include_directories(my_headers INTERFACE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+target_compile_features(my_headers INTERFACE cxx_std_20)
+
+add_executable(tool src/tool.cpp)
+target_link_libraries(tool PRIVATE my_headers)
+\end{lstlisting}
+
+Taki target nie tworzy archiwum \code{.a}. Reprezentuje zestaw
+wymagań i~publiczne nagłówki używane przez konsumentów.
+
+\subsection{Diagnostyka, sanitizatory, LTO i~build types}
+
+\begin{lstlisting}[language=bash,caption={Przyk?adowe flagi diagnostyczne GCC/Clang.}]
+g++ -std=c++20 -O0 -g -Wall -Wextra -Wpedantic \
+    -fsanitize=address,undefined main.cpp -o app_debug
+
+g++ -std=c++20 -O2 -flto main.cpp math.cpp -o app_lto
+\end{lstlisting}
+
+\emph{Link-Time Optimization} (LTO) może umożliwiać optymalizacje
+pomiędzy TU, np. dodatkowe wstawianie funkcji do miejsc wywołania.
+Jest to jednak kosztowna funkcja toolchainu; jej efekty zależą od
+programu i~opcji. Profilowanie i~powtarzalne pomiary są ważniejsze
+niż sam fakt włączenia \code{-O3} lub \code{-flto}.
+
+\section{Moduły C++20: nowy mechanizm organizacji kodu}
+\label{sec:cpp17-modules}
+
+\subsection{Motywacja: problem tekstowego dołączania nagłówków}
+
+W~klasycznym modelu ten sam popularny nagłówek może być parsowany
+oddzielnie w~wielu TU. Makra i~kolejność \code{\#include} wpływają
+na wynik preprocessingu. Moduły C++20 umożliwiają jawne eksportowanie
+deklaracji i~importowanie ich bez tekstowego wklejania całych
+interfejsów do każdego klienta.
+
+Zaletami modułów mogą być izolacja makr, bardziej jednoznaczne
+zależności i~krótsze czasy kompilacji. Nie ma jednak gwarancji,
+że \emph{każdy} program po migracji przyspieszy, a~wdrożenie
+wymaga wsparcia kompilatora i~systemu budowania.
+
+\subsection{Pierwszy moduł: \texttt{export module} i~\texttt{import}}
+
+Rozważmy dwa pliki:
+\begin{lstlisting}[caption={Interfejs modu?u geometry: plik geometry.cppm.}]
+export module geometry;
+
+export int square(int x) {
+    return x * x;
+}
+
+int hidden_helper(int x) {
+    return x + 1;
+}
+\end{lstlisting}
+
+\begin{lstlisting}[caption={Klient modu?u: plik main.cpp.}]
+#include <iostream>
+import geometry;
+
+int main() {
+    std::cout << square(7) << '\n'; // 49
+    // hidden_helper(7); // Nie jest eksportowana.
+}
+\end{lstlisting}
+
+\code{export module geometry;} deklaruje \emph{główną jednostkę
+interfejsu modułu} (\emph{primary module interface unit}).
+\code{export int square(...)} udostępnia deklarację klientowi.
+Samo \code{import geometry;} nie oznacza linkowania kodu funkcji
+z~powietrza: jeśli moduł generuje kod obiektowy, trzeba go również
+uwzględnić podczas linkowania.
+
+\subsection{BMI/CMI: moduł nie jest biblioteką binarną}
+
+Kompilator wytwarza dla interfejsu modułu własną reprezentację,
+często nazywaną \emph{BMI} (\emph{Binary Module Interface}) lub
+\emph{CMI} (\emph{Compiled Module Interface}). W~Clangu spotyka się
+pliki \code{.pcm}, w~GCC \code{.gcm}, a~w~MSVC pliki \code{.ifc}.
+Nie są to uniwersalne, przenośne między kompilatorami artefakty
+podobne do biblioteki \code{.a}. Importer musi znać interfejs
+przetworzony przez zgodną konfigurację kompilatora.
+
+Zależności muszą być budowane w~poprawnym porządku:
+\[
+\text{źródło interfejsu modułu}
+\longrightarrow \text{BMI/CMI}
+\longrightarrow \text{kompilacja importera}
+\longrightarrow \text{linkowanie obiektów}.
+\]
+
+\subsection{Rzeczywiste komendy: Clang i~GCC}
+
+Dla prostego modułu \code{geometry.cppm} w~Clangu obsługującym
+standardowe moduły można zastosować:
+\begin{lstlisting}[language=bash,caption={Budowanie przyk?adowego modu?u w Clangu (tryb BMI).}]
+clang++ -std=c++20 geometry.cppm --precompile -o geometry.pcm
+clang++ -std=c++20 -c geometry.pcm -o geometry.o
+clang++ -std=c++20 -fmodule-file=geometry=geometry.pcm \
+    -c main.cpp -o main.o
+clang++ geometry.o main.o -o app
+./app
+\end{lstlisting}
+
+Dla GCC~14 (wsparcie modułów C++20 było w~tej wersji nadal rozwijane)
+trzeba dodatkowo włączyć eksperymentalny mechanizm
+\code{-fmodules-ts}. W~przykładach z~GCC~14 przydatne bywa jawne
+wskazanie języka przy rozszerzeniu \code{.cppm}:
+\begin{lstlisting}[language=bash,caption={Budowanie tego samego modu?u z GCC 14.}]
+g++ -std=c++20 -fmodules-ts -x c++ -c geometry.cppm \
+    -o geometry.o
+# GCC tworzy potrzebne dane interfejsu w gcm.cache/.
+g++ -std=c++20 -fmodules-ts -c main.cpp -o main.o
+g++ geometry.o main.o -o app
+./app
+\end{lstlisting}
+
+Dokładne opcje i~formaty modułów mogą zmieniać się między wersjami
+narzędzi. W~dużym projekcie lepiej powierzyć zależności systemowi
+budowania obsługującemu skanowanie importów, zamiast ręcznie
+zarządzać plikami BMI.
+
+\subsection{Jednostka interfejsu i~jednostka implementacji}
+
+Moduł może rozdzielać interfejs od implementacji bez tradycyjnego
+nagłówka. Jednostka implementacji deklaruje \code{module name;},
+a~nie \code{export module name;}:
+
+\begin{lstlisting}[caption={Dwa pliki jednego modu?u: interface.cppm i implementation.cpp.}]
+// Plik: engine.cppm
+export module engine;
+export int run(int value);
+
+// Plik: engine.cpp
+module engine;
+int run(int value) { return 2 * value; }
+\end{lstlisting}
+
+Importer widzi tylko deklaracje eksportowane przez interfejs.
+Jednostkę implementacji również trzeba skompilować i~zlinkować.
+Konkretny system budowania musi uwzględnić fakt, że jednostka
+implementacji importuje interfejs swojego modułu niejawnie.
+
+\subsection{Global module fragment i~nagłówki klasyczne}
+
+Tradycyjny nagłówek może wymagać makr konfigurujących jego treść.
+W~takim przypadku można skorzystać z~\emph{global module fragment}:
+
+\begin{lstlisting}[caption={Global module fragment: tradycyjny include przed modu?em.}]
+module;
+#include <string>
+#include <utility>
+
+export module greeting;
+
+export std::string greet(std::string name) {
+    return "Hello " + std::move(name);
+}
+\end{lstlisting}
+
+Dyrektywa \code{module;} rozpoczyna fragment globalny, a~następna
+deklaracja \code{export module greeting;} rozpoczyna właściwą
+jednostkę modułu. Importowanie nagłówków jednostkowych przez
+\code{import <string>;} jest innym mechanizmem, tzw. \emph{header units},
+których dostępność zależy od toolchainu. Nie utożsamiajmy go z~nazwanym
+modułem standardowej biblioteki \code{import std;}.
+
+\subsection{Partycje i~ponowny eksport importu}
+
+Duży moduł można podzielić na partycje. Nazwa po dwukropku oznacza
+partycję wewnątrz jednego modułu, a~nie odrębny nazwany moduł.
+
+\begin{lstlisting}[caption={Dwie jednostki interfejsu modu?u z partycja.}]
+// Plik: math_detail.cppm
+export module mathlib:detail;
+export int triple(int x) { return 3 * x; }
+
+// Plik: mathlib.cppm
+export module mathlib;
+export import :detail;
+export int times_six(int x) { return 2 * triple(x); }
+
+// Plik: main.cpp
+import mathlib;
+int main() { return times_six(7) == 42 ? 0 : 1; }
+\end{lstlisting}
+
+Klient importuje \code{mathlib}, a~nie \code{mathlib:detail}.
+W~tym przykładzie \code{export import :detail;} re-eksportuje
+eksporty partycji. Wymaga to prawidłowej kolejności budowania
+\emph{najpierw partycji, potem głównego interfejsu, a~na końcu klienta}.
+
+\subsection{Łączność modułowa i~ODR}
+
+C++20 wprowadza reguły własności deklaracji (\emph{module ownership}).
+Deklaracje przypisane do nazwanego modułu należą do niego, a~pewne
+nieeksportowane nazwy uzyskują \emph{module linkage}. Różni się to od
+mechanicznego zastąpienia \code{\#include} przez \code{import}.
+
+Przykładowo dodanie \code{export} nie sprawia automatycznie, że
+interfejs C++ będzie zgodny ABI między kompilatorami. Ponadto
+źródłowy kod szablonów nadal musi być semantycznie dostępny
+odpowiedniemu mechanizmowi instancjacji, choć nie musi być już
+tekstowo wklejany przez \code{\#include}.
+
+\subsection{CMake i~\texttt{FILE\_SET CXX\_MODULES}}
+
+Od CMake~3.28 dostępne są mechanizmy skanowania modułów i~specjalny
+typ zbioru plików \code{CXX_MODULES}. Przykład projektu:
+
+\begin{lstlisting}[language={},caption={CMakeLists.txt projektu korzystajacego z modu?ow C++20.}]
+cmake_minimum_required(VERSION 3.28)
+project(GeometryModules LANGUAGES CXX)
+
+add_library(geometry)
+target_compile_features(geometry PUBLIC cxx_std_20)
+target_sources(geometry PUBLIC
+    FILE_SET CXX_MODULES FILES geometry.cppm
+)
+
+add_executable(app main.cpp)
+target_link_libraries(app PRIVATE geometry)
+\end{lstlisting}
+
+\begin{lstlisting}[language=bash,caption={Konfiguracja modu?ow przy uzyciu generatora Ninja.}]
+cmake -S . -B build -G Ninja
+cmake --build build
+./build/app
+\end{lstlisting}
+
+Ten przykład pokazuje \emph{składnię} CMake, ale jego zbudowanie
+wymaga zgodnego zestawu wersji CMake, kompilatora, generatora i~skanera
+zależności. W~szczególności kompilator akceptujący składnię modułów
+niekoniecznie współpracuje z~automatycznym skanowaniem w~danej
+konfiguracji CMake. Na współczesnych systemach używa się m.in.
+Ninja (co najmniej 1.11 w~typowych konfiguracjach) i~odpowiednich
+wersji Clanga lub MSVC. Obsługa modułów standardowej biblioteki oraz
+\emph{header units} ma odrębne ograniczenia.
+
+\subsection{\texttt{import std;} nie jest tym samym co \texttt{\#include}}
+
+Sam standard C++20 wprowadza językowy mechanizm modułów, ale
+\emph{nie zobowiązuje} każdej biblioteki standardowej do dostarczenia
+nazwanego modułu \code{std} w~tym standardzie. \code{import std;}
+jest standaryzowane w~C++23; obsługa zależy od kompilatora, dostawcy
+biblioteki standardowej i~wersji systemu budowania.
+
+\begin{lstlisting}[caption={Nazwany modu? standardowej biblioteki (C++23, zalezny od wsparcia).}]
+import std;
+
+int main() {
+    std::vector<int> xs{1, 2, 3};
+    std::println("size = {}", xs.size());
+}
+\end{lstlisting}
+
+Powyższy przykład wykorzystuje także \code{std::println} z~C++23.
+Nie należy automatycznie kompilować go z~\code{-std=c++20} ani
+zakładać, że \code{import std;} działa w~każdym środowisku C++23.
+
+\section{Optymalizacja procesu budowania}
+\label{sec:cpp17-build-perf}
+
+\subsection{Incremental build i~zależności nagłówkowe}
+
+Zmiana publicznego nagłówka może wymusić ponowną kompilację wielu TU,
+podczas gdy zmiana prywatnego \code{.cpp} zwykle dotyka mniejszej
+części projektu. Dlatego ograniczanie niepotrzebnych dołączeń
+nagłówków, stosowanie deklaracji wyprzedzających tam, gdzie są
+prawidłowe, i~PImpl mogą poprawiać czas budowania.
+
+Moduły zmieniają strukturę zależności, ale nie usuwają konieczności
+ich śledzenia; importer musi otrzymać aktualną reprezentację
+interfejsu modułu.
+
+\subsection{Precompiled headers, unity builds, ccache}
+
+Popularne techniki przyspieszania kompilacji to:
+\begin{description}[style=nextline]
+\item[Precompiled headers (PCH)]
+Przechowywanie wyniku parsowania stabilnych, obszernych nagłówków.
+Pomagają w~projektach z~dużą liczbą TU, ale wymagają spójności
+opcji kompilacji i~zarządzania unieważnianiem pamięci podręcznej.
+\item[Unity builds]
+Łączenie kilku plików źródłowych we wspólną TU. Może ograniczać
+narzut kompilacji, ale też ujawniać kolizje anonimowych przestrzeni
+nazw, makr i~definicji o~łączności wewnętrznej.
+\item[Compilation cache]
+Narzędzia takie jak \code{ccache} unikają ponownego wykonywania
+kompilacji, jeżeli odpowiednio zdefiniowane wejścia pozostają takie same.
+\item[Parallel build]
+Kompilowanie niezależnych TU równolegle (np. \code{cmake --build build -j})
+wykorzystuje wiele rdzeni, ale zwiększa chwilowe użycie pamięci.
+\end{description}
+
+\subsection{Powtarzalność buildów i~zależności transytywne}
+
+Dla bibliotek publicznych warto utrzymywać przejrzystą strukturę
+zależności. Przykładowo użytkownik nie powinien polegać na tym,
+że \code{\#include <vector>} ,,przypadkiem'' pojawiło się wskutek
+dołączenia innego nagłówka. Każdy nagłówek powinien zawierać
+potrzebne deklaracje w~sposób niezależny od kolejności dołączeń.
+
+Warto również zapisywać wersje kompilatora i~bibliotek, flagi
+wpływające na ABI, wariant budowania oraz sposób instalowania
+artefaktów. \emph{Reproducible builds} wymagają dodatkowo kontroli
+źródeł niedeterministyczności, np. znaczników czasu i~ścieżek
+zapisywanych w~plikach wynikowych.
+
+\section{Praktyczny przewodnik diagnostyczny}
+\label{sec:cpp17-troubleshooting}
+
+\begin{center}
+\small
+\begin{tabularx}{\textwidth}{@{}p{0.34\textwidth}X@{}}
+\toprule
+Objaw & Najbardziej prawdopodobne źródło problemu\\
+\midrule
+\code{undefined reference} & Brakujący plik obiektowy, biblioteka,
+definicja albo instancjacja szablonu.\\
+\code{multiple definition} & Niepoprawna definicja zwykłej
+funkcji lub zmiennej w~nagłówku albo podwójnie linkowany obiekt.\\
+\code{undefined reference to vtable} & Niezdefiniowana wymagana
+funkcja wirtualna (często destruktor) lub brak pliku implementacji.\\
+\code{cannot find -lfoo} & Brak biblioteki lub nieprawidłowe
+katalogi przeszukiwania linkera.\\
+\code{cannot open shared object file} & Problem ścieżki lub
+zależności ładowania, niekoniecznie problem kompilacji.\\
+Kompilacja klienta działa, program kończy się błędem & Możliwa
+niezgodność ABI, naruszenie ODR, zły czas życia obiektu lub błąd programu.\\
+Importer nie znajduje modułu & Nie zbudowano BMI/CMI, nie wskazano
+ścieżki albo konfiguracja skanera nie obsługuje importu.\\
+Import działa, ale linker zgłasza brak funkcji & Brak pliku
+obiektowego modułu/implementacji lub potrzebnej biblioteki.\\
+Zmiana nagłówka przebudowuje prawie wszystko & Silne zależności
+nagłówkowe; rozważ redukcję dołączeń, PImpl, moduły lub PCH.\\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\subsection{Kiedy wybrać nagłówki, bibliotekę czy moduł?}
+
+\begin{itemize}
+\item \textbf{Header-only} sprawdza się dla małych narzędzi, szablonów
+      i~funkcji \code{inline}; ceną mogą być zależności kompilacyjne.
+\item \textbf{Biblioteka statyczna} upraszcza dystrybucję kodu obiektowego
+      wewnątrz aplikacji, ale nie usuwa wymagań ABI w~czasie linkowania.
+\item \textbf{Biblioteka współdzielona} pozwala współdzielić kod
+      i~wymieniać implementację, lecz wymaga jasnej polityki ABI,
+      widoczności symboli i~wersjonowania.
+\item \textbf{Moduł C++20} służy do semantycznego podziału interfejsu
+      źródłowego i~kontroli importów; nie jest alternatywą wobec
+      procesu linkowania ani automatycznym formatem dystrybucji ABI.
+\item \textbf{PImpl i~C API} rozważaj na granicach bibliotek o~długim
+      cyklu życia, szczególnie gdy stabilność ABI ma duże znaczenie.
+\end{itemize}
+
+\section*{Podsumowanie rozdziału}
+\addcontentsline{toc}{section}{Podsumowanie rozdziału}
+
+Kompletny program C++ jest wynikiem wspólnej pracy preprocessora,
+kompilatora, linkera i~loadera. Organizując projekt, trzeba osobno
+rozumieć \emph{deklaracje i~definicje}, \emph{ODR i~łączność},
+\emph{symbole i~biblioteki} oraz \emph{ABI}. Nagłówki i~moduły
+pomagają udostępniać interfejsy źródłowe; biblioteki statyczne
+i~współdzielone dostarczają kod do połączenia lub załadowania.
+
+Dobra organizacja projektu polega na jasnym rozdziale API i~implementacji,
+ograniczaniu zależności, korzystaniu z~targetów CMake oraz świadomym
+wersjonowaniu interfejsu binarnego. Nowoczesne moduły upraszczają część
+problemów nagłówków, ale wprowadzają wymagania dotyczące narzędzi,
+BMI/CMI i~kolejności kompilacji.
+
+\section*{Literatura i~dokumentacja}
+\addcontentsline{toc}{section}{Literatura i dokumentacja}
+\begin{itemize}
+\item ISO/IEC 14882:2020, zagadnienia \emph{translation units},
+      \emph{linkage}, \emph{One Definition Rule} i~\emph{modules}.
+\item \url{https://en.cppreference.com/w/cpp/language/definition}
+      --- ODR, deklaracje i~definicje.
+\item \url{https://en.cppreference.com/w/cpp/language/modules}
+      --- składnia i~semantyka modułów.
+\item \url{https://gcc.gnu.org/onlinedocs/gcc/C_002b_002b-Modules.html}
+      --- implementacja modułów w~GCC.
+\item \url{https://clang.llvm.org/docs/StandardCPlusPlusModules.html}
+      --- moduły w~Clangu, BMI i~komendy budowania.
+\item \url{https://cmake.org/cmake/help/latest/manual/cmake-cxxmodules.7.html}
+      --- CMake i~zależności modułów.
+\item \url{https://cmake.org/cmake/help/latest/command/target_sources.html}
+      --- \code{FILE_SET CXX_MODULES}.
+\item \url{https://gcc.gnu.org/onlinedocs/gcc/Code-Gen-Options.html}
+      --- widoczność symboli w~ELF.
+\item John Lakos, \emph{Large-Scale C++ Software Design}, Addison-Wesley, 1996.
+\end{itemize}

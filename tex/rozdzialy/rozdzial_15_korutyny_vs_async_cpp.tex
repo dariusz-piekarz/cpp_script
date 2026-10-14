@@ -1,0 +1,985 @@
+% ROZDZIAL 15 — Korutyny, zadania i porownanie ze std::async (C++20).
+% Fragment do wspolnego skryptu: bez preambuly i bez \begin{document}.
+% Wymagane pakiety: listings, amsmath, amssymb, booktabs, tabularx,
+% array, hyperref (jak w rozdzialach poprzednich).
+% Dolaczenie: \input{rozdzial_15_korutyny_vs_async_cpp.tex}
+% Listing oznaczony jako „kompletny program” mozna skompilowac oddzielnie.
+
+\chapter{Korutyny, zadania asynchroniczne i \texttt{std::async}}
+\label{chap:cpp15-coroutines}
+
+\section{Po co C++ potrzebuje korutyn?}
+
+Zwykła funkcja ma zasadniczo jeden punkt wejścia. Może wywoływać inne
+funkcje, ale po powrocie oddaje sterowanie wywołującemu i nie posiada
+mechanizmu późniejszego wznowienia dokładnie w miejscu, w którym
+zakończyła wykonywanie. \emph{Korutyna} (ang. \emph{coroutine}) jest
+funkcją, której wykonanie można \emph{zawiesić}, a następnie
+\emph{wznowić}, zachowując wybrane zmienne lokalne i miejsce kontynuacji.
+
+Korutyny C++20 wspierają między innymi:
+\begin{itemize}
+\item \emph{generatory} --- wytwarzanie kolejnych wartości na żądanie,
+      bez budowania całej kolekcji;
+\item \emph{zadania asynchroniczne} --- opis operacji, których kolejne
+      etapy uruchamiane są po zakończeniu wcześniejszych;
+\item \emph{kooperacyjne planowanie} --- oddawanie sterowania
+      harmonogramowi zadań;
+\item \emph{maszyny stanów} --- zachowywanie stanu pomiędzy wznowieniami
+      bez ręcznego kodowania każdej możliwej kontynuacji.
+\end{itemize}
+
+Najważniejsza zasada brzmi:
+\begin{center}
+\emph{Korutyna nie jest wątkiem, a \texttt{co\_await} nie oznacza
+automatycznie ,,uruchom w nowym wątku''.}
+\end{center}
+
+Korutyna określa \emph{jak zatrzymać i kontynuować obliczenie};
+\texttt{std::async}, \texttt{std::thread} i pula wątków dotyczą również
+\emph{gdzie i kiedy} wykonywać pracę. W szczególności kod korutyny
+może działać od początku do końca w jednym wątku, nawet jeśli
+wielokrotnie się zawiesza. Odwrotnie, korutyna może być wznawiana
+przez różne wątki, jeżeli tak zdecyduje dostarczony mechanizm planowania.
+
+\subsection{Trzy słowa kluczowe}
+
+C++20 wprowadził następujące konstrukcje składniowe:
+\begin{description}
+\item[\texttt{co\_await expr}] Zastosuj protokół oczekiwania do wyrażenia;
+      zależnie od niego możesz zawiesić korutynę i później ją wznowić.
+\item[\texttt{co\_yield expr}] Udostępnij kolejną wartość generatora;
+      składniowo jest to szczególna postać oczekiwania, wykorzystująca
+      metodę \texttt{yield\_value} obiektu \texttt{promise\_type}.
+\item[\texttt{co\_return expr}] Zakończ korutynę i przekaż wynik
+      przez odpowiednie \texttt{return\_value} albo \texttt{return\_void}.
+\end{description}
+
+Funkcja zawierająca jeden z tych operatorów (w odpowiednim kontekście)
+rozpoznawana jest jako korutyna. Typ jej zwracanej wartości musi
+udostępniać właściwy \emph{typ obietnicy} \texttt{promise\_type}
+(lub odpowiednią specjalizację \texttt{std::coroutine\_traits}).
+To wymóg mechanizmu korutyn, a nie znanego już \texttt{std::promise}.
+
+\begin{lstlisting}[caption={Niepoprawna intuicja: std::future nie jest automatycznie typem korutyny (C++20); fragment celowo błędny.}]
+#include <future>
+
+// Standardowe std::future<int> nie zapewnia promise_type:
+// std::future<int> calculate() { co_return 42; } // BLAD!
+\end{lstlisting}
+
+W C++20 biblioteka standardowa dostarcza \emph{mechanizm} korutyn
+(nagłówek \texttt{<coroutine>}), ale nie dostarcza gotowego, ogólnego
+\texttt{Task<T>} ani standardowego executora. Takie typy definiuje
+biblioteka lub programista. \texttt{std::generator} jest rozwiązaniem
+późniejszym, wprowadzonym dopiero w C++23, a jego wsparcie zależy
+od użytej biblioteki standardowej.
+
+\section{Różnica między zawieszeniem a zablokowaniem wątku}
+\label{sec:cpp15-suspend-block}
+
+Rozważmy dwa sposoby wstrzymania działania programu:
+\begin{itemize}
+\item \texttt{std::this\_thread::sleep\_for(100ms)} \emph{blokuje
+      bieżący wątek} na pewien czas; sam wątek pozostaje zajętym
+      zasobem systemowym, choć może nie zużywać wówczas czasu CPU;
+\item dobrze zaprojektowane \texttt{co\_await} \emph{zawiesza
+      korutynę}, oddając wątek do wykonywania innych zadań;
+      wznowienie może nastąpić po nadejściu wyniku operacji I/O,
+      komunikatu lub upływie czasu.
+\end{itemize}
+
+Nie każde \texttt{co\_await} daje zawieszenie: awaiter może zgłosić,
+że wynik jest już gotowy. Również samo użycie \texttt{co\_await}
+nie gwarantuje nieblokującego I/O --- zależy to od jego implementacji.
+
+\begin{center}
+\small
+\begin{tabularx}{\textwidth}{@{}lXX@{}}
+\toprule
+\textbf{Właściwość} & \textbf{Blokada wątku} & \textbf{Zawieszenie korutyny} \\
+\midrule
+Zachowanie stanu & Na stosie wywołań wątku & Zwykle w ramce korutyny \\
+Wątek potrzebny podczas oczekiwania & Tak, istnieje i czeka & Nie jest konieczny \emph{dla samego oczekiwania} \\
+Wznowienie & Planista systemu/odblokowanie & Mechanizm awaitera i właściciel kontynuacji \\
+Koszt & M.in. wątek i jego stos & M.in. ramka i obsługa zawieszenia \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\section{Ramka korutyny i jej cykl życia}
+\label{sec:cpp15-frame}
+
+Kompilator przekształca korutynę w obiekt reprezentujący jej stan.
+Ten stan nazywamy \emph{ramką korutyny} (ang. \emph{coroutine frame}).
+Może ona obejmować obiekt \texttt{promise\_type}, parametry i stan
+potrzebny do kontynuowania obliczenia po zawieszeniu. To, które
+zmienne lokalne trzeba zachować, wynika z przebiegu programu.
+
+W ogólnym modelu wywołanie korutyny przebiega w następujących etapach:
+\begin{enumerate}
+\item Alokowana jest ramka, chyba że implementacja legalnie
+      wyeliminuje tę alokację (np. przez zagnieżdżenie ramki w innym obiekcie).
+\item Kopiowane lub przenoszone są parametry odpowiednio do ich rodzajów;
+      \emph{parametry referencyjne pozostają referencjami}.
+\item Konstruowany jest obiekt obietnicy \texttt{promise\_type}.
+\item Wywoływana jest metoda \texttt{get\_return\_object()}.
+\item Wykonywany jest \texttt{co\_await promise.initial\_suspend()}.
+\item Uruchamiane jest ciało korutyny (od razu lub po wznowieniu).
+\item \texttt{co\_return} uruchamia \texttt{return\_value} lub
+      \texttt{return\_void}; nieobsłużony wyjątek trafia do
+      \texttt{unhandled\_exception()}.
+\item Niszczone są obiekty lokalne wymagające zniszczenia;
+      wykonywany jest \texttt{co\_await promise.final\_suspend()}.
+\item Ramka zostaje ostatecznie zniszczona we właściwym momencie.
+\end{enumerate}
+
+Kolejność i czas \emph{zwolnienia ramki} zależą od przyjętej polityki
+własności. Dla \texttt{final\_suspend = suspend\_always} ramkę zwykle
+niszczy właściciel uchwytu, nawet po zakończeniu ciała korutyny.
+Przy \texttt{final\_suspend = suspend\_never} mechanizm korutyny
+może zakończyć się bez pozostawiania ramki zawieszonej do późniejszego
+zniszczenia przez właściciela. Tych strategii nie wolno mieszać.
+
+\subsection{Początek i koniec: \texttt{initial\_suspend} i \texttt{final\_suspend}}
+
+Dwa najczęściej używane typy z nagłówka \texttt{<coroutine>} to:
+\begin{description}
+\item[\texttt{std::suspend\_never}] Oczekiwanie jest natychmiast
+      gotowe i nie powoduje zawieszenia.
+\item[\texttt{std::suspend\_always}] Oczekiwanie zawsze prowadzi
+      do zawieszenia, dopóki ktoś nie wznowi korutyny.
+\end{description}
+
+Jeżeli \texttt{initial\_suspend()} zwraca \texttt{suspend\_always},
+korutyna jest \emph{lazy}: nie rozpoczyna wykonywania ciała przy samym
+wywołaniu funkcji. Natomiast \texttt{suspend\_never} oznacza
+\emph{eager start}: ciało może rozpocząć się natychmiast w wątku
+wywołującym i pracować aż do pierwszego rzeczywistego zawieszenia.
+
+\textbf{Ważne:} nie wolno wywoływać \texttt{resume()} na korutynie,
+która jest zawieszona w swoim \texttt{final\_suspend}. Jest to
+niezdefiniowane zachowanie. Uchwyt do takiej ramki może nadal służyć
+do \texttt{destroy()}, jeżeli ramka nie została już zniszczona.
+
+\section{Uchwyt \texttt{std::coroutine\_handle} i własność ramki}
+
+\texttt{std::coroutine\_handle<Promise>} jest lekkim uchwytem
+umożliwiającym m.in. wznowienie korutyny i dostęp do jej obietnicy.
+Sam \texttt{coroutine\_handle} \emph{nie zarządza automatycznie
+czasem życia ramki}. Skopiowanie uchwytu nie jest kopią korutyny,
+a zniszczenie uchwytu nie wywołuje automatycznie \texttt{destroy()}.
+Dlatego wygodna klasa będąca właścicielem ramki powinna stosować RAII,
+uniemożliwiać kopiowanie oraz poprawnie obsługiwać przenoszenie.
+
+\begin{lstlisting}[caption={Operacje na uchwycie; fragment ilustracyjny.}]
+#include <coroutine>
+
+using Handle = std::coroutine_handle<>;
+
+// Zakladamy, ze h wskazuje na istniejaca, zawieszona korutyne.
+// if (h && !h.done()) h.resume();
+// h.destroy(); // dokladnie raz, przez wlasciciela ramki
+// Po destroy() wszystkie kopie h sa wiszacymi uchwytami.
+\end{lstlisting}
+
+Uchwyt może zostać przekazany do innego wątku lub executora, ale
+wówczas trzeba zagwarantować, że ramka nie zostanie zniszczona,
+zanim planista faktycznie wznowi zawieszoną korutynę. Jest to jedna
+z głównych trudności implementacyjnych asynchronicznego API C++20.
+
+\section{Własny generator: \texttt{co\_yield} od podstaw}
+\label{sec:cpp15-generator}
+
+Zbudujemy teraz typ \texttt{Generator}, który produkuje liczby całkowite
+kolejno, \emph{na żądanie}. Poniższy przykład jest samowystarczalny.
+Prywatny uchwyt do ramki stanowi jedynego właściciela zasobu;
+\texttt{next()} wznawia korutynę tylko wtedy, gdy nie zakończyła
+wykonywania. Własną obsługą wyjątku uzupełniamy przykład o
+poprawną propagację błędów.
+
+\begin{lstlisting}[caption={Generator liczb całkowitych: co\_yield i RAII (C++20); kompletny program.}]
+#include <cassert>
+#include <coroutine>
+#include <exception>
+#include <stdexcept>
+#include <utility>
+
+class Generator {
+public:
+    struct promise_type {
+        int current = 0;
+        std::exception_ptr error;
+
+        Generator get_return_object() {
+            return Generator{Handle::from_promise(*this)};
+        }
+        std::suspend_always initial_suspend() noexcept { return {}; }
+        std::suspend_always final_suspend() noexcept { return {}; }
+        std::suspend_always yield_value(int x) noexcept {
+            current = x;
+            return {};
+        }
+        void return_void() noexcept {}
+        void unhandled_exception() noexcept {
+            error = std::current_exception();
+        }
+    };
+
+    using Handle = std::coroutine_handle<promise_type>;
+
+    explicit Generator(Handle h) noexcept : handle_(h) {}
+    Generator(const Generator&) = delete;
+    Generator& operator=(const Generator&) = delete;
+
+    Generator(Generator&& other) noexcept
+        : handle_(std::exchange(other.handle_, {})),
+          ready_(std::exchange(other.ready_, false)) {}
+
+    Generator& operator=(Generator&& other) noexcept {
+        if (this != &other) {
+            if (handle_) handle_.destroy();
+            handle_ = std::exchange(other.handle_, {});
+            ready_ = std::exchange(other.ready_, false);
+        }
+        return *this;
+    }
+
+    ~Generator() {
+        if (handle_) handle_.destroy();
+    }
+
+    bool next() {
+        ready_ = false;
+        if (!handle_ || handle_.done()) return false;
+        handle_.resume();
+        if (handle_.promise().error)
+            std::rethrow_exception(handle_.promise().error);
+        ready_ = !handle_.done();
+        return ready_;
+    }
+
+    int value() const {
+        if (!ready_)
+            throw std::logic_error("No current value");
+        return handle_.promise().current;
+    }
+
+private:
+    Handle handle_{};
+    bool ready_ = false;
+};
+
+Generator squares(int n) {
+    for (int i = 1; i <= n; ++i)
+        co_yield i * i;
+}
+
+int main() {
+    auto gen = squares(4); // Cialo jeszcze sie nie wykonalo.
+    int sum = 0;
+    while (gen.next()) sum += gen.value();
+    assert(sum == 1 + 4 + 9 + 16);
+    assert(!gen.next());
+}
+\end{lstlisting}
+
+\subsection{Co dzieje się podczas \texttt{co\_yield}?}
+
+Instrukcja \texttt{co\_yield i * i} powoduje wywołanie
+\texttt{promise.yield\_value(i * i)} i zastosowanie mechanizmu
+\texttt{co\_await} do otrzymanego awaitera. W naszym przypadku
+\texttt{yield\_value} zapisuje wartość w obietnicy i zwraca
+\texttt{suspend\_always}. Funkcja \texttt{next()} otrzymuje wtedy
+sterowanie z powrotem i udostępnia zapisany element. Następne
+\texttt{next()} kontynuuje pętlę od poprzedniego miejsca zawieszenia.
+
+Generator posiada tylko jeden bieżący wynik. Nie przechowuje
+całego ciągu jak \texttt{std::vector<int>}. To użyteczne przy dużych
+lub potencjalnie nieskończonych sekwencjach. \emph{Nie oznacza to}
+jednak automatycznie mniejszego kosztu obliczeń --- dochodzą koszty
+ramki i kolejnych wznowień.
+
+\nota{Przedstawiony \texttt{Generator} jest celowo minimalny: nie
+udostępnia interfejsu iteratorów \texttt{begin()/end()}, nie jest
+bezpieczny do jednoczesnego wznawiania z kilku wątków i nie powinien
+być stosowany jako gotowa biblioteka produkcyjna.}
+
+\section{Protokół \texttt{co\_await}: \texttt{await\_ready},
+\texttt{await\_suspend}, \texttt{await\_resume}}
+\label{sec:cpp15-awaiter}
+
+Operator \texttt{co\_await} nie jest synonimem oczekiwania na
+\texttt{future}. Kompilator uzyskuje obiekt \emph{awaiter}, którego
+interfejs ma trzy fundamentalne operacje:
+\begin{description}
+\item[\texttt{await\_ready()}] Zwraca wartość logiczną: jeśli
+      \texttt{true}, zawieszenie jest pomijane.
+\item[\texttt{await\_suspend(handle)}] Jeżeli \texttt{await\_ready()}
+      było fałszywe, metoda podejmuje decyzję o kontynuacji.
+      Dopuszczalne postacie zwracają \texttt{void}, \texttt{bool}
+      albo inny \texttt{std::coroutine\_handle}.
+\item[\texttt{await\_resume()}] Wyznacza wynik całego wyrażenia
+      \texttt{co\_await}; może też zgłosić wyjątek.
+\end{description}
+
+Gdy \texttt{await\_suspend} zwraca \texttt{bool}, wartość
+\texttt{false} oznacza kontynuację bez pozostawania w zawieszeniu,
+a \texttt{true} --- pozostawienie korutyny w stanie zawieszonym.
+Przy zwrocie \texttt{void} korutyna pozostaje zawieszona do późniejszego
+wznowienia. Zwrócenie innego uchwytu powoduje \emph{symmetric transfer}:
+sterowanie przechodzi do wskazanej korutyny.
+
+Nie każdy typ bezpośrednio dostarcza trzy wymienione metody: język
+obsługuje też przeciążenie \texttt{operator co\_await} oraz
+\texttt{await\_transform} zdefiniowane w \texttt{promise\_type}.
+Sposób uzyskania awaitera zależy od tych reguł.
+
+\subsection{Czysto lokalne zawieszenie bez nowego wątku}
+
+Poniższy typ liczy wznowienia. Wykorzystamy go z prostą korutyną,
+której właściciel ręcznie wywołuje \texttt{resume()}.
+
+\begin{lstlisting}[caption={co\_await z własnym awaiterem: żadnego nowego wątku (C++20); kompletny program.}]
+#include <cassert>
+#include <coroutine>
+#include <exception>
+#include <utility>
+
+struct Stepper {
+    struct promise_type {
+        Stepper get_return_object() {
+            return Stepper{handle::from_promise(*this)};
+        }
+        std::suspend_always initial_suspend() noexcept { return {}; }
+        std::suspend_always final_suspend() noexcept { return {}; }
+        void return_void() noexcept {}
+        void unhandled_exception() { std::terminate(); }
+    };
+
+    using handle = std::coroutine_handle<promise_type>;
+    handle h;
+    explicit Stepper(handle x) : h(x) {}
+    Stepper(const Stepper&) = delete;
+    Stepper(Stepper&& other) noexcept
+        : h(std::exchange(other.h, {})) {}
+    ~Stepper() { if (h) h.destroy(); }
+    bool resume() {
+        if (!h || h.done()) return false;
+        h.resume();
+        return !h.done();
+    }
+};
+
+struct Pause {
+    int& count;
+    bool await_ready() const noexcept { return false; }
+    void await_suspend(std::coroutine_handle<>) const noexcept {
+        ++count; // Zawiesz, az wlasciciel wywola resume().
+    }
+    void await_resume() const noexcept {}
+};
+
+Stepper example(int& count) {
+    ++count;                 // wykona sie przy pierwszym resume
+    co_await Pause{count};  // pierwsze zawieszenie
+    ++count;                 // wykona sie przy drugim resume
+}
+
+int main() {
+    int count = 0;
+    auto step = example(count);
+    assert(count == 0);
+    assert(step.resume() && count == 2);
+    assert(!step.resume() && count == 3);
+}
+\end{lstlisting}
+
+Kod niczego nie oblicza równolegle. Wszystkie instrukcje wykonał
+wątek \texttt{main}. Korutyna jedynie oddała sterowanie, zachowując
+miejsce wznowienia.
+
+\section{Własne \texttt{Task<T>}: leniwe obliczenie a asynchroniczność}
+\label{sec:cpp15-task}
+
+Zaprojektujemy najmniejszy rozsądny typ \texttt{Task<T>} zwracający
+wynik i obsługujący wyjątek. Celowo nie implementujemy jeszcze
+harmonogramu: pozwala to zrozumieć, że \emph{sam typ korutyny nie jest
+schedulerem}. \texttt{get()} w tym przykładzie działa wyłącznie
+wtedy, gdy ciało może zakończyć się po pojedynczym wznowieniu.
+
+\begin{lstlisting}[caption={Lazy Task<T> bez schedulera (C++20); kompletny program.}]
+#include <cassert>
+#include <coroutine>
+#include <exception>
+#include <optional>
+#include <stdexcept>
+#include <utility>
+
+template<class T>
+class Task {
+public:
+    struct promise_type {
+        std::optional<T> result;
+        std::exception_ptr error;
+        Task get_return_object() {
+            return Task{Handle::from_promise(*this)};
+        }
+        std::suspend_always initial_suspend() noexcept { return {}; }
+        std::suspend_always final_suspend() noexcept { return {}; }
+        void return_value(T x) { result.emplace(std::move(x)); }
+        void unhandled_exception() noexcept {
+            error = std::current_exception();
+        }
+    };
+    using Handle = std::coroutine_handle<promise_type>;
+
+    explicit Task(Handle h) noexcept : h_(h) {}
+    Task(const Task&) = delete;
+    Task& operator=(const Task&) = delete;
+    Task(Task&& x) noexcept : h_(std::exchange(x.h_, {})) {}
+    ~Task() { if (h_) h_.destroy(); }
+
+    T get() {
+        if (!h_) throw std::logic_error("Empty task");
+        if (!h_.done()) h_.resume();
+        if (!h_.done())
+            throw std::logic_error("Task needs an external scheduler");
+        if (h_.promise().error)
+            std::rethrow_exception(h_.promise().error);
+        return std::move(*h_.promise().result);
+    }
+
+private:
+    Handle h_{};
+};
+
+Task<int> calculate(int x) {
+    co_return x * x;
+}
+
+int main() {
+    auto task = calculate(7); // lazy, obliczenie jeszcze nie ruszylo
+    assert(task.get() == 49);
+}
+\end{lstlisting}
+
+Ten \texttt{Task<T>} jest pedagogiczny: nie ma przeciążenia
+\texttt{operator co\_await}, nie wspiera wielokrotnego pobierania
+wyniku i nie potrafi samodzielnie czekać na zdarzenia zewnętrzne.
+W szczególności \texttt{get()} nie może po prostu wielokrotnie
+wywoływać \texttt{resume()} na rzeczywistym zadaniu I/O: wznowienie
+przed ukończeniem operacji mogłoby naruszyć protokół awaitera.
+Produkcyjne \texttt{Task<T>} wymaga m.in. protokołu kontynuacji,
+jasnej semantyki własności i poprawnej synchronizacji z executorem.
+
+\section{Korutyna a \texttt{std::async}: fundamentalne porównanie}
+\label{sec:cpp15-async-comparison}
+
+\texttt{std::async} (C++11, nagłówek \texttt{<future>}) jest gotową
+funkcją uruchamiającą zadanie i zwracającą \texttt{std::future<T>}.
+Nie wymaga od użytkownika implementowania \texttt{promise\_type}.
+Przy polityce \texttt{std::launch::async} funkcja pracuje w odrębnym
+wątku; polityka \texttt{std::launch::deferred} odracza jej uruchomienie
+do pierwszego nieczasowego oczekiwania na wynik.
+
+Z kolei korutyna C++20 definiuje sposób zapisywania \emph{kontynuacji}.
+Nawet jeśli wynik ma charakter asynchroniczny, \emph{faktyczne
+uruchamianie pracy} zależy od awaitera, event loop, schedulera lub
+innego mechanizmu zewnętrznego. Nie istnieje standardowa ogólna
+reguła ,,jedna korutyna = jeden wątek''.
+
+
+\paragraph{Czy można napisać \texttt{co\_await future}?}
+Nie wprost: w C++20 standardowy \texttt{std::future<T>} nie udostępnia
+protokołu awaitera wymaganego przez \texttt{co\_await}.
+\texttt{future.get()} jest operacją potencjalnie blokującą
+bieżący wątek. Istnieją biblioteki dostarczające awaitery dla
+przyszłych wyników, ale sam adapter nie zamienia blokującej
+operacji w nieblokującą. Naiwne uruchamianie osobnego wątku
+tylko po to, by wykonał \texttt{future.wait()} i wznowił korutynę,
+może zniweczyć zalety oszczędnego używania wątków.
+Dla rzeczywiście nieblokującego oczekiwania na I/O potrzeba
+integracji z właściwym mechanizmem asynchronicznym.
+
+\begin{center}
+\small
+\begin{tabularx}{\textwidth}{@{}lXX@{}}
+\toprule
+\textbf{Cecha} & \textbf{\texttt{std::async}} & \textbf{Korutyny C++20} \\
+\midrule
+Co opisuje? & Zadanie ze stanem wyniku & Wykonanie z punktami zawieszenia \\
+Tworzy nowy wątek? & \texttt{launch::async}: osobny wątek & Samo \texttt{co\_await}: nie \\
+Kiedy zaczyna pracę? & Zależnie od polityki & Zależnie od \texttt{initial\_suspend} i schedulera \\
+Odbieranie wyniku & \texttt{future::get()} (może blokować) & Zależy od typu \texttt{Task} i awaitera \\
+Wyjątki & Przechowywane w stanie \texttt{future} & Obsługa przez \texttt{unhandled\_exception} i typ wyniku \\
+Anulowanie & Brak automatycznego anulowania przez \texttt{future} & Możliwe kooperacyjnie; wymaga protokołu \\
+Pamięć/zasoby & Stan asynchroniczny, przy \texttt{async} również wątek & Ramka korutyny, ewentualnie executor \\
+Gotowe narzędzie w C++20? & Tak & Składnia tak; ogólny \texttt{Task<T>} nie \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\subsection{Ten sam rachunek zapisany na dwa sposoby}
+
+Porównanie dwóch krótkich funkcji pokazuje różnicę semantyczną.
+
+\begin{lstlisting}[caption={std::async uruchamia zadanie w odrębnym wątku (C++11); kompletny program.}]
+#include <cassert>
+#include <future>
+
+int square(int x) { return x * x; }
+
+int main() {
+    auto f = std::async(std::launch::async, square, 7);
+    assert(f.get() == 49);
+}
+\end{lstlisting}
+
+\begin{lstlisting}[caption={Korutyna bez awaitera zewnętrznego nie tworzy wątku; fragment.}]
+// Przyjmujemy implementacje Task<T> z poprzedniej sekcji.
+Task<int> square_coroutine(int x) {
+    co_return x * x;
+}
+
+// Task<int> t = square_coroutine(7);
+// int result = t.get(); // 49, w watku wywolujacym get()
+\end{lstlisting}
+
+W obu przypadkach można otrzymać tę samą wartość, ale nie jest to
+to samo zachowanie wykonawcze. \texttt{std::async} z \texttt{launch::async}
+zarządza wykonaniem w innym wątku, a pokazany \texttt{Task}
+jedynie odkłada wywołanie do momentu ręcznego wznowienia.
+
+\subsection{Pułapka destruktora \texttt{future}}
+
+Ważna różnica dotyczy czasu życia. Gdy ostatni uchwyt do stanu
+asynchronicznego utworzonego przez \texttt{std::async} z polityką
+\texttt{launch::async} jest niszczony i praca wciąż trwa, destruktor
+może czekać na jej ukończenie (w typowym przypadku rzeczywiście czeka).
+Poniższe dwa wywołania mogą więc wykonać się praktycznie sekwencyjnie:
+
+\begin{lstlisting}[caption={Zignorowane future mogą wymuszać oczekiwanie; fragment.}]
+// Funkcje slow_a i slow_b wykonuja dlugie obliczenia.
+// std::async(std::launch::async, slow_a);
+// std::async(std::launch::async, slow_b);
+\end{lstlisting}
+
+Jeżeli chcemy umożliwić nakładanie się zadań, trzeba przechować ich
+uchwyty przed oczekiwaniem:
+\begin{lstlisting}[caption={Dwa przyszłe wyniki powinny żyć jednocześnie; fragment.}]
+// auto fa = std::async(std::launch::async, slow_a);
+// auto fb = std::async(std::launch::async, slow_b);
+// auto a = fa.get();
+// auto b = fb.get();
+\end{lstlisting}
+
+Analogicznie w systemie korutyn należy znać politykę niszczenia
+\texttt{Task}: usunięcie właściciela zawieszonej korutyny bez
+koordynacji z executorem może zostawić wiszący uchwyt. Różne
+biblioteki oferują odmienne kontrakty anulowania i oczekiwania.
+
+\subsection{Asynchroniczne I/O a zadania CPU-bound}
+
+Przy \emph{operacji I/O} większość czasu może upływać na oczekiwaniu
+na dysk, sieć lub timer. Duża liczba korutyn może opisywać wiele
+rozpoczętych operacji, podczas gdy mała pula wątków obsługuje
+zdarzenia gotowości i wznowienia. Korzyść nie bierze się z tego,
+że \texttt{co\_await} ,,jest szybsze'', lecz z możliwości
+nieblokowania wątków podczas oczekiwania.
+
+Przy \emph{operacjach CPU-bound} (obliczenia numeryczne, kompresja,
+przetwarzanie obrazów) samo zawieszenie korutyny nie zwiększa
+liczby rdzeni wykonujących kod. Tu potrzebne jest rzeczywiste
+rozłożenie pracy na wiele wątków (np. \texttt{std::async}, pula
+wątków lub OpenMP). Korutyna może być wygodnym \emph{interfejsem}
+do takiego executora, ale nie zastępuje go.
+
+\section{Rzeczywista asynchroniczność: korutyna i własny executor}
+\label{sec:cpp15-executor}
+
+Żeby zestawienie z \texttt{std::async} nie pozostało czysto
+teoretyczne, utworzymy prosty executor z jednym wątkiem roboczym.
+\texttt{co\_await executor.schedule()} odłoży kontynuację do
+kolejki. Wznowienie wykona \emph{wątek executora}, nie wywołujący.
+Wartością zwracaną będzie nasza klasa \texttt{FutureTask<T>},
+wykorzystująca wewnętrznie \texttt{std::promise<T>} i
+\texttt{std::future<T>}.
+
+W przeciwieństwie do poprzedniego przykładu ramka ma strategię
+\emph{samozniszczenia} przez \texttt{final\_suspend = suspend\_never}.
+Nie przechowujemy już zewnętrznego uchwytu właścicielskiego:
+po zakończeniu korutyna sama domyka swój cykl życia, a klient posiada
+wyłącznie \texttt{future}. W tej uproszczonej konstrukcji executor
+musi żyć aż do zakończenia zadań, a pojedyncza korutyna jest
+wznawiana w kolejce co najwyżej raz.
+
+\begin{lstlisting}[caption={Korutyna przechodząca do innego wątku poprzez executor (C++20); kompletny program.}]
+#include <cassert>
+#include <condition_variable>
+#include <coroutine>
+#include <deque>
+#include <exception>
+#include <future>
+#include <mutex>
+#include <stdexcept>
+#include <thread>
+#include <utility>
+
+class Executor {
+    std::mutex m_;
+    std::condition_variable cv_;
+    std::deque<std::coroutine_handle<>> queue_;
+    bool closed_ = false;
+    std::thread worker_;
+
+    void run() {
+        for (;;) {
+            std::coroutine_handle<> h;
+            {
+                std::unique_lock lock(m_);
+                cv_.wait(lock, [&] { return closed_ || !queue_.empty(); });
+                if (queue_.empty() && closed_) return;
+                h = queue_.front();
+                queue_.pop_front();
+            }
+            h.resume(); // H moze sie tu samozniszczyc.
+            // Nie korzystamy juz z h po resume().
+        }
+    }
+
+public:
+    Executor() : worker_([this] { run(); }) {}
+    Executor(const Executor&) = delete;
+    Executor& operator=(const Executor&) = delete;
+
+    ~Executor() {
+        {
+            std::lock_guard lock(m_);
+            closed_ = true;
+        }
+        cv_.notify_one();
+        worker_.join();
+    }
+
+    void post(std::coroutine_handle<> h) {
+        {
+            std::lock_guard lock(m_);
+            if (closed_) throw std::runtime_error("Executor closed");
+            queue_.push_back(h);
+        }
+        cv_.notify_one();
+    }
+
+    struct Schedule {
+        Executor& ex;
+        bool await_ready() const noexcept { return false; }
+        void await_suspend(std::coroutine_handle<> h) const {
+            ex.post(h); // Po przekazaniu h nie uzywamy juz awaitera.
+        }
+        void await_resume() const noexcept {}
+    };
+
+    Schedule schedule() noexcept { return Schedule{*this}; }
+};
+
+template<class T>
+class FutureTask {
+    std::future<T> future_;
+public:
+    explicit FutureTask(std::future<T> f) : future_(std::move(f)) {}
+    FutureTask(FutureTask&&) = default;
+    FutureTask(const FutureTask&) = delete;
+
+    T get() { return future_.get(); }
+
+    struct promise_type {
+        std::promise<T> result;
+        FutureTask get_return_object() {
+            return FutureTask{result.get_future()};
+        }
+        std::suspend_never initial_suspend() noexcept { return {}; }
+        std::suspend_never final_suspend() noexcept { return {}; }
+        void return_value(T x) { result.set_value(std::move(x)); }
+        void unhandled_exception() noexcept {
+            try { result.set_exception(std::current_exception()); }
+            catch (...) { std::terminate(); }
+        }
+    };
+};
+
+FutureTask<int> square_on(Executor& ex, int x) {
+    co_await ex.schedule(); // Tu oddajemy sterowanie.
+    co_return x * x;        // Wykona sie w watku roboczym.
+}
+
+int main() {
+    Executor ex;
+    auto a = square_on(ex, 6);
+    auto b = square_on(ex, 7);
+    assert(a.get() + b.get() == 85);
+    // Przed zniszczeniem ex oba zadania sie zakonczyly.
+}
+\end{lstlisting}
+
+\paragraph{Co to porównanie rzeczywiście dowodzi?}
+Kod z \texttt{square\_on} jest asynchroniczny względem wywołującego,
+ponieważ po \texttt{co\_await} kontynuację przejmuje inny wątek.
+Nie oznacza to jeszcze \emph{równoległego wykonywania} obu obliczeń:
+executor ma tylko jednego pracownika, więc zadania są przez niego
+wykonywane kolejno. Do równoległego przetwarzania dwóch obliczeń
+należałoby dodać drugiego pracownika albo wykorzystać istniejącą
+pulę wątków.
+
+Pokazany executor jest \emph{szkicem edukacyjnym}. Nie obsługuje
+ogólnego anulowania ani ponownego planowania tej samej korutyny,
+nie rozwiązuje wszystkich problemów czasu życia i nie stanowi
+gotowej biblioteki. W szczególności klient nie ma uchwytu pozwalającego
+anulować i bezpiecznie zniszczyć zawieszone zadanie. W systemie
+produkcyjnym własność korutyny, zamknięcie executora i czas życia
+powiązanych zasobów muszą stanowić jeden, spójny kontrakt.
+
+\section{Obsługa wyjątków, anulowanie i czas życia danych}
+\label{sec:cpp15-errors}
+
+\subsection{Wyjątki a \texttt{unhandled\_exception}}
+
+Nieobsłużony wyjątek z ciała korutyny nie może zostać pozostawiony
+bez decyzji. Kompilator wywołuje \texttt{promise.unhandled\_exception()}.
+W generatorze zapisaliśmy \texttt{std::exception\_ptr}; przy kolejnym
+\texttt{next()} błąd zostanie zgłoszony w kodzie klienta. W naszym
+\texttt{FutureTask<T>} wyjątek trafia do stanu \texttt{std::future}
+i ujawnia się podczas \texttt{get()}. Jest to analogiczne do
+propagacji błędów w \texttt{std::async}, ale sam mechanizm wymagał
+jawnej implementacji w \texttt{promise\_type}.
+
+Należy też uwzględnić wyjątki zgłaszane przez operacje awaitera
+oraz błędy alokacji ramki. Awaria podczas tworzenia ramki może
+wystąpić jeszcze przed wykonaniem ciała korutyny. Typ obietnicy
+może opcjonalnie udostępniać \texttt{get\_return\_object\_on\_allocation\_failure()}
+razem z odpowiednią, niezgłaszającą wyjątku alokacją, ale nie jest to
+mechanizm automatycznie dostępny każdemu typowi korutyny.
+
+\subsection{Referencje przechowywane w ramce}
+
+Argumenty referencyjne nie wydłużają czasu życia obiektów.
+Jeżeli korutyna przechowuje referencję do zmiennej lokalnej, która
+zniknie podczas zawieszenia, jej późniejsze wznowienie może prowadzić
+do użycia nieistniejącego już obiektu.
+
+\begin{lstlisting}[caption={Niebezpieczny czas życia referencji w korutynie; fragment koncepcyjny.}]
+// Zakladamy lazy Task<int> z poprzedniej sekcji.
+Task<int> read_later(const int& ref) {
+    co_return ref;
+}
+
+// NIEPOPRAWNE:
+// Task<int> bad() {
+//     Task<int> t = read_later(123);
+//     return t; // referencja w ramce moze byc juz wiszaca
+// }
+\end{lstlisting}
+
+Z reguły bezpieczniej przechowywać wewnątrz ramki wartości
+przeznaczone do późniejszego użycia (np. obiekt przekazany przez
+wartość), a nie referencje do tymczasowych obiektów.
+Trzeba też zwracać uwagę na czas życia domknięć lambda:
+korutyna będąca lambdą i wykorzystująca przechwycenia może
+po zawieszeniu odwoływać się do już zniszczonego obiektu domknięcia.
+Sam fakt przeniesienia wynikowej korutyny nie musi temu zapobiegać.
+
+\subsection{Anulowanie jest kooperacyjne}
+
+\texttt{std::stop\_token} (C++20) umożliwia \emph{żądanie}, a nie
+wymuszenie zakończenia zadania. Korutyna może sprawdzać token
+przed rozpoczęciem kolejnych faz albo korzystać z awaitera,
+który potrafi odpowiednio reagować na anulowanie. Nie wynika
+z tego jednak, że każde \texttt{co\_await} automatycznie obsługuje
+\texttt{stop\_token}.
+
+\begin{lstlisting}[caption={Kooperacyjne anulowanie korutyny: sprawdzenie żądania w punktach kontrolnych; fragment.}]
+// Zakladamy Task<int> z poprzedniej sekcji.
+#include <stop_token>
+
+Task<int> calculate(std::stop_token token) {
+    if (token.stop_requested()) co_return -1;
+    // Pierwszy krok obliczen...
+    if (token.stop_requested()) co_return -1;
+    // Kolejny krok obliczen...
+    co_return 42;
+}
+\end{lstlisting}
+
+W powyższym przykładzie token jest przekazywany przez wartość.
+Sam \texttt{stop\_token} nie steruje czasem życia ramki i nie
+wznawia korutyny, która czeka na zdarzenie. Do pełnego anulowania
+operacji I/O potrzeba jeszcze protokołu z usługą, która wykonuje
+rzeczywistą operację, oraz reguł określających \emph{kto} zniszczy
+korutynę i \emph{kiedy} wolno to zrobić.
+
+\section{Pułapki synchronizacji i planowania}
+
+\subsection{Równoczesne wznowienie tej samej korutyny}
+
+Nie można traktować \texttt{coroutine\_handle::resume()} jak
+operacji atomowej nadającej się do równoczesnego wywoływania przez
+wiele wątków. Trzeba zapewnić, że dana zawieszona korutyna ma
+jednego logicznego właściciela uprawnienia do wznowienia.
+Ponowne wznowienie korutyny już aktywnej lub zakończonej może
+prowadzić do niezdefiniowanego zachowania.
+
+\subsection{Utracone powiadomienie i wyścig publikacji uchwytu}
+
+Awaiter może przekazać uchwyt do innego wątku wewnątrz
+\texttt{await\_suspend}. Wówczas druga strona może wznowić korutynę
+\emph{zanim} pierwotne wywołanie \texttt{await\_suspend} powróci.
+Dlatego po opublikowaniu uchwytu kod awaitera nie powinien korzystać
+z obiektów, których czas życia mógł się już zakończyć.
+
+W bardziej złożonych awaiterach trzeba również uniknąć zgubienia
+zdarzenia kończącego operację między sprawdzeniem gotowości a
+zarejestrowaniem oczekiwania. Poprawne rozwiązania stosują np.
+mutex, operacje atomowe albo protokół jednorazowego przejęcia
+kontynuacji. Samo \texttt{await\_ready()} nie zastępuje synchronizacji.
+
+\subsection{Brak własności \texttt{coroutine\_handle}}
+
+Gdy planista ma w kolejce jedynie \texttt{coroutine\_handle<>},
+nie posiada informacji, kto może zniszczyć ramkę. Usunięcie
+obiektu \texttt{Task} podczas oczekiwania może prowadzić do
+późniejszego wznowienia już zwolnionej pamięci.
+Najbezpieczniejszy projekt definiuje własność od początku:
+\emph{Task posiada ramkę}, \emph{executor posiada ramkę} albo
+\emph{ramka posiada samą siebie}, z dokładnym protokołem przekazania
+własności i zakończenia.
+
+\section{Koszty, optymalizacje i pomiary}
+\label{sec:cpp15-performance}
+
+Wydajność należy rozpatrywać w całym systemie, a nie tylko przez
+porównanie czasu jednego \texttt{co\_await} i jednego \texttt{std::async}.
+\begin{itemize}
+\item \textbf{Utworzenie wątku.} \texttt{std::async(launch::async, ...)}
+      uruchamia pracę w odrębnym wątku; bardzo duża liczba krótkich
+      zadań może generować istotny narzut zarządzania wątkami.
+\item \textbf{Ramka.} Korutyna może wymagać alokacji pamięci,
+      zachowywania stanu i wznawiania. Kompilator może czasem
+      wyeliminować alokację ramki, ale nie jest to gwarancja.
+\item \textbf{Executor.} Kolejka, mutexy, przełączanie między wątkami
+      oraz współdzielenie pamięci również kosztują.
+\item \textbf{Lokalność pamięci.} Duża liczba korutyn z rozproszonymi
+      ramkami może prowadzić do dodatkowych nietrafień cache.
+\item \textbf{Skalowalność.} Dla I/O ważniejsza może być liczba
+      oczekujących operacji niż przepustowość pojedynczego zadania.
+      Dla CPU-bound kluczowa jest liczba rdzeni, wielkość porcji pracy
+      i ograniczenie dostępu do współdzielonych zasobów.
+\end{itemize}
+
+Rzetelny benchmark powinien mierzyć co najmniej: całkowitą
+przepustowość, opóźnienia (również wartości odstające), liczbę wątków,
+liczbę alokacji oraz maksymalne zużycie pamięci. Porównywanie
+\texttt{std::async} z \emph{nieuruchamiającą nowych wątków} korutyną
+wykonującą natychmiast prostą arytmetykę nie jest miarodajnym
+testem wydajności asynchronicznej.
+
+\subsection{Praktyczna decyzja: kiedy używać którego narzędzia?}
+
+\begin{center}
+\small
+\begin{tabularx}{\textwidth}{@{}lX@{}}
+\toprule
+\textbf{Problem} & \textbf{Rozsądny pierwszy wybór} \\
+\midrule
+Jedno niezależne zadanie CPU z wynikiem & \texttt{std::async(std::launch::async, ...)} \\
+Wiele krótkich zadań CPU & Pula wątków, executor lub OpenMP \\
+Wiele połączeń I/O z długim oczekiwaniem & Korutyny + asynchroniczny runtime I/O \\
+Leniwe generowanie sekwencji & Generator korutynowy \\
+Wspólny licznik lub krótka sekcja krytyczna & \texttt{atomic} albo mutex, nie korutyna \\
+Anulowalne zadanie działające długo & Przemyślany protokół \texttt{stop\_token} \\
+Interfejs biblioteki o złożonych zależnościach & \texttt{Task<T>} nad zdefiniowanym executorem \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\section{Związek z OpenMP, \texttt{thread} i \texttt{future}}
+
+Rozszerzony rozdział o współbieżności omawiał \texttt{std::thread},
+\texttt{std::jthread}, atomiki, blokady, \texttt{std::async} oraz OpenMP.
+Korutyny nie unieważniają tych narzędzi; stanowią kolejną warstwę.
+\begin{itemize}
+\item \texttt{std::thread} opisuje konkretny wątek wykonania,
+      a \texttt{std::jthread} dodatkowo pomaga zarządzać jego
+      czasem życia i kooperacyjnym zatrzymywaniem.
+\item \texttt{std::async} tworzy stan przyszłego wyniku i
+      uruchamia wywołanie zgodnie z przyjętą polityką.
+\item OpenMP rozdziela pętle i zadania między wątki obsługiwane
+      przez środowisko wykonawcze OpenMP; szczególnie przydaje się
+      w obliczeniach CPU-bound i kodzie numerycznym.
+\item Korutyny pozwalają wygodnie opisać wieloetapową logikę
+      oczekiwania i kontynuacji. Ich wydajność i stopień równoległości
+      zależą od dostarczonego środowiska wykonawczego.
+\end{itemize}
+
+Możliwe jest użycie \emph{korutyn nad pulą wątków}: \texttt{co\_await}
+przekazuje kontynuację do kolejki, a pracownik puli później ją wznawia.
+Nie należy jednak od razu łączyć wszystkich mechanizmów.
+Najpierw określamy, czy program czeka głównie na I/O, czy wykonuje
+obliczenia, a następnie wybieramy model wykonania i własności zasobów.
+
+\section{Najczęstsze błędy projektowe}
+
+\begin{enumerate}
+\item Zakładanie, że \texttt{co\_await} uruchamia nowy wątek.
+\item Próba zwrócenia bezpośrednio \texttt{std::future<T>}
+      z własnej korutyny bez odpowiedniego \texttt{promise\_type}.
+\item Dwukrotne wywołanie \texttt{destroy()} dla tej samej ramki.
+\item Wywołanie \texttt{resume()} po osiągnięciu
+      \texttt{final\_suspend}.
+\item Pozostawienie referencji lub przechwycenia lambdy do obiektu,
+      który znika podczas zawieszenia.
+\item Zniszczenie \texttt{Task} mimo tego, że executor posiada
+      w kolejce uchwyt do jego ramki.
+\item Mylenie automatycznej propagacji wyjątków w \texttt{std::async}
+      z obowiązkami implementatora \texttt{promise\_type}.
+\item Traktowanie \texttt{std::stop\_token} jako mechanizmu
+      przymusowego przerwania dowolnego \texttt{co\_await}.
+\item Równoczesne wznawianie tej samej korutyny z kilku wątków.
+\item Uznanie, że zawieszenie i wznowienie zawsze kosztuje mniej
+      niż zwykłe wywołanie funkcji.
+\item Uruchamianie \texttt{std::async} dla tysięcy mikro-zadań
+      bez rozważenia puli wątków.
+\item Zwracanie z \texttt{await\_suspend} po opublikowaniu uchwytu
+      i dalsze używanie potencjalnie zniszczonego awaitera.
+\end{enumerate}
+
+\section*{Podsumowanie rozdziału}
+\addcontentsline{toc}{section}{Podsumowanie rozdziału 15}
+
+Korutyny C++20 są mechanizmem \emph{zawieszenia i kontynuacji},
+a nie samodzielnym środowiskiem asynchronicznym. Generator używa
+\texttt{co\_yield}, aby leniwie udostępniać wartości. Typ zadania
+używa \texttt{co\_return}, obiektu \texttt{promise\_type} i awaiterów,
+aby opisać wykonanie z wynikiem i wyjątkami. \texttt{co\_await}
+przekazuje kontrolę zgodnie z protokołem awaitera, a dopiero executor
+lub inne środowisko może wznowić kod w osobnym wątku.
+
+\texttt{std::async} jest prostym narzędziem do uruchomienia funkcji
+i odebrania przyszłego wyniku. Korutyny są lepszym budulcem dla
+złożonych przepływów wieloetapowych, szczególnie I/O, ale wymagają
+większej odpowiedzialności za pamięć, synchronizację, anulowanie
+i czas życia ramki. W obu przypadkach należy rozdzielać trzy pytania:
+\emph{kto wykonuje kod, kto posiada stan i kto decyduje o zakończeniu}.
+
+\section*{Literatura i dokumentacja}
+\addcontentsline{toc}{section}{Literatura i dokumentacja rozdziału 15}
+\begin{itemize}
+\item \url{https://en.cppreference.com/w/cpp/language/coroutines} --- model korutyn C++20.
+\item \url{https://en.cppreference.com/w/cpp/coroutine/coroutine_handle} --- uchwyty i zarządzanie ramką.
+\item \url{https://en.cppreference.com/w/cpp/coroutine/suspend_always} --- podstawowe awaitery.
+\item \url{https://en.cppreference.com/w/cpp/thread/async} --- \texttt{std::async} i polityki uruchamiania.
+\item \url{https://en.cppreference.com/w/cpp/thread/future} --- \texttt{std::future}.
+\item \url{https://en.cppreference.com/w/cpp/coroutine/generator} --- \texttt{std::generator} (C++23).
+\item Lewis Baker, \emph{C++ Coroutines: Understanding the Compiler Transformations}
+      --- seria publikacji o modelu wykonania korutyn.
+\item David Mazières, \emph{My Tutorial and Take on C++20 Coroutines}, 2021.
+\end{itemize}

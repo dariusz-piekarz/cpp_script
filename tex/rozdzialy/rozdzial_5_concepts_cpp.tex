@@ -1,0 +1,975 @@
+% ROZDZIAL 5 -- Concepts i requires w C++20
+% Fragment do wlaczenia do glownego dokumentu po rozdziale 4.
+% Wymagane w preambule: pakiet listings i ustawienie language=C++.
+% Uzycie: \input{rozdzial_5_concepts_cpp.tex}
+
+\chapter[Concepts i requires w C++]{Koncepcje i ograniczenia szablonów (\textit{concepts} i \texttt{requires})}
+\label{chap:concepts-cpp}
+
+\section{Po co wprowadzono koncepcje?}
+
+Szablony C++ pozwalają pisać kod niezależny od konkretnego typu.
+Tradycyjny szablon deklaruje jednak zwykle \emph{co kompilator ma zrobić},
+nie wyjaśniając wprost, \emph{jakich własności} wymaga od argumentów.
+Jeśli operacja jest niepoprawna, błąd może zostać wykryty dopiero w ciele
+szablonu, a komunikat diagnostyczny bywa długi.
+
+\begin{lstlisting}
+template<class T>
+T twice(const T& x) {
+    return x + x;           // requires operator+
+}
+
+// twice(7);                // OK
+// twice(SomeType{});       // may fail inside function body
+\end{lstlisting}
+
+Od C++20 można umieścić wymagania na poziomie interfejsu:
+
+\begin{lstlisting}
+#include <concepts>
+
+template<class T>
+concept Addable = requires(const T& a, const T& b) {
+    { a + b } -> std::convertible_to<T>;
+};
+
+template<Addable T>
+T twice(const T& x) {
+    return x + x;
+}
+\end{lstlisting}
+
+Koncepcja (\textit{concept}) to nazwany predykat sprawdzany podczas
+kompilacji, opisujący wymagania wobec argumentów szablonu.
+Może dotyczyć istnienia operatorów, typów składowych, własności typów,
+kategorii iteratorów i wielu innych cech. \emph{Constraints}
+(ograniczenia) wpływają zarówno na dopuszczalność konkretyzacji,
+jak i na wybór przeciążenia funkcji.
+
+\paragraph{Wersja języka.}
+W całym rozdziale zakładamy \textbf{C++20} oraz kompilację
+np. poleceniem \texttt{g++ -std=c++20 -Wall -Wextra -Wpedantic main.cpp}.
+Definicje koncepcji standardowych znajdują się przede wszystkim
+w nagłówkach \texttt{<concepts>}, \texttt{<iterator>} i
+\texttt{<ranges>}.
+
+\section{Pierwsza koncepcja: składnia i zastosowanie}
+\label{sec:concepts-pierwsza}
+
+Definicja nazwanej koncepcji ma postać
+\texttt{template<...> concept Nazwa = warunek;}. Warunek powinien
+być wyrażeniem stałym typu \texttt{bool}. Definicja koncepcji
+występuje na poziomie przestrzeni nazw; nie jest zwykłą funkcją.
+
+\begin{lstlisting}
+#include <concepts>
+#include <type_traits>
+
+template<class T>
+concept Integer = std::is_integral_v<T>;
+
+static_assert(Integer<int>);
+static_assert(Integer<bool>);    // bool is integral
+static_assert(!Integer<double>);
+\end{lstlisting}
+
+Koncepcję można sprawdzić wyrażeniem \texttt{Integer<int>} lub
+\texttt{static\_assert}, ale nie należy jej mylić ze zwykłą
+zmienną. W szczególności \texttt{concept} nie daje się jawnie
+specjalizować w sposób analogiczny do szablonu klasy.
+
+\subsection{Cztery podstawowe sposoby ograniczania funkcji}
+
+Poniższe deklaracje opisują ten sam warunek: funkcja jest przeznaczona
+dla typów całkowitych w sensie \texttt{std::integral}.
+
+\begin{lstlisting}
+#include <concepts>
+
+template<class T>
+requires std::integral<T>
+T square1(T x) { return x * x; }
+
+template<class T>
+T square2(T x) requires std::integral<T> {
+    return x * x;
+}
+
+template<std::integral T>
+T square3(T x) { return x * x; }
+
+std::integral auto square4(std::integral auto x) {
+    return x * x;
+}
+\end{lstlisting}
+
+W ostatnim przykładzie ograniczony jest nie tylko typ argumentu,
+ale też \emph{typ wyniku}. Sama dedukcja typu wyniku nadal odbywa
+się na podstawie wyrażenia \texttt{x * x}; koncept jest sprawdzany
+po jej przeprowadzeniu. Zapis \texttt{std::integral auto} w parametrze
+jest skrótem szablonu funkcji, tzw. \emph{abbreviated function template}.
+
+\paragraph{Kiedy którą postać wybrać?}
+Dla jednego prostego ograniczenia zapis z ograniczonym
+parametrem szablonu, np. \texttt{template<\allowbreak std::integral T>},
+jest krótki i czytelny. Jeśli zależność dotyczy kilku parametrów,
+najwygodniejsza bywa klauzula \texttt{requires}.
+Skrócona postać z \texttt{auto} przydaje się w niewielkich funkcjach
+i lambdach.
+
+\section{Dwie role słowa \texttt{requires}}
+\label{sec:concepts-dwa-requires}
+
+Identyczny zapis słowny \texttt{requires} występuje w dwóch
+różnych konstrukcjach:
+\begin{enumerate}
+  \item \emph{requires-clause} -- klauzula ograniczająca deklarację;
+  \item \emph{requires-expression} -- wyrażenie logiczne, które bada
+  poprawność podanych wymagań.
+\end{enumerate}
+
+\begin{lstlisting}
+#include <concepts>
+
+template<class T>
+concept Incrementable = requires(T value) { // requires-expression
+    ++value;
+};
+
+template<class T>
+requires Incrementable<T>                // requires-clause
+void increment(T& x) {
+    ++x;
+}
+\end{lstlisting}
+
+Można je połączyć bez nadawania koncepcji osobnej nazwy:
+
+\begin{lstlisting}
+template<class T>
+requires requires(T x) { ++x; }
+void increment_again(T& x) {
+    ++x;
+}
+\end{lstlisting}
+
+Pierwsze \texttt{requires} w ostatnim przykładzie zaczyna klauzulę;
+drugie wprowadza wyrażenie sprawdzające wymagania. To poprawna
+składnia, choć przy wielokrotnym użyciu lepiej utworzyć nazwaną
+koncepcję.
+
+\section{Cztery rodzaje wymagań w \texttt{requires-expression}}
+\label{sec:concepts-cztery-wymagania}
+
+Wyrażenie \texttt{requires} umożliwia opisanie czterech rodzajów
+warunków. Parametry wpisane w nawiasach \texttt{requires(T x)}
+są jedynie \emph{lokalnymi parametrami do sprawdzania wyrażeń};
+nie tworzy się dla nich obiektów podczas działania programu.
+
+\subsection{Wymaganie proste (\textit{simple requirement})}
+
+\begin{lstlisting}
+#include <ostream>
+
+template<class T>
+concept Printable = requires(std::ostream& os, const T& x) {
+    os << x;                    // must be well-formed
+};
+\end{lstlisting}
+
+Wyrażenie \texttt{os << x}
+nie jest tutaj wykonywane; kompilator sprawdza jego poprawność.
+Proste wymaganie nie nakłada warunku na typ zwracany.
+
+\subsection{Wymaganie typu (\textit{type requirement})}
+
+\begin{lstlisting}
+#include <vector>
+
+template<class T>
+concept HasValueType = requires {
+    typename T::value_type;    // nested type must exist
+};
+
+static_assert(HasValueType<std::vector<int>>);
+static_assert(!HasValueType<int>);
+\end{lstlisting}
+
+Słowo \texttt{typename} jest tu składnikiem składni wymagania,
+a nie deklaracją nowego typu.
+
+\subsection{Wymaganie złożone (\textit{compound requirement})}
+
+\begin{lstlisting}
+#include <concepts>
+
+template<class T>
+concept AddableNoThrow = requires(const T& a, const T& b) {
+    { a + b } noexcept -> std::same_as<T>;
+};
+\end{lstlisting}
+
+Zapis \texttt{\{ wyrazenie \} noexcept -> Koncepcja;}
+może sprawdzać jednocześnie: poprawność wyrażenia,
+to, że jest ono \texttt{noexcept}, i własność typu
+\texttt{decltype((wyrazenie))}. Obie części, \texttt{noexcept}
+oraz \texttt{-> Koncepcja}, są opcjonalne.
+
+\begin{lstlisting}
+template<class T>
+concept PlusReturnsT = requires(const T& a, const T& b) {
+    { a + b } -> std::same_as<T>;
+};
+
+static_assert(PlusReturnsT<int>);
+// A type with a proxy return value may not satisfy this.
+\end{lstlisting}
+
+\paragraph{Uwaga na typ i konwersje.}
+Koncepcja \texttt{std::same\_as<T>} żąda \emph{dokładnie}
+typu \texttt{T}, natomiast koncepcja
+\texttt{std::convertible\_\allowbreak to<T>} dopuszcza konwersję.
+Dla \texttt{int} operator \texttt{+} daje \texttt{int}, ale np.
+dla małych typów całkowitych może zajść promocja do \texttt{int}.
+
+\subsection{Wymaganie zagnieżdżone (\textit{nested requirement})}
+
+\begin{lstlisting}
+#include <type_traits>
+
+template<class T>
+concept SmallTrivial = requires {
+    requires sizeof(T) <= 16;
+    requires std::is_trivially_copyable_v<T>;
+};
+
+static_assert(SmallTrivial<int>);
+\end{lstlisting}
+
+Wymaganie zagnieżdżone zaczyna się kolejnym \texttt{requires}
+i musi zawierać warunek stały. Jest wygodne, gdy wymaganie
+dotyczy własności typu, a nie określonego wyrażenia.
+
+\subsection{Przykład: połączenie różnych wymagań}
+
+\begin{lstlisting}
+#include <concepts>
+#include <cstddef>
+
+template<class T>
+concept Indexable = requires(T& obj, std::size_t i) {
+    typename T::value_type;
+    { obj.size() } -> std::convertible_to<std::size_t>;
+    obj[i];
+};
+\end{lstlisting}
+
+To przykład \emph{minimalnego kontraktu składniowego}.
+Koncepcja nie dowodzi, że indeks \texttt{i} jest w zakresie,
+że operacja jest szybka ani że wynik indeksowania zachowuje się
+jak zwykła referencja. Takie własności wymagają dodatkowych założeń.
+
+\section{Standardowe koncepcje z biblioteki C++20}
+\label{sec:concepts-standardowe}
+
+Przed napisaniem własnej koncepcji warto sprawdzić, czy istnieje
+gotowa w standardowej bibliotece.
+
+\subsection{Typy, konwersje i dziedziczenie}
+
+\begin{lstlisting}
+#include <concepts>
+
+static_assert(std::same_as<int, int>);
+static_assert(!std::same_as<int, long>);
+static_assert(std::integral<unsigned>);
+static_assert(std::signed_integral<int>);
+static_assert(std::unsigned_integral<unsigned>);
+static_assert(std::floating_point<double>);
+static_assert(std::convertible_to<int, double>);
+
+struct Base {};
+struct Derived : Base {};
+static_assert(std::derived_from<Derived, Base>);
+\end{lstlisting}
+
+\texttt{std::derived\_from<D,B>} obejmuje publiczne i jednoznaczne
+dziedziczenie oraz przypadek tego samego typu. Różni się pod tym
+względem od samego \texttt{std::is\_base\_of\_v}.
+
+\subsection{Konstruowalność, kopiowanie, przenoszenie i porównywanie}
+
+Przydatne są m.in. koncepcje wyrażające inicjalizowalność,
+konstruowalność, możliwość przenoszenia i kopiowania oraz porównywania:
+\begin{lstlisting}
+default_initializable    constructible_from
+move_constructible       copy_constructible
+movable                  copyable
+semiregular              regular
+equality_comparable      totally_ordered
+\end{lstlisting}
+
+\begin{lstlisting}
+#include <concepts>
+#include <memory>
+#include <string>
+
+static_assert(std::regular<int>);
+static_assert(std::copyable<std::string>);
+static_assert(std::movable<std::unique_ptr<int>>);
+static_assert(!std::copyable<std::unique_ptr<int>>);
+static_assert(std::totally_ordered<int>);
+\end{lstlisting}
+
+Koncepcje te opisują interfejs i zakładają także określone
+\emph{prawa semantyczne} (np. sensowne porównywanie). Sam kompilator
+nie potrafi udowodnić dowolnej własności semantycznej implementacji.
+
+\subsection{Funkcje wywoływalne i predykaty}
+
+\begin{lstlisting}
+#include <concepts>
+
+struct IsPositive {
+    bool operator()(int x) const { return x > 0; }
+};
+
+static_assert(std::invocable<IsPositive, int>);
+static_assert(std::predicate<IsPositive, int>);
+static_assert(!std::predicate<IsPositive, void*>);
+\end{lstlisting}
+
+\texttt{std::invocable<F,Args...>} sprawdza możliwość wywołania,
+natomiast \texttt{std::predicate} wymaga dodatkowo wyniku,
+którego można użyć jako warunku logicznego, i wiąże się
+z określonymi wymaganiami semantycznymi.
+
+\subsection{Iteratory i zakresy}
+
+Koncepcje iteratorów są udostępniane przez \texttt{<iterator>},
+a koncepcje zakresów przez \texttt{<ranges>}.
+
+\begin{lstlisting}
+#include <ranges>
+#include <vector>
+#include <list>
+
+static_assert(std::ranges::random_access_range<
+              std::vector<int>>);
+static_assert(std::ranges::bidirectional_range<
+              std::list<int>>);
+static_assert(!std::ranges::random_access_range<
+              std::list<int>>);
+\end{lstlisting}
+
+W szczególności przydatne są koncepcje \emph{input},
+\emph{forward}, \emph{bidirectional}, \emph{random access}
+i \emph{contiguous range}. Pozwalają opisywać wymagania
+algorytmów bez uzależniania ich od konkretnego kontenera.
+
+\section{Łączenie koncepcji i definiowanie własnych kontraktów}
+
+Wymagania można łączyć operatorami logicznymi
+\texttt{\&\&} i \texttt{||}. Często lepiej budować niewielkie,
+nazwane koncepcje niż powtarzać jedno długie wyrażenie.
+
+\begin{lstlisting}
+#include <concepts>
+
+template<class T>
+concept Arithmetic = std::integral<T> || std::floating_point<T>;
+
+template<class T>
+concept NonBooleanInteger =
+    std::integral<T> && !std::same_as<T, bool>;
+
+template<Arithmetic T>
+T cube(T x) { return x * x * x; }
+
+static_assert(Arithmetic<double>);
+static_assert(!NonBooleanInteger<bool>);
+\end{lstlisting}
+
+Dla połączenia \texttt{A \&\& B} wymaganie \texttt{B} jest
+sprawdzane dopiero, gdy \texttt{A} jest spełnione; analogicznie
+dla \texttt{A || B} drugi składnik jest potrzebny dopiero,
+gdy pierwszy nie jest spełniony. Ta reguła chroni często przed
+podstawianiem wyrażeń, które dla danego typu nie mają sensu.
+
+\begin{lstlisting}
+#include <concepts>
+#include <type_traits>
+
+template<class T>
+concept HasIntegralValueType =
+    requires { typename T::value_type; } &&
+    std::integral<typename T::value_type>;
+\end{lstlisting}
+
+W powyższym przykładzie odwołanie do \texttt{T::value\_type}
+po prawej stronie jest istotne dopiero po potwierdzeniu,
+że typ składowy istnieje. Należy jednak pamiętać, że złożone
+reguły podstawiania i normalizacji koncepcji mają swoje szczegóły;
+nie każdą źle sformułowaną deklarację naprawi samo zwarcie logiczne.
+
+\section{Koncepcje z wieloma parametrami}
+
+Koncepcja nie musi opisywać własności jednego typu.
+Może także opisywać \emph{relację między typami}.
+
+\begin{lstlisting}
+#include <concepts>
+
+template<class From, class To>
+concept SameType = std::same_as<From, To>;
+
+template<class Derived, class Base>
+concept PublicChildOf = std::derived_from<Derived, Base>;
+
+template<class T, class U>
+concept AddableTogether = requires(const T& a, const U& b) {
+    a + b;
+};
+
+static_assert(AddableTogether<int, double>);
+\end{lstlisting}
+
+Wymienione koncepcje \texttt{SameType} i
+\texttt{PublicChildOf} służą tu jedynie ilustracji składni.
+W praktyce używaj bezpośrednio standardowych
+\texttt{std::same\_as} i \texttt{std::derived\_from},
+jeżeli nie dodajesz do nich istotnego znaczenia domenowego.
+
+\paragraph{Wstawianie argumentu przy ograniczonym parametrze.}
+
+\begin{lstlisting}
+struct Animal {};
+
+template<std::derived_from<Animal> T>
+void inspect(const T&) {}
+
+// Equivalent constraint: std::derived_from<T, Animal>
+\end{lstlisting}
+
+W zapisie powyżej typ \texttt{T} jest podstawiany
+\emph{na pierwszej pozycji} koncepcji, zatem
+chodzi o warunek z poniższego przykładu:
+\begin{lstlisting}
+std::derived_from<T, Animal>
+\end{lstlisting}
+
+\section{Przeciążanie funkcji i wybór bardziej szczegółowego ograniczenia}
+\label{sec:concepts-przeciazanie}
+
+Ograniczenia uczestniczą w wyborze przeciążenia. Jeśli dwie funkcje
+są dopasowane do argumentów, kompilator może preferować tę,
+której ograniczenie jest bardziej szczegółowe (ang.
+\emph{subsumption}).
+
+\begin{lstlisting}
+#include <concepts>
+#include <string_view>
+
+template<class T>
+requires std::integral<T>
+constexpr std::string_view category(T) {
+    return "integral";
+}
+
+template<class T>
+requires std::signed_integral<T>
+constexpr std::string_view category(T) {
+    return "signed integral";
+}
+
+static_assert(category(12) == "signed integral");
+static_assert(category(12u) == "integral");
+\end{lstlisting}
+
+\texttt{std::signed\_integral} jest zbudowane na
+\texttt{std::integral} i dodaje dodatkowe wymaganie. Dzięki temu
+bardziej szczegółowe przeciążenie zostaje wybrane dla \texttt{int}.
+
+\subsection{Ważna pułapka: podobny zapis to nie to samo ograniczenie}
+
+Porządek ograniczeń nie jest ogólnym dowodzeniem implikacji
+matematycznych. Kompilator porównuje znormalizowane ograniczenia
+atomowe i ich \emph{tożsamość}, a nie tylko sens pozornie podobnych
+wyrażeń.
+
+\begin{lstlisting}
+#include <type_traits>
+
+template<class T>
+concept HasSize = requires(const T& x) { x.size(); };
+
+template<class T>
+concept HasSizeAndCopy =
+    HasSize<T> && std::is_copy_constructible_v<T>;
+
+template<class T> requires HasSize<T>
+int classify(const T&) { return 1; }
+
+template<class T> requires HasSizeAndCopy<T>
+int classify(const T&) { return 2; }
+\end{lstlisting}
+
+Druga koncepcja \emph{wykorzystuje tę samą} koncepcję
+\texttt{HasSize}, dlatego kompilator rozpoznaje wspólny
+składnik. Jeśli powtórzymy ręcznie nawet identycznie wyglądające
+wymaganie opisujące metodę \texttt{size()},
+nie mamy automatycznej gwarancji identyczności ograniczeń
+atomowych.
+
+\paragraph{Rekomendacja.}
+Twórz proste nazwane koncepcje i buduj bardziej szczegółowe
+z ich wykorzystaniem. Ułatwia to konserwację kodu i
+przewidywanie wyboru przeciążeń.
+
+\section{Koncepcje dla szablonów klas i ich specjalizacji}
+
+Ograniczać można nie tylko funkcje, lecz również szablony klas.
+
+\begin{lstlisting}
+#include <concepts>
+
+template<std::integral T>
+class Counter {
+    T value_{};
+public:
+    void add(T delta) { value_ += delta; }
+    T value() const { return value_; }
+};
+
+// Counter<int> a;       // OK
+// Counter<double> b;    // ERROR: constraint not satisfied
+\end{lstlisting}
+
+Ograniczenia mogą też sterować wyborem częściowej specjalizacji.
+
+\begin{lstlisting}
+#include <concepts>
+#include <string_view>
+
+template<class T>
+struct TypeLabel {
+    static constexpr std::string_view value = "other";
+};
+
+template<std::integral T>
+struct TypeLabel<T> {
+    static constexpr std::string_view value = "integer";
+};
+
+template<std::floating_point T>
+struct TypeLabel<T> {
+    static constexpr std::string_view value = "floating";
+};
+
+static_assert(TypeLabel<int>::value == "integer");
+static_assert(TypeLabel<double>::value == "floating");
+\end{lstlisting}
+
+Nie używaj jednak złożonego systemu specjalizacji, jeżeli
+prosta funkcja przeciążona lub \texttt{if constexpr}
+lepiej wyraża zamysł.
+
+\section{Koncepcje i pakiety parametrów: kontynuacja rozdziału 4}
+\label{sec:concepts-variadic}
+
+Koncepcje bardzo dobrze współpracują z \emph{variadic templates}.
+Możemy nakładać warunek na każdy element pakietu typów
+za pomocą \emph{fold expression}.
+
+\begin{lstlisting}
+#include <concepts>
+
+template<class... Ts>
+requires (std::integral<Ts> && ...)
+constexpr auto sum_integers(Ts... xs) {
+    return (0 + ... + xs);
+}
+
+static_assert(sum_integers() == 0);
+static_assert(sum_integers(1, 2, 3) == 6);
+// sum_integers(1, 2.5);    // ERROR: double not integral
+\end{lstlisting}
+
+Zapis \texttt{(P<Ts> \&\& ...)} reprezentuje
+koniunkcję wymagań dla wszystkich elementów pakietu.
+Dla pustego pakietu taki fold logiczny daje \texttt{true};
+nie oznacza to jednak, że każde ciało funkcji poradzi sobie
+z zerową liczbą argumentów. W przykładzie użyliśmy
+\texttt{0} jako elementu neutralnego sumowania.
+
+\subsection{Ograniczony pakiet typów i uniwersalne przekazywanie}
+
+\begin{lstlisting}
+#include <concepts>
+#include <utility>
+
+template<std::integral... Ts>
+void accept_integers(Ts&&... xs) {
+    ((void)std::forward<Ts>(xs), ...); // illustrative use
+}
+\end{lstlisting}
+
+Zapis \texttt{std::integral... Ts} również ogranicza wszystkie
+elementy pakietu. Uwaga: przy dedukcji z przekazywanymi referencjami
+\texttt{Ts\&\&}, typ \texttt{Ts} może być \emph{referencją},
+gdy argument jest lvalue. W takim przypadku
+\texttt{std::integral<Ts>} może być fałszywe.
+Jeżeli chcemy akceptować obie kategorie wartości, często
+właściwsze jest użycie \texttt{std::remove\_cvref\_t}:
+
+\begin{lstlisting}
+#include <concepts>
+#include <type_traits>
+#include <utility>
+
+template<class... Ts>
+requires (std::integral<std::remove_cvref_t<Ts>> && ...)
+void accept_any_int(Ts&&... xs) {
+    ((void)xs, ...); // demonstration; no ownership transfer
+}
+\end{lstlisting}
+
+Ta różnica jest szczególnie ważna przy projektowaniu generycznych
+wrapperów, które mają przyjmować także obiekty \texttt{const}
+i referencje.
+
+\section{Concepts a \texttt{if constexpr}, \texttt{static\_assert} i SFINAE}
+\label{sec:concepts-porownanie}
+
+Są to narzędzia pokrewne, ale mają różne cele.
+
+\subsection{\texttt{if constexpr}: wybór implementacji}
+
+\begin{lstlisting}
+#include <concepts>
+#include <string>
+#include <string_view>
+
+template<class T>
+std::string describe(const T& value) {
+    if constexpr (std::integral<T>) {
+        return "an integer";
+    } else if constexpr (std::floating_point<T>) {
+        return "a floating-point value";
+    } else {
+        return "another type";
+    }
+}
+\end{lstlisting}
+
+\texttt{if constexpr} umożliwia wybranie gałęzi kodu
+\emph{wewnątrz} szablonu. Nie tworzy samo przez się
+ograniczonego interfejsu. Z kolei \texttt{requires}
+może odrzucić niewłaściwe wywołanie jeszcze na etapie
+dobierania przeciążeń.
+
+\subsection{\texttt{static\_assert}: własny komunikat}
+
+\begin{lstlisting}
+#include <concepts>
+
+template<class T>
+void save_number(const T& value) {
+    static_assert(std::integral<T>,
+                  "save_number expects an integral type");
+    // ...
+}
+\end{lstlisting}
+
+\texttt{static\_assert} jest użyteczne, gdy potrzebujemy
+jednoznacznego komunikatu albo sprawdzamy niezmiennik wewnątrz
+implementacji. Nie zastępuje jednak ograniczenia uczestniczącego
+w rozstrzyganiu przeciążeń.
+
+\subsection{Przed C++20: \texttt{std::enable\_if} i idiom wykrywania}
+
+\begin{lstlisting}
+#include <type_traits>
+
+// C++11/14/17 technique:
+template<class T,
+         std::enable_if_t<std::is_integral_v<T>, int> = 0>
+T old_square(T x) {
+    return x * x;
+}
+
+// C++20:
+#include <concepts>
+template<std::integral T>
+T new_square(T x) {
+    return x * x;
+}
+\end{lstlisting}
+
+Dla nowego kodu C++20 najczęściej korzystniej wybrać
+koncepcję: intencja staje się czytelna i spójna z mechanizmem
+porządkowania przeciążeń. \texttt{std::enable\_if}
+nadal ma znaczenie w bibliotekach wspierających starsze
+wersje standardu.
+
+\section{Praktyczny przykład: średnia z zakresu liczb}
+\label{sec:concepts-praktyka}
+
+Zamiast pisać funkcję tylko dla \texttt{std::vector<double>},
+możemy określić dokładne wymagania wobec \emph{zakresu}.
+
+\begin{lstlisting}
+#include <concepts>
+#include <cstddef>
+#include <optional>
+#include <ranges>
+#include <vector>
+#include <array>
+
+template<class R>
+concept NumericInputRange =
+    std::ranges::input_range<R> &&
+    std::convertible_to<std::ranges::range_reference_t<R>, double>;
+
+template<NumericInputRange R>
+std::optional<double> average(R&& range) {
+    double sum = 0.0;
+    std::size_t count = 0;
+    for (auto&& item : range) {
+        sum += static_cast<double>(item);
+        ++count;
+    }
+    if (count == 0) return std::nullopt;
+    return sum / static_cast<double>(count);
+}
+
+int main() {
+    std::vector<int> v{2, 4, 6};
+    std::array<double, 2> a{3.0, 7.0};
+    auto x = average(v); // 4.0
+    auto y = average(a); // 5.0
+    auto z = average(std::vector<int>{}); // empty optional
+    return !(x && y && !z && *x == 4.0 && *y == 5.0);
+}
+\end{lstlisting}
+
+Funkcja działa dla różnych kontenerów i zakresów dostarczających
+iterację jednokierunkową. Warunek \texttt{input\_range}
+wyraża strukturę danych, a \texttt{convertible\_to}
+-- oczekiwany rodzaj elementów. Zastosowaliśmy
+\texttt{std::optional<double>}, aby pusty zakres nie powodował
+dzielenia przez zero. Dla zastosowań numerycznych należy
+dodatkowo rozważyć stabilność sumowania, przepełnienia i
+znaczenie konwersji do \texttt{double}.
+
+\paragraph{Kiedy \texttt{ranges}?}
+Koncepcje standardowych zakresów są szczególnie użyteczne,
+gdy funkcja operuje na sekwencji, ale nie wymaga konkretnie
+\texttt{std::vector} czy \texttt{std::list}. Zamiast wymuszać
+silniejsze wymaganie \texttt{random\_access\_range},
+wybieraj najsłabszą koncepcję, która wystarcza do działania
+algorytmu.
+
+\section{Koncepcje dla lambd i algorytmów}
+
+Funkcje anonimowe również mogą mieć ograniczone parametry.
+
+\begin{lstlisting}
+#include <concepts>
+
+int main() {
+    auto twice = [](std::integral auto x) { return x + x; };
+    return twice(5) != 10;
+}
+\end{lstlisting}
+
+Można też tworzyć generyczne algorytmy przyjmujące funkcje
+spełniające \texttt{std::predicate}.
+
+\begin{lstlisting}
+#include <concepts>
+#include <cstddef>
+#include <vector>
+
+template<class T, class Pred>
+requires std::predicate<Pred&, const T&>
+std::size_t count_if_custom(const std::vector<T>& values,
+                            Pred pred) {
+    std::size_t count = 0;
+    for (const T& x : values)
+        if (pred(x)) ++count;
+    return count;
+}
+\end{lstlisting}
+
+Zwróć uwagę na argumenty typu w
+\texttt{std::predicate<Pred\&, const T\&>}:
+sprawdzają możliwość wywołania \emph{konkretnego rodzaju}
+predykatu z \emph{konkretnym rodzajem} argumentu.
+Kategoria wartości ma znaczenie i nie należy bezrefleksyjnie
+wstawiać tu samych nazw typów.
+
+\section{Granice gwarancji: najczęstsze pułapki}
+\label{sec:concepts-pulapki}
+
+\subsection{Concept nie sprawdza dowolnej własności semantycznej}
+
+\begin{lstlisting}
+#include <concepts>
+
+struct Strange {
+    int value{};
+    bool operator==(const Strange&) const { return false; }
+};
+
+static_assert(std::equality_comparable<Strange>);
+// Syntactically valid, but equality lacks reflexivity.
+\end{lstlisting}
+
+Kompilator akceptuje składnię porównania, lecz
+\texttt{a == a} jest zawsze fałszywe. Kod nie spełnia
+matematycznych oczekiwań związanych z relacją równości.
+To obowiązek autora typu, niezależny od samego mechanizmu
+\texttt{concepts}.
+
+\subsection{Koncepcje nie zamieniają błędów w poprawny kod}
+
+Wyrażenia \texttt{requires} pozwalają w kontekście zależnym
+od parametru szablonu traktować niepoprawne podstawienia
+jako niespełnione wymagania. Nie oznacza to jednak, że
+\emph{każdy} błędny fragment C++ staje się automatycznie
+\texttt{false}. Niezależne od parametru, trwale niepoprawne
+konstrukcje mogą prowadzić do błędu kompilacji.
+
+\subsection{Różnica między \texttt{T}, \texttt{T\&} i \texttt{const T\&}}
+
+\begin{lstlisting}
+#include <concepts>
+#include <type_traits>
+
+template<class T>
+concept PlainInteger =
+    std::integral<std::remove_cvref_t<T>>;
+
+static_assert(!std::integral<int&>);
+static_assert(PlainInteger<int&>);
+static_assert(PlainInteger<const int&>);
+\end{lstlisting}
+
+Przy dedukcji typu generycznego parametru
+\texttt{T\&\&} ta różnica często decyduje o tym,
+czy z pozoru poprawne wywołanie spełni koncepcję.
+
+\subsection{\texttt{std::same\_as} czy \texttt{std::convertible\_to}?}
+
+\begin{lstlisting}
+#include <concepts>
+
+template<class T>
+concept StrictAdd = requires(T a, T b) {
+    { a + b } -> std::same_as<T>;
+};
+
+template<class T>
+concept FlexibleAdd = requires(T a, T b) {
+    { a + b } -> std::convertible_to<T>;
+};
+
+static_assert(!StrictAdd<short>);  // short + short -> int
+static_assert(FlexibleAdd<short>); // int -> short allowed
+\end{lstlisting}
+
+Koncepcja \texttt{FlexibleAdd} nie oznacza \emph{bezstratnej}
+konwersji; \texttt{int} można niejawnie przekształcić do
+\texttt{short}, tracąc informację. Nazwa koncepcji powinna
+odzwierciedlać rzeczywistą, a nie postulowaną gwarancję.
+
+\subsection{Funkcja ograniczona nie zawsze jest optymalniejsza}
+
+Koncepcje opisują poprawność i wybór instancji szablonów.
+Nie wymuszają \emph{inline}, wektoryzacji, eliminacji kopii
+ani lepszego kodu maszynowego. Można je stosować bez obietnicy
+przyspieszenia wykonywania programu.
+
+\section{Zasady projektowania: kiedy używać, a kiedy nie?}
+
+\begin{center}
+\small
+\begin{tabular}{|p{0.34\textwidth}|p{0.55\textwidth}|}
+\hline
+\textbf{Sytuacja} & \textbf{Zalecane rozwiązanie} \\
+\hline
+Funkcja generyczna wymaga konkretnej kategorii typów & Nazwany \texttt{concept}, np. \texttt{std::integral} \\
+\hline
+Wymagania dotyczą istnienia operacji lub typu składowego & Własny \texttt{requires-expression} \\
+\hline
+Ważne są różne wersje algorytmu dla różnych typów & Ograniczone przeciążenia lub specjalizacje \\
+\hline
+Jedna implementacja ma kilka gałęzi zależnych od typu & \texttt{if constexpr} \\
+\hline
+Sprawdzasz założenie wewnątrz ciała funkcji & \texttt{static\_assert} z komunikatem \\
+\hline
+Weryfikujesz jednakowy warunek dla całego pakietu & Fold \texttt{(Concept<Ts> \&\& ...)} \\
+\hline
+Potrzebujesz iteracji po sekwencji & \texttt{std::ranges::input\_range} lub silniejszy koncept \\
+\hline
+Funkcja działa dla jednego, konkretnego typu & Zwykła funkcja często jest prostsza niż szablon \\
+\hline
+Projekt musi działać także w C++17 & \texttt{type\_traits} i (w razie potrzeby) SFINAE \\
+\hline
+Wymagasz warunku wykonywania programu, np. \texttt{n>0} & Zwykłe sprawdzenie w czasie działania; koncept go nie zastępuje \\
+\hline
+\end{tabular}
+\end{center}
+
+\section{Podsumowanie i pytania kontrolne}
+
+\begin{enumerate}
+\item \texttt{concept} nazywa predykat nad parametrami szablonu,
+sprawdzany w czasie kompilacji.
+\item \texttt{requires-clause} ogranicza deklarację;
+\texttt{requires-expression} jest wyrażeniem badającym wymagania.
+\item Istnieją cztery formy wymagań: proste, typu, złożone
+i zagnieżdżone.
+\item \texttt{std::same\_as}, \texttt{std::convertible\_to},
+\texttt{std::integral}, \texttt{std::predicate} i koncepcje zakresów
+powinny być zwykle pierwszym wyborem.
+\item Ograniczenia mogą wpływać na wybór przeciążenia, ale mechanizm
+porządkowania nie jest dowolnym dowodzeniem implikacji logicznej.
+\item Nazwane koncepcje warto wykorzystywać ponownie przy
+budowaniu koncepcji bardziej szczegółowych.
+\item \texttt{std::remove\_cvref\_t<T>} ma często znaczenie
+przy koncepcjach typów dedukowanych z referencji przekazujących.
+\item Koncepcje opisują przede wszystkim wymagania składniowe,
+a dodatkowe prawa semantyczne muszą respektować autorzy typów.
+\end{enumerate}
+
+\paragraph{Pytania do samodzielnego sprawdzenia.}
+Zastanów się, co kompilator zaakceptuje i dlaczego:
+
+\begin{lstlisting}
+#include <concepts>
+#include <type_traits>
+
+static_assert(std::integral<bool>);
+static_assert(!std::integral<int&>);
+static_assert(std::integral<std::remove_cvref_t<const int&>>);
+static_assert(!std::same_as<int, long>);
+
+// 1. Why does StrictAdd<short> fail?
+// 2. Why can a concept be true for a logically broken ==?
+// 3. How do requires-clause and requires-expression differ?
+// 4. Which overload of category(5) is chosen?
+// 5. Why is NumericInputRange more general than vector<double>?
+\end{lstlisting}
+
+\paragraph{Źródła i dalsza lektura.}
+Oficjalne reguły języka określa standard ISO C++, a przystępne
+opisy i przykłady znajdują się w serwisie \emph{cppreference}.
+Przydatne adresy:
+\begin{lstlisting}
+en.cppreference.com/cpp/language/constraints
+en.cppreference.com/cpp/language/requires
+en.cppreference.com/cpp/concepts
+\end{lstlisting}

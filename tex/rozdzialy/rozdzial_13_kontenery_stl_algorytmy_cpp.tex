@@ -1,0 +1,957 @@
+% ROZDZIAL 13 — Kontenery STL i algorytmy w C++20.
+% Fragment do zbiorczego skryptu (bez \documentclass i \begin{document}).
+% Wymagania: listings, amsmath, amssymb, booktabs, tabularx, array, hyperref.
+% Kompilator kodu: C++20; nowe elementy standardu sa oznaczane w tekscie.
+% Dolaczenie: \input{rozdzial_13_kontenery_stl_algorytmy_cpp.tex}
+
+\chapter{Kontenery STL i algorytmy}
+\label{chap:cpp-stl-containers}
+
+\section{Cel i zakres rozdziału}
+
+Biblioteka standardowa C++ udostępnia gotowe struktury danych, których wybór ma
+istotne konsekwencje dla złożoności operacji, lokalności pamięci, bezpieczeństwa
+wyjątkowego i poprawności iteratorów. Samo rozróżnienie między
+\texttt{std::vector}, \texttt{std::list} i \texttt{std::map} nie wystarcza:
+trzeba rozumieć również \emph{własność elementów}, \emph{unieważnianie
+iteratorów}, wymagania dotyczące porządku i haszowania oraz relację między
+kontenerami a algorytmami. W dalszej części domyślnie używamy C++20.
+
+\paragraph{Główna zasada projektowa.}
+Najpierw ustalamy rzeczywiste operacje: czy potrzebujemy dostępu przez
+indeks, wyszukiwania po kluczu, zachowania kolejności, stabilnych adresów,
+czy częstych wstawek i usunięć. Dopiero potem wybieramy kontener. Prosty
+\texttt{std::vector} pozostaje często najlepszym rozwiązaniem, nawet gdy
+jego teoretyczna złożoność niektórych operacji jest gorsza, ponieważ dane
+leżą w sąsiadujących komórkach pamięci.
+
+\section{Klasyfikacja kontenerów i podstawowe pojęcia}
+\label{sec:cpp13-taxonomy}
+
+Biblioteka standardowa rozróżnia m.in. kontenery sekwencyjne
+(\texttt{array}, \texttt{vector}, \texttt{deque}, \texttt{list},
+\texttt{forward\_list}), uporządkowane asocjacyjne (\texttt{map},
+\texttt{set} i ich warianty \texttt{multi}) oraz nieuporządkowane
+asocjacyjne (\texttt{unordered\_map}, \texttt{unordered\_set} i warianty
+\texttt{multi}). \texttt{stack}, \texttt{queue} i \texttt{priority\_queue}
+są \emph{adapterami kontenerów}: oferują inny interfejs dostępu do
+wewnętrznej struktury danych. \texttt{std::string} jest wyspecjalizowaną
+strukturą sekwencyjną, ale semantykę tekstu omawiamy oddzielnie.
+
+\begin{center}
+\small
+\begin{tabularx}{\textwidth}{@{}lXXX@{}}
+\toprule
+\textbf{Kontener} & \textbf{Dostęp} & \textbf{Wstawienie / usunięcie} & \textbf{Typowe zastosowanie} \\
+\midrule
+\texttt{vector} & Indeks $O(1)$ & Koniec: zamortyzowane $O(1)$; środek: $O(n)$ & Dane zwarte, iteracja, obliczenia \\
+\texttt{deque} & Indeks $O(1)$ & Oba końce: $O(1)$; środek: $O(n)$ & Kolejka dwustronna \\
+\texttt{list} & Iteracja $O(n)$ & $O(1)$ przy znanym iteratorze & Stabilne węzły, \texttt{splice} \\
+\texttt{forward\_list} & Iteracja $O(n)$ & $O(1)$ za poprzednikiem & Lista jednokierunkowa \\
+\texttt{map} / \texttt{set} & Szukanie $O(\log n)$ & $O(\log n)$ & Klucze w ustalonej kolejności \\
+\texttt{unordered\_map} & Średnio $O(1)$ & Średnio $O(1)$ & Słownik, szybkie wyszukiwanie \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+W tabeli $n$ oznacza liczbę elementów, a koszty zależą od wymagań
+poszczególnych operacji. \texttt{unordered\_map} może w najgorszym
+przypadku wykonywać operacje w czasie $O(n)$ (np. przy wielu kolizjach).
+Sformułowanie ,,\emph{zamortyzowane} $O(1)$'' oznacza, że pojedyncza
+operacja może być kosztowna, ale średni koszt w długiej sekwencji operacji
+jest ograniczony stałą.
+
+\paragraph{Wartości, wskaźniki, referencje.}
+Kontenery zwykle przechowują \emph{własne obiekty elementów}.
+\texttt{std::vector<T>} nie jest kontenerem referencji do obiektów
+\texttt{T}; może za to przechowywać np. \texttt{std::reference\_wrapper<T>},
+\texttt{T*} lub \texttt{std::unique\_ptr<T>}. Wybór wpływa na własność
+obiektów, kopiowanie, czas życia i poprawność dostępu.
+
+\section{\texttt{std::vector}: domyślny kontener sekwencyjny}
+\label{sec:cpp13-vector}
+
+\texttt{std::vector<T>} przechowuje elementy \emph{ciągle} w pamięci,
+co pozwala przekazywać je do interfejsów oczekujących tablicy (np. przez
+\texttt{data()} lub \texttt{std::span}). Obiekt wektora zarządza własną
+pamięcią i niszczy elementy po zakończeniu swojego czasu życia.
+
+\begin{lstlisting}[caption={Podstawowe operacje na vector (C++11); kompletny program.}]
+#include <cassert>
+#include <vector>
+
+int main() {
+    std::vector<int> v{4, 8, 15};
+    v.push_back(16);           // kopiowanie lub przenoszenie argumentu
+    v.emplace_back(23);        // konstruowanie nowego elementu
+
+    assert(v.size() == 5);
+    assert(v[0] == 4);
+    assert(v.at(4) == 23);
+    assert(v.front() == 4 && v.back() == 23);
+
+    v.pop_back();
+    assert(v.size() == 4);
+    v.clear();
+    assert(v.empty());
+}
+\end{lstlisting}
+
+\texttt{operator[]} \emph{nie sprawdza} granic: użycie indeksu spoza zakresu
+prowadzi do niezdefiniowanego zachowania. Metoda \texttt{at()} sprawdza
+zakres i zgłasza \texttt{std::out\_of\_range}. Metody \texttt{front()},
+\texttt{back()} i \texttt{pop\_back()} wymagają niepustego kontenera.
+
+\subsection{\texttt{size}, \texttt{capacity}, \texttt{reserve} i \texttt{resize}}
+
+\texttt{size()} oznacza liczbę \emph{istniejących} elementów, a
+\texttt{capacity()} liczbę elementów, dla których przydzielono miejsce
+bez konieczności realokacji. \texttt{reserve(k)} zmienia rezerwację
+pamięci, nie tworzy elementów; \texttt{resize(k)} zmienia ich liczbę.
+
+\begin{lstlisting}[caption={Rezerwacja pamięci nie zwiększa rozmiaru (C++11); kompletny program.}]
+#include <cassert>
+#include <vector>
+
+int main() {
+    std::vector<int> data;
+    data.reserve(100);
+    assert(data.size() == 0);
+    assert(data.capacity() >= 100);
+
+    data.push_back(7);
+    data.resize(4);          // dopisuje trzy elementy o wartosci 0
+    assert(data.size() == 4);
+    assert(data[0] == 7 && data[3] == 0);
+}
+\end{lstlisting}
+
+Nie należy wywoływać \texttt{reserve(size()+1)} przed każdym
+\texttt{push\_back()}: wymuszenie niemal liniowego wzrostu pojemności
+może zniweczyć politykę geometrycznego powiększania bufora i pogorszyć
+wydajność. \texttt{shrink\_to\_fit()} jest tylko żądaniem, a nie gwarancją
+zmniejszenia pojemności.
+
+\subsection{Realokacja i unieważnianie iteratorów}
+
+Po realokacji \texttt{vector} zmienia adresy wszystkich elementów:
+tracą ważność iteratory, referencje i wskaźniki do elementów, również
+poprzednia wartość \texttt{data()}. Bez realokacji \texttt{push\_back()}
+unieważnia iterator \texttt{end()}, lecz nie unieważnia iteratorów i
+referencji do wcześniej istniejących elementów. Wstawienie w środku
+bez realokacji unieważnia iteratory i referencje do pozycji wstawienia
+oraz wszystkich późniejszych pozycji (włącznie z dawnym \texttt{end()}).
+
+\begin{lstlisting}[caption={Bezpieczne ponowne pobranie iteratora po wstawieniu; kompletny program.}]
+#include <cassert>
+#include <vector>
+
+int main() {
+    std::vector<int> v{1, 3, 4};
+    auto pos = v.begin() + 1;
+    pos = v.insert(pos, 2);   // przyjmuje zwrocony iterator
+    assert(*pos == 2);
+    assert((v == std::vector<int>{1, 2, 3, 4}));
+}
+\end{lstlisting}
+
+\paragraph{Przenoszenie elementów i bezpieczeństwo wyjątkowe.}
+Podczas realokacji \texttt{vector} może przenosić lub kopiować elementy.
+Dla pewnych typów i operacji warunki silnej gwarancji wyjątkowej zależą
+od tego, czy konstruktor przenoszący jest \texttt{noexcept} oraz czy
+dostępne jest kopiowanie. Zagadnienie łączy się bezpośrednio z semantyką
+przenoszenia omówioną w rozdziale 6.
+
+\subsection{\texttt{push\_back} kontra \texttt{emplace\_back}}
+
+\texttt{emplace\_back(args...)} przekazuje argumenty bezpośrednio do
+konstruktora nowego elementu. Nie oznacza to jednak automatycznie
+,,zawsze szybciej'': jeśli mamy już obiekt, \texttt{push\_back(std::move(x))}
+bywa równie naturalne; przy realokacji nadal konieczne może być
+przeniesienie innych elementów. Obie funkcje mogą zgłaszać wyjątki.
+
+\begin{lstlisting}[caption={Konstruowanie elementu z argumentow (C++17); kompletny program.}]
+#include <cassert>
+#include <string>
+#include <utility>
+#include <vector>
+
+struct Person {
+    std::string name;
+    int age;
+    Person(std::string n, int a) : name(std::move(n)), age(a) {}
+};
+
+int main() {
+    std::vector<Person> people;
+    people.emplace_back("Ada", 31);
+    people.push_back(Person{"Alan", 42});
+    assert(people[1].age == 42);
+}
+\end{lstlisting}
+
+\section{\texttt{std::array}, \texttt{std::deque} i listy}
+\label{sec:cpp13-sequential}
+
+\subsection{\texttt{std::array<T,N>}: rozmiar znany w kompilacji}
+
+\texttt{std::array} przechowuje dokładnie $N$ elementów. Nie dokonuje
+osobnej dynamicznej alokacji dla swojej zawartości; pamięć elementów
+stanowi część samego obiektu \texttt{array}. Można używać iteratorów,
+\texttt{size()}, \texttt{data()} i algorytmów, analogicznie do wektora.
+
+\begin{lstlisting}[caption={std::array i algorytmy standardowe (C++11); kompletny program.}]
+#include <algorithm>
+#include <array>
+#include <cassert>
+#include <tuple>
+
+int main() {
+    std::array<int, 4> x{5, 1, 4, 2};
+    std::sort(x.begin(), x.end());
+    assert((x == std::array<int, 4>{1, 2, 4, 5}));
+    static_assert(std::tuple_size_v<decltype(x)> == 4);
+}
+\end{lstlisting}
+
+\subsection{\texttt{std::deque}: dwa tanie końce}
+
+\texttt{deque} udostępnia dostęp indeksowany w czasie $O(1)$, lecz
+zwykle nie jest jednym ciągłym blokiem pamięci. Wstawianie i usuwanie
+na początku i końcu ma stałą złożoność; w przeciwieństwie do
+\texttt{vector} ma operacje \texttt{push\_front()} i \texttt{pop\_front()}.
+\texttt{deque} nie udostępnia \texttt{data()} dla wszystkich elementów.
+
+\begin{lstlisting}[caption={Kolejka dwustronna (C++11); kompletny program.}]
+#include <cassert>
+#include <deque>
+
+int main() {
+    std::deque<int> q{2, 3};
+    q.push_front(1);
+    q.push_back(4);
+    assert(q[0] == 1 && q[3] == 4);
+    q.pop_front();
+    assert(q.front() == 2);
+}
+\end{lstlisting}
+
+Wstawienie na końcu \texttt{deque} może unieważnić \emph{iteratory},
+ale zachowuje referencje do istniejących elementów. Szczegółowe reguły
+różnią się dla wstawień i usunięć w środku oraz na końcach; nie należy
+mechanicznie przenosić reguł \texttt{vector} na \texttt{deque}.
+
+\subsection{\texttt{std::list} i \texttt{std::forward\_list}}
+
+\texttt{list} jest listą dwukierunkową. Wstawianie i usuwanie przy
+znanym iteratorze odbywa się w stałym czasie; iteratory i referencje
+do pozostałych elementów pozostają ważne. Wyszukanie elementu przez
+wartość wymaga jednak przejścia listy $O(n)$, podobnie jak uzyskanie
+elementu o zadanym indeksie. W przeciwieństwie do \texttt{vector},
+\texttt{list} nie oferuje operatora \texttt{[]} ani iteratorów dostępu
+swobodnego. Do sortowania używamy \texttt{list::sort()}, a nie
+\texttt{std::sort()}.
+
+\begin{lstlisting}[caption={Przeniesienie wezla przez list::splice (C++11); kompletny program.}]
+#include <cassert>
+#include <iterator>
+#include <list>
+
+int main() {
+    std::list<int> source{1, 2, 3};
+    std::list<int> target{10};
+    auto it = std::next(source.begin()); // wskazuje 2
+
+    target.splice(target.end(), source, it);
+    assert(*it == 2); // iterator pozostaje wazny
+    assert(source.size() == 2 && target.size() == 2);
+    target.sort();
+    assert(target.front() == 2);
+}
+\end{lstlisting}
+
+\texttt{forward\_list} przechowuje węzły listy jednokierunkowej;
+wstawianie i usuwanie wykonuje \emph{za} wskazanym poprzednikiem
+(\texttt{insert\_after}, \texttt{erase\_after}), a \texttt{before\_begin()}
+udostępnia pozycję przed pierwszym elementem. Kontener nie posiada
+metody \texttt{size()} (rozmiar można policzyć liniowo przez
+\texttt{std::distance}).
+
+\paragraph{Kiedy lista jest rzeczywiście potrzebna?}
+Lista bywa przydatna, gdy musimy często \emph{przenosić węzły bez
+kopiowania obiektów} i wymagamy stabilnych iteratorów. Dla częstej
+iteracji i obliczeń numerycznych \texttt{vector} z reguły zapewnia
+lepszą lokalność pamięci. Wybór należy jednak potwierdzić pomiarem.
+
+\section{Kontenery uporządkowane: \texttt{set} i \texttt{map}}
+\label{sec:cpp13-ordered}
+
+\texttt{std::set<Key>} przechowuje unikalne klucze, a
+\texttt{std::map<Key,T>} unikalne pary klucz--wartość. Elementy są
+iterowane w kolejności zdefiniowanej przez komparator; wyszukiwanie,
+wstawianie i usuwanie są logarytmiczne. Warianty
+\texttt{multiset}/\texttt{multimap} dopuszczają powtarzające się klucze.
+
+\subsection{\texttt{map::operator[]}, \texttt{at} i \texttt{find}}
+
+Odwołanie \texttt{m[key]} do nieistniejącego klucza \emph{wstawia} nowy
+element z wartością inicjalizowaną domyślnie; może zatem modyfikować
+strukturę danych. \texttt{at()} zgłasza wyjątek, jeżeli klucz nie
+istnieje. \texttt{find()} zwraca iterator, a \texttt{contains()} (C++20)
+zwraca wartość logiczną bez wstawiania.
+
+\begin{lstlisting}[caption={Liczenie czestosci slow z map (C++20); kompletny program.}]
+#include <cassert>
+#include <map>
+#include <string>
+#include <vector>
+
+int main() {
+    std::vector<std::string> words{"kot", "pies", "kot"};
+    std::map<std::string, int> count;
+    for (const auto& word : words) ++count[word];
+
+    assert(count.at("kot") == 2);
+    assert(count.contains("pies"));
+    assert(!count.contains("lis"));
+    assert(count.find("lis") == count.end());
+}
+\end{lstlisting}
+
+\subsection{\texttt{insert}, \texttt{try\_emplace}, \texttt{insert\_or\_assign}}
+
+\texttt{insert} podejmuje próbę dodania gotowej pary.
+\texttt{try\_emplace(key,args...)} (C++17) konstruuje wartość
+w miejscu z przekazanych argumentów tylko wtedy, gdy klucz nie występuje.
+Ważne zastrzeżenie: \emph{wyrażenia będące argumentami wywołania}
+są obliczane jeszcze przed wejściem do \texttt{try\_emplace}; nie
+należy więc podawać niepotrzebnie kosztownego wyrażenia tworzącego
+tymczasowy obiekt. \texttt{insert\_or\_assign} dodaje lub zastępuje wartość.
+
+\begin{lstlisting}[caption={Rozne operacje modyfikacji map (C++17); kompletny program.}]
+#include <cassert>
+#include <map>
+#include <memory>
+#include <string>
+
+struct Heavy {
+    static inline int constructions = 0; // C++17
+    int value;
+    explicit Heavy(int x) : value(x) { ++constructions; }
+};
+
+int main() {
+    std::map<std::string, Heavy> m;
+    auto [it, added] = m.try_emplace("a", 3);
+    assert(added && it->second.value == 3);
+
+    auto [again, added_again] = m.try_emplace("a", 4);
+    assert(!added_again && again->second.value == 3);
+    assert(Heavy::constructions == 1);
+
+    m.insert_or_assign("a", Heavy{9});
+    assert(m.at("a").value == 9);
+
+    std::map<int, std::unique_ptr<int>> owned;
+    owned.try_emplace(1, std::make_unique<int>(10));
+    assert(*owned.at(1) == 10);
+}
+\end{lstlisting}
+
+\subsection{Własny komparator i ścisły słaby porządek}
+
+Porównanie musi spełniać warunek \emph{strict weak ordering}; w
+szczególności komparator powinien być irrefleksyjny
+($\neg\operatorname{comp}(x,x)$) i przechodni. Jeżeli dwie wartości
+$ a,b $ nie spełniają ani \texttt{comp(a,b)}, ani \texttt{comp(b,a)},
+kontener uznaje je za równoważne jako klucze --- nawet gdy
+\texttt{operator==} zwraca \texttt{false}. Wymagania tego porządku
+są istotne również dla \texttt{sort} i \texttt{lower\_bound}.
+
+\begin{lstlisting}[caption={Mapowanie bez rozrozniania wielkosci liter: prosty komparator; kompletny program.}]
+#include <cassert>
+#include <cctype>
+#include <map>
+#include <string>
+
+struct CaseInsensitiveLess {
+    bool operator()(const std::string& a,
+                    const std::string& b) const {
+        auto ai = a.begin();
+        auto bi = b.begin();
+        while (ai != a.end() && bi != b.end()) {
+            auto x = static_cast<unsigned char>(*ai++);
+            auto y = static_cast<unsigned char>(*bi++);
+            int lx = std::tolower(x);
+            int ly = std::tolower(y);
+            if (lx != ly) return lx < ly;
+        }
+        return a.size() < b.size();
+    }
+};
+
+int main() {
+    std::map<std::string, int, CaseInsensitiveLess> m;
+    m.emplace("ABC", 1);
+    m.emplace("abc", 2); // rownowazny klucz
+    assert(m.size() == 1 && m.begin()->second == 1);
+}
+\end{lstlisting}
+
+Przykład porównuje bajty w podstawowym środowisku znakowym;
+\texttt{std::tolower} z bieżącą lokalizacją C nie realizuje ogólnego
+Unicode case folding. Do pełnego porównywania napisów w Unicode trzeba
+zastosować osobne, świadomie wybrane reguły normalizacji i kolacji.
+
+\subsection{Wyszukiwanie heterogeniczne}
+
+Jeżeli komparator jest \emph{transparentny} (np. \texttt{std::less<>}),
+\texttt{std::map<std::string,T,std::less<>>} umożliwia wyszukiwanie
+przez \texttt{std::string\_view} bez konieczności tworzenia tymczasowego
+\texttt{std::string}. Heterogeniczne przeciążenia \texttt{find} są dostępne
+od C++14, a \texttt{contains} od C++20.
+
+\begin{lstlisting}[caption={Heterogeniczne wyszukiwanie w map (C++20); kompletny program.}]
+#include <cassert>
+#include <functional>
+#include <map>
+#include <string>
+#include <string_view>
+
+int main() {
+    std::map<std::string, int, std::less<>> m{{"alpha", 3}};
+    std::string_view key = "alpha";
+    auto it = m.find(key);
+    assert(it != m.end() && it->second == 3);
+    assert(m.contains(key));
+}
+\end{lstlisting}
+
+\subsection{Zmiana klucza przez uchwyt węzła (C++17)}
+
+Kluczy w \texttt{map} nie wolno modyfikować bezpośrednio przez iterator.
+Uchwyt \texttt{node\_handle} uzyskany przez \texttt{extract()} pozwala
+wyjąć węzeł, zmienić jego klucz i wstawić z powrotem. Trzeba pamiętać,
+że ponowne wstawienie może się nie udać z powodu kolizji kluczy.
+
+\begin{lstlisting}[caption={Zmiana klucza przez extract (C++17); kompletny program.}]
+#include <cassert>
+#include <map>
+#include <string>
+
+int main() {
+    std::map<std::string, int> m{{"old", 7}};
+    auto node = m.extract("old");
+    assert(!node.empty());
+    node.key() = "new";
+    auto result = m.insert(std::move(node));
+    assert(result.inserted && m.at("new") == 7);
+}
+\end{lstlisting}
+
+\section{Kontenery haszujące: \texttt{unordered\_map} i \texttt{unordered\_set}}
+\label{sec:cpp13-unordered}
+
+Kontener \texttt{unordered\_map<Key,T,Hash,Eq>} rozmieszcza elementy
+w kubełkach. Funkcja \texttt{Hash} przekształca klucz w wartość typu
+\texttt{std::size\_t}; \texttt{Eq} rozstrzyga równość kluczy.
+Wymagany jest warunek zgodności:
+\[
+\operatorname{Eq}(a,b) \Longrightarrow
+\operatorname{Hash}(a)=\operatorname{Hash}(b).
+\]
+Warunek odwrotny nie zachodzi: kolizje haszy są dozwolone i
+rozstrzygane przez porównanie kluczy. Iteracja po kontenerze
+nie ma stabilnego porządku i nie należy z niego korzystać jako z
+interfejsu logicznego programu.
+
+\begin{lstlisting}[caption={Wlasny hash i porownanie kluczy (C++20); kompletny program.}]
+#include <cassert>
+#include <cstddef>
+#include <functional>
+#include <unordered_map>
+
+struct Point {
+    int x, y;
+    friend bool operator==(const Point&, const Point&) = default;
+};
+
+struct PointHash {
+    std::size_t operator()(const Point& p) const noexcept {
+        std::size_t h1 = std::hash<int>{}(p.x);
+        std::size_t h2 = std::hash<int>{}(p.y);
+        return h1 ^ (h2 + std::size_t{0x9e3779b9}
+                        + (h1 << 6) + (h1 >> 2));
+    }
+};
+
+int main() {
+    std::unordered_map<Point, int, PointHash> m;
+    m[{2, 5}] = 42;
+    assert(m.at(Point{2, 5}) == 42);
+}
+\end{lstlisting}
+
+Ta funkcja mieszająca służy demonstracji składni, a nie zastosowaniom
+kryptograficznym. Dla publicznie sterowanych kluczy przy projektowaniu
+systemów wystawionych na ataki kolizyjne należy rozważyć również
+odporność na złośliwe dane wejściowe.
+
+\subsection{\texttt{load\_factor}, \texttt{reserve} i \texttt{rehash}}
+
+\texttt{load\_factor()} to stosunek liczby elementów do liczby kubełków.
+\texttt{max\_load\_factor()} podaje lub ustawia pożądany maksymalny
+współczynnik. \texttt{reserve(n)} żąda przygotowania na $n$ elementów,
+a \texttt{rehash(k)} na przynajmniej $k$ kubełków, z uwzględnieniem
+limitów wynikających z współczynnika wypełnienia.
+
+\begin{lstlisting}[caption={Rezerwowanie kubelek przed licznymi wstawkami (C++11); kompletny program.}]
+#include <cassert>
+#include <unordered_set>
+
+int main() {
+    std::unordered_set<int> seen;
+    seen.reserve(1000);
+    for (int i = 0; i < 1000; ++i) seen.insert(i);
+    assert(seen.size() == 1000);
+    assert(seen.contains(17));
+}
+\end{lstlisting}
+
+Rehashing unieważnia iteratory, lecz \emph{nie unieważnia} wskaźników
+i referencji do elementów. Wstawienie może unieważnić iteratory, jeśli
+wywoła rehash. Usunięcie unieważnia iteratory i referencje do usuniętych
+elementów. Nie wolno modyfikować kluczy w sposób zaburzający ich hash
+lub równość podczas przebywania elementów w kontenerze.
+
+\section{Adaptery: \texttt{stack}, \texttt{queue}, \texttt{priority\_queue}}
+\label{sec:cpp13-adaptors}
+
+\texttt{stack} udostępnia schemat LIFO, \texttt{queue} --- FIFO,
+a \texttt{priority\_queue} --- dostęp do elementu o najwyższym
+priorytecie według komparatora (domyślnie do największego).
+Adaptery zwykle nie zapewniają bezpośredniej iteracji po elementach.
+
+\begin{lstlisting}[caption={Trzy adaptery standardowe (C++11); kompletny program.}]
+#include <cassert>
+#include <functional>
+#include <queue>
+#include <stack>
+#include <vector>
+
+int main() {
+    std::stack<int> s;
+    s.push(1); s.push(2);
+    assert(s.top() == 2);
+    s.pop();
+
+    std::queue<int> q;
+    q.push(1); q.push(2);
+    assert(q.front() == 1);
+    q.pop();
+
+    std::priority_queue<int, std::vector<int>, std::greater<int>> pq;
+    pq.push(7); pq.push(2); pq.push(5);
+    assert(pq.top() == 2); // kopiec minimum
+}
+\end{lstlisting}
+
+\texttt{priority\_queue} zwykle opiera się na kopcu: \texttt{top()} ma
+koszt $O(1)$, a \texttt{push()} i \texttt{pop()} $O(\log n)$. Nie jest
+to kolejka FIFO ani struktura z aktualizacją priorytetu dowolnego elementu
+przez gotowy publiczny interfejs.
+
+\section{Iteratory, stabilność adresów i unieważnianie}
+\label{sec:cpp13-invalidation}
+
+Iterator nie jest ogólnie tożsamy ze wskaźnikiem. Może przechowywać
+stan niezbędny do poruszania się po drzewie lub kubełkach. Po operacji
+modyfikującej trzeba wiedzieć, czy iterator, referencja i wskaźnik do
+elementu pozostają ważne. Typowe reguły podsumowano w tabeli.
+
+\begin{center}
+\footnotesize
+\begin{tabularx}{\textwidth}{@{}lXX@{}}
+\toprule
+\textbf{Kontener} & \textbf{Wstawienie} & \textbf{Usunięcie} \\
+\midrule
+\texttt{vector} & Przy realokacji: wszystkie iteratory i referencje; bez realokacji: pozycja wstawienia i dalej & Pozycja usunięcia i dalej (także dawny \texttt{end()}) \\
+\texttt{deque} & Na końcach: iteratory tracą ważność, referencje do elementów zwykle pozostają; w środku: także referencje & Zależy od pozycji; usunięcie w środku unieważnia wszystkie iteratory i referencje \\
+\texttt{list} & Istniejące iteratory i referencje zachowane & Tylko usunięte elementy \\
+\texttt{map}, \texttt{set} & Istniejące iteratory i referencje zachowane & Tylko usunięte elementy \\
+\texttt{unordered\_*} & Iteratory mogą utracić ważność przy rehash; referencje zachowane & Tylko usunięte elementy \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+Dla \texttt{deque} szczególnie ostrożnie trzeba traktować
+\texttt{end()}, którego ważność zależy od rodzaju usunięcia.
+W tabeli podano reguły najważniejsze dla praktyki, a nie kompletną
+specyfikację każdej przeciążonej operacji. Po operacjach zmieniających
+strukturę bezpieczną praktyką jest korzystanie z iteratora zwróconego
+przez metodę (np. \texttt{erase}, \texttt{insert}).
+
+\subsection{Bezpieczne usuwanie podczas iteracji}
+
+\begin{lstlisting}[caption={Usuwanie elementow map podczas iteracji (C++11); kompletny program.}]
+#include <cassert>
+#include <map>
+
+int main() {
+    std::map<int, int> m{{1, 2}, {2, 3}, {3, 4}};
+    for (auto it = m.begin(); it != m.end();) {
+        if (it->second % 2 == 0) it = m.erase(it);
+        else ++it;
+    }
+    assert(m.size() == 1 && m.contains(2));
+}
+\end{lstlisting}
+
+\paragraph{Szczególny przypadek \texttt{vector<bool>}.}
+\texttt{std::vector<bool>} jest specjalizacją oszczędzającą pamięć,
+która może reprezentować wartości w postaci bitów. Jej \texttt{operator[]}
+nie musi zwracać \texttt{bool\&}, tylko specjalny obiekt proxy. Nie
+należy oczekiwać normalnej tablicy obiektów \texttt{bool}, ciągłego
+przechowywania pojedynczych \texttt{bool} ani bezpiecznej modyfikacji
+odrębnych bitów z różnych wątków bez synchronizacji.
+
+\section{Algorytmy standardowe i wymagania wobec iteratorów}
+\label{sec:cpp13-algorithms}
+
+Algorytmy oddzielają \emph{operację} od \emph{reprezentacji danych}.
+Wersje klasyczne przyjmują iteratory, a w C++20 wiele algorytmów
+w \texttt{std::ranges} można wywołać bezpośrednio na zakresie. Szczegóły
+kategorii iteratorów i widoków omówiliśmy w rozdziale 8; tutaj skupiamy
+się na doborze algorytmu i jego kontrakcie.
+
+\subsection{Wyszukiwanie, transformacje i agregacje}
+
+Do częstych operacji należą \texttt{find}, \texttt{find\_if},
+\texttt{count\_if}, \texttt{transform}, \texttt{accumulate},
+\texttt{all\_of}, \texttt{any\_of}, \texttt{none\_of} i
+\texttt{for\_each}. Algorytmy numeryczne znajdują się w nagłówku
+\texttt{<numeric>}, pozostałe głównie w \texttt{<algorithm>}.
+
+\begin{lstlisting}[caption={Algorytmy klasyczne i Ranges (C++20); kompletny program.}]
+#include <algorithm>
+#include <cassert>
+#include <numeric>
+#include <vector>
+
+int main() {
+    std::vector<int> values{1, 2, 3, 4, 5};
+    auto even = [](int x) { return x % 2 == 0; };
+
+    assert(std::ranges::count_if(values, even) == 2);
+    assert(std::ranges::all_of(values,
+        [](int x) { return x > 0; }));
+    assert(std::accumulate(values.begin(), values.end(), 0) == 15);
+
+    std::vector<int> squares(values.size());
+    std::ranges::transform(values, squares.begin(),
+                           [](int x) { return x * x; });
+    assert(squares[2] == 9);
+}
+\end{lstlisting}
+
+\subsection{Sortowanie i stabilność kolejności}
+
+\texttt{std::sort} wymaga iteratorów dostępu swobodnego i ma
+złożoność $O(n\log n)$ w najgorszym przypadku (w liczbie porównań).
+\texttt{stable\_sort} zachowuje kolejność elementów, które komparator
+uznaje za równoważne, zwykle kosztem dodatkowych zasobów; jego
+szczegółowe gwarancje złożoności zależą od dostępnej pamięci.
+\texttt{nth\_element} umieszcza wybrany element na pozycji, którą
+zajmowałby po sortowaniu, bez sortowania całej sekwencji; przeciętna
+liczba porównań jest liniowa.
+
+\begin{lstlisting}[caption={Stabilne sortowanie rekordow po kluczu (C++20); kompletny program.}]
+#include <algorithm>
+#include <cassert>
+#include <string>
+#include <vector>
+
+struct Record {
+    std::string name;
+    int group;
+};
+
+int main() {
+    std::vector<Record> v{{"A", 2}, {"B", 1}, {"C", 2}};
+    std::ranges::stable_sort(v, {}, &Record::group);
+    assert(v[0].name == "B");
+    assert(v[1].name == "A" && v[2].name == "C");
+}
+\end{lstlisting}
+
+\subsection{Wyszukiwanie binarne i porządek wejścia}
+
+\texttt{binary\_search}, \texttt{lower\_bound}, \texttt{upper\_bound}
+i \texttt{equal\_range} wymagają odpowiedniego uporządkowania
+(lub partycjonowania względem danego klucza) zakresu. Zastosowanie
+do nieuporządkowanych danych daje wynik niespełniający kontraktu
+algorytmu. W wersjach na iteratorach nie-losowego dostępu liczba
+porównań może pozostać logarytmiczna, lecz przesuwanie iteratorów
+może być liniowe.
+
+\begin{lstlisting}[caption={Wyszukiwanie miejsca wstawienia w posortowanym vector (C++11); kompletny program.}]
+#include <algorithm>
+#include <cassert>
+#include <vector>
+
+int main() {
+    std::vector<int> sorted{1, 3, 3, 7};
+    auto it = std::lower_bound(sorted.begin(), sorted.end(), 3);
+    assert(it == sorted.begin() + 1);
+
+    auto upper = std::upper_bound(sorted.begin(), sorted.end(), 3);
+    assert(upper == sorted.begin() + 3);
+    assert(std::binary_search(sorted.begin(), sorted.end(), 7));
+}
+\end{lstlisting}
+
+\subsection{Idiom \emph{erase--remove} i \texttt{std::erase\_if}}
+
+\texttt{std::remove} nie usuwa elementów \emph{z kontenera}:
+przestawia elementy pozostające i zwraca logiczny nowy koniec.
+Rozmiar kontenera zmniejsza dopiero wywołanie \texttt{erase}.
+Od C++20 wygodniej używać \texttt{std::erase} i
+\texttt{std::erase\_if} dla wspieranych kontenerów.
+
+\begin{lstlisting}[caption={Dwa sposoby usuwania z vector (C++20); kompletny program.}]
+#include <algorithm>
+#include <cassert>
+#include <vector>
+
+int main() {
+    std::vector<int> a{1, 2, 3, 4, 5};
+    auto last = std::remove_if(a.begin(), a.end(),
+                               [](int x) { return x % 2 == 0; });
+    a.erase(last, a.end());
+    assert((a == std::vector<int>{1, 3, 5}));
+
+    std::vector<int> b{1, 2, 3, 4, 5};
+    auto removed = std::erase_if(b,
+                                 [](int x) { return x % 2 == 0; });
+    assert(removed == 2 && b == a);
+}
+\end{lstlisting}
+
+Dla kontenerów asocjacyjnych nie wolno stosować klasycznego
+\texttt{remove\_if} tak jak dla wektora: ich elementy mają klucze,
+których pozycja jest regulowana przez strukturę danych. Stosujemy
+\texttt{erase} z iteratorem lub \texttt{std::erase\_if} (C++20).
+
+\subsection{Algorytmy kopca i \texttt{std::priority\_queue}}
+
+\texttt{make\_heap}, \texttt{push\_heap}, \texttt{pop\_heap} i
+\texttt{sort\_heap} pozwalają użyć własnego wektora jako kopca.
+\texttt{make\_heap} działa w czasie liniowym, a operacje dopisania i
+usunięcia maksimum w $O(\log n)$. Są to operacje inne niż pełne sortowanie.
+
+\section{Przypadki projektowe: dobór kontenera do problemu}
+\label{sec:cpp13-use-cases}
+
+\subsection{Histogram, deduplikacja i lista wyników}
+
+Załóżmy, że chcemy zebrać wartości, usunąć duplikaty i otrzymać
+wynik w kolejności rosnącej. Możemy użyć \texttt{std::set}, albo
+\texttt{vector} z \texttt{sort} i \texttt{unique}. Drugi sposób bywa
+korzystniejszy w przetwarzaniu wsadowym, ponieważ \texttt{vector}
+przechowuje dane ciągle i ogranicza liczbę alokacji węzłów.
+
+\begin{lstlisting}[caption={Deduplikacja przez sort i unique (C++11); kompletny program.}]
+#include <algorithm>
+#include <cassert>
+#include <vector>
+
+int main() {
+    std::vector<int> keys{5, 2, 5, 1, 2, 8};
+    std::sort(keys.begin(), keys.end());
+    keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+    assert((keys == std::vector<int>{1, 2, 5, 8}));
+}
+\end{lstlisting}
+
+\subsection{Własność elementów w kontenerach polimorficznych}
+
+Przechowywanie obiektów klas pochodnych przez wartość w
+\texttt{vector<Base>} może powodować \emph{object slicing}. Jeśli
+potrzebujemy polimorfizmu dynamicznego, naturalne jest np.
+\texttt{vector<unique\_ptr<Base>>}; gdy rodzina typów jest zamknięta,
+można rozważyć \texttt{vector<variant<...>>} (zob. rozdział 12).
+
+\begin{lstlisting}[caption={Kontener wlasciwych obiektow polimorficznych (C++14); kompletny program.}]
+#include <cassert>
+#include <memory>
+#include <vector>
+
+struct Shape {
+    virtual ~Shape() = default;
+    virtual int area() const = 0;
+};
+struct Square : Shape {
+    int side;
+    explicit Square(int x) : side(x) {}
+    int area() const override { return side * side; }
+};
+
+int main() {
+    std::vector<std::unique_ptr<Shape>> shapes;
+    shapes.push_back(std::make_unique<Square>(3));
+    assert(shapes.front()->area() == 9);
+}
+\end{lstlisting}
+
+\subsection{Kontenery a współbieżność}
+
+Samo wybranie kontenera standardowego nie czyni jego operacji
+modyfikujących bezpiecznymi dla współbieżnego wykonania. Równoczesne
+modyfikowanie wspólnego \texttt{vector} przez niezależne
+\texttt{push\_back()} bez synchronizacji jest wyścigiem danych.
+Można natomiast równolegle odczytywać elementy kontenera, jeśli żaden
+wątek ich nie modyfikuje, a czas życia kontenera jest zachowany.
+Dla wielu kontenerów można także modyfikować \emph{różne istniejące}
+elementy równolegle, jeśli nie dochodzi do konfliktu pamięci; wyjątek
+stanowi m.in. specjalizacja \texttt{vector<bool>}. Zmiany strukturalne
+wymagają osobnej analizy i synchronizacji (zob. rozdział 1).
+
+\section{Złożoność, lokalność pamięci i pomiar wydajności}
+\label{sec:cpp13-performance}
+
+Teoretyczna złożoność to jeden z elementów oceny. Istotne są również:
+liczba alokacji, liczba odwołań do rozproszonych adresów, rozmiar
+elementu, przewidywalność gałęzi i zachowanie cache procesora.
+Dla wielu zastosowań \texttt{vector} z wyszukiwaniem liniowym
+może być szybszy od struktury drzewiastej przy małej liczbie kluczy.
+To nie przeczy złożoności asymptotycznej: stałe i charakter obciążenia
+są częścią kosztu rzeczywistego programu.
+
+\subsection{Koszt sumowania ciągłych danych}
+
+\begin{lstlisting}[caption={Prosty szkielet pomiaru vector i list (C++20); kompletny program.}]
+#include <chrono>
+#include <cstdint>
+#include <iostream>
+#include <list>
+#include <numeric>
+#include <vector>
+
+int main() {
+    constexpr int N = 200000;
+    std::vector<int> v(N, 1);
+    std::list<int> l(v.begin(), v.end());
+
+    auto measure = [](const auto& xs) {
+        auto begin = std::chrono::steady_clock::now();
+        std::int64_t sum = std::accumulate(xs.begin(), xs.end(),
+                                           std::int64_t{0});
+        auto end = std::chrono::steady_clock::now();
+        auto ns = std::chrono::duration_cast<
+            std::chrono::nanoseconds>(end - begin).count();
+        return std::pair{sum, ns};
+    };
+
+    auto [sum_v, time_v] = measure(v);
+    auto [sum_l, time_l] = measure(l);
+    std::cout << "vector: " << sum_v << ", " << time_v << " ns\n";
+    std::cout << "list:   " << sum_l << ", " << time_l << " ns\n";
+}
+\end{lstlisting}
+
+To \emph{ilustracja sposobu pomiaru}, a nie miarodajny benchmark.
+Jednorazowy wynik bywa zdominowany przez rozgrzanie cache, optymalizacje
+kompilatora, scheduler i zakłócenia systemowe. Poprawniejszy eksperyment
+powtarza pomiary, rozdziela przygotowanie danych od mierzonej operacji,
+uwzględnia pamięć, różne rozmiary danych, medianę i rozrzut pomiarów.
+Dla wiarygodnych porównań warto użyć np. Google Benchmark i profilera.
+
+\subsection{Przybliżone reguły wyboru}
+
+\begin{center}
+\small
+\begin{tabularx}{\textwidth}{@{}lX@{}}
+\toprule
+\textbf{Wymaganie} & \textbf{Rozsądny wybór początkowy} \\
+\midrule
+Dużo iteracji, obliczeń, dostęp indeksowany & \texttt{vector}; przy stałym rozmiarze \texttt{array} \\
+Częste dodawanie i usuwanie z obu końców & \texttt{deque} \\
+Utrzymanie kolejności kluczy, wyszukiwanie przedziałowe & \texttt{map} / \texttt{set} \\
+Wyszukiwanie po kluczu bez wymogu kolejności & \texttt{unordered\_map} / \texttt{unordered\_set} \\
+Przenoszenie istniejących węzłów i stabilne iteratory & \texttt{list} \\
+FIFO / LIFO & \texttt{queue} / \texttt{stack} \\
+Wielokrotne pobieranie największego lub najmniejszego & \texttt{priority\_queue} \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\section{Najczęstsze błędy i dobre praktyki}
+\label{sec:cpp13-pitfalls}
+
+\begin{enumerate}
+\item Używanie \texttt{vector::operator[]} bez pewności, że indeks jest
+  poprawny; w kodzie granicznym warto stosować \texttt{at()}.
+\item Traktowanie \texttt{reserve} jako tworzenia elementów (mylenie
+  \texttt{size} z \texttt{capacity}).
+\item Korzystanie z iteratorów lub referencji po unieważnieniu przez
+  realokację, \texttt{erase} lub \texttt{rehash}.
+\item Zakładanie, że \texttt{emplace\_back} zawsze jest szybsze od
+  \texttt{push\_back}.
+\item Używanie \texttt{map::operator[]} do samego sprawdzania istnienia
+  klucza, z niezamierzonym wstawieniem nowej wartości.
+\item Pisanie komparatorów naruszających \emph{strict weak ordering};
+  komparator \texttt{a <= b} nie jest poprawną relacją porządkującą.
+\item Używanie \texttt{std::sort} na \texttt{std::list} lub
+  \texttt{std::lower\_bound} na danych bez odpowiedniego porządku.
+\item Wnioskowanie o kolejności elementów \texttt{unordered\_map}
+  na podstawie przypadkowego przebiegu programu.
+\item Niepotrzebne stosowanie \texttt{list} z przekonaniem, że
+  wstawienie $O(1)$ zawsze wygrywa z \texttt{vector}.
+\item Wprowadzanie równoczesnych modyfikacji kontenera z wielu wątków
+  bez uzasadnienia braku konfliktu i odpowiedniej synchronizacji.
+\end{enumerate}
+
+\section{Pytania kontrolne}
+
+\begin{enumerate}
+\item Jaka jest różnica między \texttt{reserve} a \texttt{resize}, i
+  które z nich tworzy nowe elementy?
+\item Kiedy \texttt{push\_back} na \texttt{vector} unieważnia wszystkie
+  referencje, a kiedy zachowuje referencje do wcześniejszych elementów?
+\item Dlaczego \texttt{map::operator[]} może być niepożądany podczas
+  sprawdzania istnienia klucza?
+\item Jakie wymagania muszą spełniać \texttt{Hash} i \texttt{Eq} w
+  \texttt{unordered\_map}?
+\item Dlaczego \texttt{std::remove} nie zmienia rozmiaru \texttt{vector}?
+\item Jak różnią się koszty i kontrakty \texttt{sort}, \texttt{stable\_sort},
+  \texttt{nth\_element} i \texttt{lower\_bound}?
+\item W jakich okolicznościach \texttt{list::splice} zapewnia korzyść
+  niedostępną dla zwykłego \texttt{vector}?
+\end{enumerate}
+
+\section{Podsumowanie rozdziału}
+
+Dobry kod C++ wybiera kontener zgodnie z potrzebnymi operacjami i
+własnościami pamięci, a nie jedynie na podstawie pojedynczego rzędu
+złożoności. \texttt{vector} to często najlepszy punkt wyjścia;
+\texttt{deque}, kontenery drzewiaste, haszujące i listy rozwiązują
+bardziej szczegółowe problemy. Praktycznie równie ważne jak złożoności
+są reguły unieważniania iteratorów, wymagania komparatorów,
+bezpieczeństwo czasu życia i świadome wykorzystywanie algorytmów
+standardowych zamiast ręcznie pisanych pętli.
+
+\section*{Literatura i dokumentacja}
+\addcontentsline{toc}{section}{Literatura do rozdziału 13}
+\begin{itemize}
+\item \url{https://en.cppreference.com/w/cpp/container} --- kontenery i
+  zestawienie reguł unieważniania iteratorów.
+\item \url{https://en.cppreference.com/w/cpp/algorithm} --- algorytmy
+  biblioteki standardowej i ich kontrakty.
+\item \url{https://en.cppreference.com/w/cpp/container/vector} ---
+  \texttt{std::vector} i zarządzanie pojemnością.
+\item \url{https://en.cppreference.com/w/cpp/container/unordered_map} ---
+  struktury haszujące.
+\item Scott Meyers, \emph{Effective Modern C++}, O'Reilly, 2014.
+\item Nicolai M. Josuttis, \emph{The C++ Standard Library}, wydanie drugie,
+  Addison-Wesley, 2012.
+\end{itemize}

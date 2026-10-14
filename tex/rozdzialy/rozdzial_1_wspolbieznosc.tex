@@ -1,0 +1,2090 @@
+\chapter{Współbieżność i asynchroniczność}
+\label{chap:concurrency}
+
+\section{Motywacja i podstawowe pojęcia}
+
+W programie jednowątkowym instrukcje wykonywane są w jednym \emph{wątku sterowania}.
+Nie znaczy to, że procesor nie wykonuje w tle innych czynności; chodzi o model
+samego programu. W programie współbieżnym istnieje kilka niezależnych ciągów
+instrukcji, których wykonanie może się przeplatać. Zamiast jednego zadania
+rozpatrujemy np. odczyt danych, obliczenia i zapisywanie wyników.
+
+\begin{description}[style=nextline]
+\item[Współbieżność (\emph{concurrency})]
+Wiele zadań może robić postępy w nakładających się okresach czasu.
+Nie wymaga to, aby fizycznie wykonywały się w tej samej chwili.
+\item[Równoległość (\emph{parallelism})]
+Co najmniej dwa zadania wykonują się fizycznie jednocześnie, na przykład
+na dwóch rdzeniach procesora.
+\item[Asynchroniczność (\emph{asynchrony})]
+Rozpoczęcie operacji nie wymusza natychmiastowego oczekiwania na jej wynik.
+Wywołujący może kontynuować pracę, a wynik odebrać później.
+\end{description}
+
+Pojęcia te nie są synonimami. Można mieć współbieżność bez równoległości
+(jeden rdzeń i przełączanie zadań), a także interfejs asynchroniczny bez nowego
+wątku (np. opóźnione wykonanie funkcji).
+
+\nota{Zegar i kolejność komunikatów w przykładach współbieżnych nie stanowią
+gwarantowanego wyniku programu. Planista systemu może przeplatać wątki inaczej
+przy każdym uruchomieniu.}
+
+\subsection{Proces, wątek, zadanie i współdzielone dane}
+
+Proces zwykle posiada własną przestrzeń adresową. Wątki tego samego procesu
+współdzielą między innymi pamięć dynamiczną i zmienne globalne, ale mają własne
+stosy i własne wykonanie instrukcji. \emph{Zadanie} to jednostka pracy,
+którą można przypisać wątkowi; nie każde zadanie musi oznaczać nowy wątek.
+
+Dostęp do wspólnego obiektu wymaga szczególnej ostrożności, jeżeli co najmniej
+jeden wątek go modyfikuje. Sam fakt istnienia wielu wątków nie jest błędem;
+problem pojawia się przy niezsynchronizowanym dostępie do pamięci.
+
+\section{Uruchamianie wątków: \texttt{std::thread}}
+\label{sec:thread}
+
+Nagłówek \code{<thread>} udostępnia typ \code{std::thread} (C++11).
+Utworzenie obiektu z funkcją uruchamia nowy wątek. Wywołanie \code{join()}
+czeka na jego zakończenie; \code{joinable()} informuje, czy obiekt nadal
+reprezentuje wątek wymagający obsłużenia.
+
+\begin{lstlisting}[caption={Pierwszy program z dwoma wątkami (C++11).}]
+#include <iostream>
+#include <thread>
+
+void work(int id) {
+    std::cout << "Worker " << id << "\n";
+}
+
+int main() {
+    std::thread a(work, 1);
+    std::thread b(work, 2);
+
+    a.join();
+    b.join();
+}
+\end{lstlisting}
+
+Kolejność wypisywania nie jest określona, a fragmenty wypisywane przez
+różne wątki mogą się przeplatać. Jeżeli wymagana jest spójna linia wyjścia,
+można chronić wypisywanie mutexem albo użyć \code{std::osyncstream} (C++20).
+
+\subsection{Przekazywanie argumentów i czasu życia}
+
+Argumenty przekazywane do konstruktora \code{std::thread} są odpowiednio
+przechowywane na potrzeby nowego wątku; domyślnie nie oznacza to przekazania
+modyfikowalnego argumentu przez referencję. Referencję można przekazać
+za pomocą \code{std::ref} albo przechwycenia referencji w lambdzie.
+
+\begin{lstlisting}[caption={Bezpieczne przekazanie referencji z zachowaniem jej czasu życia.}]
+#include <functional>
+#include <iostream>
+#include <thread>
+
+void increment(int& value) { ++value; }
+
+int main() {
+    int counter = 0;
+    std::thread worker(increment, std::ref(counter));
+    worker.join(); // counter nadal istnieje
+    std::cout << counter << '\n'; // 1
+}
+\end{lstlisting}
+
+Destruktor obiektu \code{std::thread}, który nadal jest
+\code{joinable()}, wywołuje \code{std::terminate()}.
+Dlatego przy wielu ścieżkach wyjścia lepiej stosować RAII,
+np. \code{std::jthread}. Operacja \code{detach()} wymaga z kolei
+gwarancji, że wątek nie będzie używał już zniszczonych obiektów.
+
+\section{Wyścig danych, warunek wyścigu i relacja \emph{happens-before}}
+\label{sec:race}
+
+\term{Wyścig danych (\emph{data race})} występuje, gdy co najmniej dwa
+potencjalnie współbieżne dostępy do tego samego miejsca pamięci są konfliktowe
+(co najmniej jeden modyfikuje), nie są odpowiednio uporządkowane przez
+synchronizację i nie są to dostępy atomowe w wymaganym sensie. W standardowym
+C++ prowadzi to do \textbf{niezdefiniowanego zachowania}.
+
+\begin{lstlisting}[caption={Błędny przykład: niezdefiniowane zachowanie.}]
+// Fragment celowo niepoprawny; NIE uruchamiac jako poprawnego przykladu.
+int counter = 0;
+// Watki rownoczesnie wykonuja ++counter bez synchronizacji.
+\end{lstlisting}
+
+\term{Warunek wyścigu (\emph{race condition})} jest pojęciem szerszym:
+wynik programu zależy od względnej kolejności zdarzeń. Warunek wyścigu nie
+zawsze oznacza niezdefiniowane zachowanie; np. dwa poprawnie zsynchronizowane
+wątki mogą rywalizować o to, który pierwszy wykona zadanie.
+
+\term{Relacja \emph{happens-before}} formalizuje, jakie skutki wcześniejszych
+operacji muszą być widoczne dla późniejszych. Tworzy się m.in. przez porządek
+operacji w jednym wątku i przez operacje synchronizujące (np. odpowiednio
+sparowane \code{release}/\code{acquire}, odblokowanie/zablokowanie mutexa).
+To centralny element modelu pamięci C++.
+
+\section{Ochrona danych: \texttt{mutex} i blokady RAII}
+\label{sec:mutex}
+
+\code{std::mutex} pozwala maksymalnie jednemu wątkowi utrzymywać blokadę
+w danej chwili. Jeśli kilka operacji ma tworzyć niepodzielną \emph{sekcję
+krytyczną}, umieszczamy je pod tą samą blokadą.
+
+\begin{lstlisting}[caption={Bezpieczny licznik przy użyciu mutexa (C++11).}]
+#include <iostream>
+#include <mutex>
+#include <thread>
+#include <vector>
+
+int main() {
+    int counter = 0;
+    std::mutex mtx;
+    std::vector<std::thread> workers;
+
+    for (int i = 0; i < 4; ++i) {
+        workers.emplace_back([&] {
+            for (int j = 0; j < 10000; ++j) {
+                std::lock_guard<std::mutex> lock(mtx);
+                ++counter;
+            }
+        });
+    }
+    for (auto& t : workers) t.join();
+    std::cout << counter << '\n'; // 40000
+}
+\end{lstlisting}
+
+\code{lock_guard} automatycznie przejmuje mutex w konstruktorze i zwalnia
+w destruktorze. Dzięki temu zwolnienie blokady następuje także podczas
+rozwijania stosu po wyjątku. \code{unique_lock} jest bardziej elastyczny:
+pozwala jawnie odblokować i ponownie zablokować mutex oraz współpracuje
+z \code{condition_variable}.
+
+\subsection{Kilka mutexów i zakleszczenie}
+
+Jeżeli dwa wątki blokują mutexy w przeciwnej kolejności, może wystąpić
+\emph{deadlock}: pierwszy czeka na drugi mutex, drugi czeka na pierwszy.
+W C++17 można bezpiecznie przejmować kilka mutexów przez \code{scoped_lock}.
+
+\begin{lstlisting}[caption={Łączne przejęcie dwóch mutexów (C++17).}]
+#include <mutex>
+
+int main() {
+    std::mutex a, b;
+    {
+        std::scoped_lock lock(a, b);
+        // Operacje chronione jednoczesnie przez a i b.
+    }
+}
+\end{lstlisting}
+
+\nota{Mutexy nie chronią ,,samej zmiennej'' automatycznie: poprawność wymaga,
+aby \emph{wszystkie} konfliktowe dostępy do chronionego stanu stosowały
+uzgodniony mechanizm synchronizacji.}
+
+\section{Oczekiwanie na stan: \texttt{condition\_variable}}
+\label{sec:cv}
+
+Mutex zapewnia wyłączność, ale nie sygnalizuje gotowości danych.
+\code{std::condition_variable} pozwala czekać bez aktywnego odpytywania.
+Do oczekiwania z predykatem używamy blokady
+\begin{center}
+\code{std::unique_lock<std::mutex>}.
+\end{center}
+Predykat opisuje stan, na który czeka konsument.
+
+\begin{lstlisting}[caption={Producent i konsument z warunkiem gotowości (C++11).}]
+#include <condition_variable>
+#include <iostream>
+#include <mutex>
+#include <thread>
+
+int main() {
+    std::mutex mtx;
+    std::condition_variable cv;
+    bool ready = false;
+    int data = 0;
+
+    std::thread consumer([&] {
+        std::unique_lock<std::mutex> lock(mtx);
+        cv.wait(lock, [&] { return ready; });
+        std::cout << data << '\n'; // 42
+    });
+
+    std::thread producer([&] {
+        {
+            std::lock_guard<std::mutex> lock(mtx);
+            data = 42;
+            ready = true;
+        }
+        cv.notify_one();
+    });
+
+    producer.join();
+    consumer.join();
+}
+\end{lstlisting}
+
+Wywołanie \code{wait(lock, pred)} ma następujący sens:
+\begin{enumerate}
+\item podczas trzymania mutexa sprawdzany jest predykat;
+\item jeśli jest fałszywy, wątek atomowo zwalnia mutex i przechodzi w oczekiwanie;
+\item po powiadomieniu (lub pozornym wybudzeniu) odzyskuje mutex i znów sprawdza predykat;
+\item kończy czekanie dopiero wtedy, gdy predykat jest prawdziwy.
+\end{enumerate}
+
+Dopuszczalne są \emph{spurious wakeups}, czyli wybudzenia bez zmiany interesującego
+nas stanu. Dlatego samo \code{cv.wait(lock)} zwykle nie wystarcza.
+Powiadomienie \code{notify_one()} budzi co najwyżej jeden oczekujący wątek,
+a \code{notify_all()} umożliwia wybudzenie wszystkich. Powiadomienia nie są
+kolejkowane jak komunikaty; stan \code{ready}, a nie samo powiadomienie,
+stanowi źródło prawdy.
+
+\subsection{Kolejka producent--konsument}
+
+W ogólniejszym przypadku producent umieszcza wiele elementów w kolejce,
+a konsument czeka na warunek ,,kolejka niepusta lub zakończono produkcję''.
+Flaga zakończenia jest konieczna, aby konsument nie oczekiwał bez końca
+po przetworzeniu ostatniego elementu.
+
+\begin{lstlisting}[caption={Współdzielona kolejka i sygnał zakończenia (C++11).}]
+#include <condition_variable>
+#include <iostream>
+#include <mutex>
+#include <queue>
+#include <thread>
+
+int main() {
+    std::mutex m;
+    std::condition_variable cv;
+    std::queue<int> q;
+    bool done = false;
+
+    std::thread consumer([&] {
+        for (;;) {
+            int item;
+            {
+                std::unique_lock<std::mutex> lock(m);
+                cv.wait(lock, [&] { return done || !q.empty(); });
+                if (q.empty() && done) break;
+                item = q.front();
+                q.pop();
+            }
+            std::cout << "Consumed " << item << '\n';
+        }
+    });
+
+    std::thread producer([&] {
+        for (int x = 1; x <= 3; ++x) {
+            {
+                std::lock_guard<std::mutex> lock(m);
+                q.push(x);
+            }
+            cv.notify_one();
+        }
+        {
+            std::lock_guard<std::mutex> lock(m);
+            done = true;
+        }
+        cv.notify_all();
+    });
+
+    producer.join();
+    consumer.join();
+}
+\end{lstlisting}
+
+\section{Operacje atomowe: \texttt{std::atomic}}
+\label{sec:atomic}
+
+\code{std::atomic<T>} udostępnia atomowe operacje na obiekcie \code{T}.
+Nie oznacza to ogólnie ,,braku jakichkolwiek blokad'' w implementacji:
+nie każda instancja atomika jest \emph{lock-free}. Można to sprawdzić
+metodą \code{is_lock_free()}.
+
+\begin{lstlisting}[caption={Licznik atomowy z porządkiem relaxed (C++11).}]
+#include <atomic>
+#include <iostream>
+#include <thread>
+#include <vector>
+
+int main() {
+    std::atomic<int> counter{0};
+    std::vector<std::thread> threads;
+    for (int i = 0; i < 4; ++i) {
+        threads.emplace_back([&] {
+            for (int j = 0; j < 10000; ++j)
+                counter.fetch_add(1, std::memory_order_relaxed);
+        });
+    }
+    for (auto& t : threads) t.join();
+    std::cout << counter.load() << '\n'; // 40000
+}
+\end{lstlisting}
+
+W przypadku samego licznika potrzebujemy niepodzielności inkrementacji,
+a nie synchronizacji dodatkowych danych. Stąd wystarcza
+\code{memory_order_relaxed}. Domyślnie operacje atomowe stosują
+\code{memory_order_seq_cst}, który narzuca silniejsze gwarancje porządkowania.
+
+\subsection{Operacja porównaj-i-zamień}
+
+\code{compare_exchange_weak(expected, desired)} atomowo sprawdza, czy
+obecna wartość jest równa \code{expected}. Przy powodzeniu zapisuje
+\code{desired}; przy niepowodzeniu aktualizuje \code{expected} do wartości
+odczytanej. Wersja \code{weak} może zgłosić niepowodzenie także pozornie,
+dlatego często umieszcza się ją w pętli.
+
+\begin{lstlisting}[caption={Atomowe podnoszenie wartości do zadanego minimum (C++11).}]
+#include <atomic>
+#include <iostream>
+
+int main() {
+    std::atomic<int> maximum{3};
+    int desired = 10;
+    int expected = maximum.load(std::memory_order_relaxed);
+
+    while (expected < desired &&
+           !maximum.compare_exchange_weak(
+               expected, desired,
+               std::memory_order_relaxed)) {
+        // expected zawiera najnowsza odczytana wartosc
+    }
+    std::cout << maximum.load() << '\n'; // 10
+}
+\end{lstlisting}
+
+\subsection{Porządek pamięci: \texttt{release} i \texttt{acquire}}
+
+Atomowość jednej zmiennej nie wystarcza, gdy jednym sygnałem chcemy
+bezpiecznie opublikować inne dane. Stosujemy wówczas odpowiednio sparowane
+operacje \code{release} i \code{acquire}.
+
+\begin{lstlisting}[caption={Bezpieczna publikacja zwykłej zmiennej (C++11).}]
+#include <atomic>
+#include <iostream>
+#include <thread>
+
+int main() {
+    int data = 0;
+    std::atomic<bool> ready{false};
+
+    std::thread producer([&] {
+        data = 42;
+        ready.store(true, std::memory_order_release);
+    });
+    std::thread consumer([&] {
+        while (!ready.load(std::memory_order_acquire)) {
+            std::this_thread::yield();
+        }
+        std::cout << data << '\n'; // 42
+    });
+
+    producer.join();
+    consumer.join();
+}
+\end{lstlisting}
+
+Gdy odczyt \code{acquire} zaobserwuje właściwy zapis
+\code{release}, operacje \emph{synchronizes-with} gwarantują
+widoczność wcześniejszego zapisu \code{data = 42}.
+Nie wolno tu zamieniać obu porządków na \code{relaxed}.
+
+\begin{center}
+\begin{tabularx}{\textwidth}{@{}lX@{}}
+\toprule
+\textbf{Porządek} & \textbf{Zasadnicza gwarancja} \\
+\midrule
+\code{relaxed} & Atomowość bez synchronizacji pozostałych danych. \\
+\code{release} & Publikowanie wcześniejszych efektów do odpowiedniego odczytu. \\
+\code{acquire} & Odczyt odbierający efekty opublikowane przez \code{release}. \\
+\code{acq_rel} & Połączenie obu kierunków dla operacji odczyt--modyfikacja--zapis. \\
+\code{seq_cst} & Dodatkowy wspólny porządek operacji sekwencyjnie spójnych. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+Istnieje również \code{memory_order_consume}, ale jego historia i obsługa
+przez kompilatory są skomplikowane; nie wykorzystujemy go w przykładach.
+Programiście początkującemu zalecamy domyślny \code{seq_cst}, a słabsze
+porządki dopiero po uzasadnieniu poprawności.
+
+\subsection{Czekanie na atomik bez aktywnej pętli: C++20}
+
+Od C++20 obiekt atomowy udostępnia \code{wait(old)} oraz
+\code{notify_one()/notify_all()}. Oczekiwanie kończy się, kiedy
+zaobserwowana wartość różni się od \code{old}; wątek nie musi stale
+wykonywać aktywnego odpytywania.
+
+\begin{lstlisting}[caption={Atomowe czekanie i wybudzanie (C++20).}]
+#include <atomic>
+#include <iostream>
+#include <thread>
+
+int main() {
+    std::atomic<bool> ready{false};
+    int payload = 0;
+
+    std::jthread worker([&] {
+        payload = 42;
+        ready.store(true, std::memory_order_release);
+        ready.notify_one();
+    });
+
+    ready.wait(false, std::memory_order_acquire);
+    std::cout << payload << '\n'; // 42
+}
+\end{lstlisting}
+
+\nota{Atomowy znacznik nie jest zamiennikiem mutexa chroniącego wiele
+powiązanych pól struktury. Algorytmy \emph{lock-free} bywają trudniejsze
+od rozwiązania opartego na blokadzie; dodatkowo należy rozumieć m.in.
+problem ABA i czas życia współdzielonych obiektów.}
+
+% === Rozszerzenie: zaawansowany model pamięci C++ ===
+\section{Model pamięci C++: formalne podstawy synchronizacji}
+\label{sec:advanced-memory-model}
+
+Sekcja~\ref{sec:race} wprowadziła pojęcie wyścigu danych. Teraz sprecyzujemy,
+\emph{dlaczego} poprawny program wielowątkowy nie może polegać na fizycznym
+porządku wykonywania instrukcji. Model pamięci C++ określa dopuszczalne
+obserwacje programu również wtedy, gdy kompilator zmienia kolejność instrukcji,
+procesor używa buforów zapisów, a rdzenie mają prywatne pamięci podręczne.
+Nie jest to model jednej konkretnej architektury (np. x86 albo ARM).
+
+\subsection{Trzy relacje: \emph{sequenced-before}, \emph{synchronizes-with} i \emph{happens-before}}
+
+Niech $A$ i $B$ oznaczają dwa zdarzenia (ewaluacje) programu.
+\begin{description}[style=nextline]
+\item[\emph{Sequenced-before}]
+Relacja porządkująca ewaluacje wewnątrz jednego wątku, wynikająca z zasad
+sekwencjonowania w C++. Nie wolno jej utożsamiać z samą kolejnością
+występowania tokenów w źródle: nie każda para podwyrażeń jest sekwencjonowana.
+\item[\emph{Synchronizes-with}]
+Relacja między odpowiednimi zdarzeniami synchronizacyjnymi, np. skutecznym
+odblokowaniem mutexa i późniejszym jego zablokowaniem albo zapisem
+\code{release} i odczytem \code{acquire}, który obserwuje zapis
+(lub odpowiedni element jego sekwencji \emph{release}).
+\item[\emph{Happens-before}]
+Relacja logicznego porządku zdarzeń. W przykładach bez osobliwego
+porządku \emph{consume} można ją konstruować z dwóch poprzednich
+relacji i przechodniości. Jeżeli $A$ \emph{happens-before} $B$,
+skutki $A$ ograniczają dopuszczalne obserwacje zdarzenia $B$.
+\end{description}
+
+Dla trzech zdarzeń reguła przechodniości ma postać
+\[
+ A\mathrel{\mathrm{hb}}B\ \land\ B\mathrel{\mathrm{hb}}C
+ \quad\Longrightarrow\quad A\mathrel{\mathrm{hb}}C.
+\]
+
+Przykładowy łańcuch synchronizacji można zapisać jako
+\[
+\begin{aligned}
+A:\text{ zapis }x
+  &\xrightarrow{\mathrm{sequenced\mbox{-}before}}
+    B:\text{ store(release)},\\
+B&\xrightarrow{\mathrm{synchronizes\mbox{-}with}}
+    C:\text{ load(acquire)},\\
+C&\xrightarrow{\mathrm{sequenced\mbox{-}before}}
+    D:\text{ odczyt }x.
+\end{aligned}
+\]
+Z przechodniości wynika $A\mathrel{\mathrm{hb}}D$. Istotne jest jednak,
+że operacja \code{load(acquire)} musi rzeczywiście odczytać wartość pochodzącą
+z odpowiedniego zapisu \code{release} (lub jego sekwencji); samo użycie
+obu etykiet w dwóch wątkach nie wystarcza.
+
+\subsection{Wyścig danych a wyścig logiczny: przykład}
+
+\begin{lstlisting}[caption={Dwa atomiki eliminują data race, ale nie ustalają zwycięzcy.}]
+#include <atomic>
+#include <thread>
+
+int main() {
+    std::atomic<int> winner{0};
+    std::jthread a([&] {
+        int expected = 0;
+        winner.compare_exchange_strong(expected, 1);
+    });
+    std::jthread b([&] {
+        int expected = 0;
+        winner.compare_exchange_strong(expected, 2);
+    });
+    a.join();
+    b.join();
+    // winner == 1 albo winner == 2.
+}
+\end{lstlisting}
+
+Wynik zależy od harmonogramu, ale program nie ma wyścigu danych.
+\emph{Race condition} jest błędem dopiero wtedy, gdy program wymaga
+konkretnego zwycięzcy albo narusza swój kontrakt w części harmonogramów.
+
+\subsection{Porządek modyfikacji pojedynczego atomika}
+
+Każdy obiekt atomowy ma własny, spójny dla wszystkich wątków
+\emph{modification order}: całkowity porządek jego atomowych modyfikacji.
+Nie oznacza to wspólnego globalnego porządku wszystkich atomików.
+Dla modyfikacji \code{x} oraz \code{y} mogą więc istnieć obserwacje,
+które intuicyjnie zaskakują, mimo że program nie zawiera \emph{data race}.
+
+W poniższym przykładzie obie wartości startują od zera:
+\begin{lstlisting}[caption={Litmus test: dwa zapisy, dwa odczyty (fragment dwóch wątków).}]
+std::atomic<int> x{0}, y{0};
+int r1 = -1, r2 = -1;
+
+// Watek A:
+x.store(1, std::memory_order_relaxed);
+r1 = y.load(std::memory_order_relaxed);
+
+// Watek B:
+y.store(1, std::memory_order_relaxed);
+r2 = x.load(std::memory_order_relaxed);
+\end{lstlisting}
+
+Przy porządku \code{relaxed} \emph{dopuszczalne} jest $r_1=r_2=0$.
+Zastąpienie \emph{wszystkich czterech} operacji przez \code{seq_cst}
+wyklucza ten wynik: jeden wspólny porządek musiałby wtedy spełniać
+cykliczne sprzeczne ograniczenia. Test uruchomiony tylko na jednym
+procesorze niczego tu nie dowodzi: brak obserwacji nie oznacza zakazu
+w standardzie.
+
+\subsection{Porządki atomowe w praktyce}
+
+\begin{center}
+\small
+\begin{tabularx}{\textwidth}{@{}p{0.25\textwidth}X@{}}
+\toprule
+\textbf{Porządek} & \textbf{Praktyczny sens i typowe zastosowanie} \\
+\midrule
+\code{relaxed} & Niepodzielność i porządek modyfikacji danego atomika; liczniki statystyk, gdy nie synchronizują innego stanu. \\
+\code{release} & Publikuje efekty poprzedzających operacji; stosowany do zapisów lub odpowiednich operacji RMW. \\
+\code{acquire} & Odbiera publikację po odczytaniu właściwej wartości; stosowany do odczytów lub odpowiednich RMW. \\
+\code{acq_rel} & Oba kierunki synchronizacji podczas operacji typu read--modify--write. \\
+\code{seq_cst} & Domyślny, mocniejszy porządek; dodatkowo wspólne uporządkowanie wszystkich operacji \code{seq_cst}. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\code{memory_order_consume} jest historycznie problematyczny; nie stanowi
+dobrego punktu wyjścia do pisania przenośnego kodu. Wybór słabszego
+porządku należy poprzedzić argumentem poprawności, a nie samym wynikiem
+benchmarku. Nie wszystkie porządki są dozwolone dla każdej operacji,
+np. zwykły \code{store} nie może użyć \code{memory_order_acquire}.
+
+\subsection{Publikacja danych i sekwencja \emph{release}}
+
+Rozpatrzmy trzy zdarzenia: producent wypełnia dane, drugi wątek
+zwiększa atomowy licznik, a trzeci odbiera wynik. W C++20 (i wcześniej)
+sekwencja \emph{release} po zapisie \code{release} może być kontynuowana
+przez kolejne atomowe operacje \emph{read--modify--write} tego samego
+atomika, także wykonywane przez inne wątki. Dlatego odczyt \code{acquire}
+wartości zapisanej przez taką operację RMW może synchronizować się
+z początkowym zapisem \code{release}.
+
+\begin{lstlisting}[caption={Sekwencja release: fragment przy ustalonej kolejności operacji.}]
+int payload = 0;
+std::atomic<int> state{0};
+
+// Producent (A):
+payload = 42;
+state.store(1, std::memory_order_release);
+
+// Posrednik (B), DOPIERO po wykonaniu powyzszego store:
+state.fetch_add(1, std::memory_order_relaxed); // 1 -> 2
+
+// Konsument (C): odczytuje 2 z RMW posrednika:
+if (state.load(std::memory_order_acquire) == 2) {
+    // Wolno odczytac payload == 42.
+}
+\end{lstlisting}
+
+Warunek o kolejności jest częścią przykładu: bez niego pośrednik mógłby
+zwiększyć \code{state} jeszcze przed publikacją. Zwykły zapis wykonany
+przez inny wątek przerywa tę sekwencję; nie należy jej mylić z dowolną
+serią zapisów do tego samego atomika.
+
+\subsection{Operacje CAS: sukces i porażka}
+
+\code{compare_exchange_weak} i \code{compare_exchange_strong} mają
+przeciążenia z osobnymi porządkami pamięci dla sukcesu i porażki.
+Operacja nieudana jest \emph{odczytem}, a nie zapisem. Dlatego jej porządek
+nie może być \code{release} ani \code{acq_rel} oraz nie może być silniejszy
+od porządku sukcesu w sensie wymagań standardu.
+
+\begin{lstlisting}[caption={Pętla CAS: zwiększanie licznika, przykład praktyczny.}]
+#include <atomic>
+
+void add_one(std::atomic<int>& x) {
+    int expected = x.load(std::memory_order_relaxed);
+    while (!x.compare_exchange_weak(
+        expected, expected + 1,
+        std::memory_order_acq_rel,
+        std::memory_order_acquire)) {
+        // expected zostalo zaktualizowane po niepowodzeniu.
+    }
+}
+\end{lstlisting}
+
+W tym przypadku \code{fetch_add(1)} jest prostsze i zwykle lepsze.
+CAS ma sens zwłaszcza przy warunkowej zmianie stanu lub złożonych
+strukturach atomowych. \code{weak} może nie powieść się pozornie,
+więc jest wygodny w pętli; \code{strong} lepiej nadaje się do
+pojedynczych prób. Użycie \code{acq_rel} w powyższym liczniku służy
+zilustrowaniu API; gdy licznik niczego nie publikuje, wystarczy
+\code{memory_order_relaxed}.
+
+\subsection{Bariery pamięci: \texttt{atomic\_thread\_fence}}
+
+\code{std::atomic_thread_fence(order)} nakłada ograniczenia porządkowania
+pamięci, ale \emph{sama} bariera nie synchronizuje magicznie dwóch wątków.
+Potrzebna jest odpowiednia operacja atomowa, która połączy strony
+synchronizacji. Przykład celowo przenosi \code{release}/\code{acquire}
+z atomika na bariery:
+
+\begin{lstlisting}[caption={Publikacja przez dwie bariery i atomowy znacznik (C++11).}]
+#include <atomic>
+#include <thread>
+#include <cassert>
+
+int main() {
+    int payload = 0;
+    std::atomic<bool> ready{false};
+
+    std::thread producer([&] {
+        payload = 42;
+        std::atomic_thread_fence(std::memory_order_release);
+        ready.store(true, std::memory_order_relaxed);
+    });
+    std::thread consumer([&] {
+        while (!ready.load(std::memory_order_relaxed)) {
+            std::this_thread::yield();
+        }
+        std::atomic_thread_fence(std::memory_order_acquire);
+        assert(payload == 42);
+    });
+    producer.join();
+    consumer.join();
+}
+\end{lstlisting}
+
+Dla tego układu bariery łączą się poprzez odczyt \code{ready}, który
+obserwuje zapis producenta. Zwykłe \code{ready.store(release)} oraz
+\code{ready.load(acquire)} byłoby prostsze. \code{atomic_signal_fence}
+ma inny cel: ogranicza określone przestawienia przez kompilator,
+a nie pełni roli zwykłej synchronizacji między wątkami.
+
+\subsection{Atomowość, blokady i gwarancje postępu}
+
+\begin{description}[style=nextline]
+\item[\emph{Blocking}] Wątek może oczekiwać na zwolnienie blokady przez
+innego uczestnika, który np. został wywłaszczony przez system.
+\item[\emph{Lock-free}] W standardowym ujęciu algorytmowym system jako
+całość może robić postęp mimo tego, że pewne wątki wielokrotnie ponawiają
+operację. Pojedynczy wątek może ulegać zagłodzeniu.
+\item[\emph{Wait-free}] Każdy uczestnik kończy operację w ograniczonej
+liczbie własnych kroków, niezależnie od harmonogramu innych uczestników.
+\end{description}
+
+\code{atomic<T>::is_lock_free()} bada własność implementacji operacji
+na tym atomiku; nie jest dowodem, że dowolny algorytm zbudowany z
+atomików jest \emph{lock-free}. Nie wolno też wnioskować, że
+\emph{lock-free} zawsze oznacza szybszy kod. Rywalizacja o jedną
+linię cache może dominować koszt obliczeń.
+
+\subsection{Problem ABA i odzyskiwanie pamięci}
+
+Niech wierzchołek współbieżnego stosu zawiera wskaźnik \code{A}.
+Wątek~1 odczytuje \code{A} i zapamiętuje wskaźnik do następnego
+węzła, po czym zostaje wstrzymany. Wątek~2 usuwa \code{A}, usuwa
+kolejny element \code{B} i ponownie umieszcza \code{A} na szczycie.
+Wątek~1 widzi znowu \code{A}: porównanie wskaźnika przez CAS może się
+powieść, choć pomiędzy odczytem i zapisem struktura zmieniła się
+istotnie. Co gorsza, wcześniej zapamiętany węzeł mógł zostać już
+zwolniony. To właśnie \emph{problem ABA}.
+
+\[
+\boxed{\text{A}\to\text{B}\to\text{C}}
+\quad\longrightarrow\quad
+\boxed{\text{B}\to\text{C}}
+\quad\longrightarrow\quad
+\boxed{\text{A}\to\text{C}}.
+\]
+
+Do typowych narzędzi należą: oznaczanie wskaźnika licznikiem wersji
+(\emph{tagged pointer}), \emph{hazard pointers}, \emph{epoch-based
+reclamation} i \emph{reference counting}. Zabezpieczenie samego
+porównania wskaźników nie załatwia problemu \emph{czasu życia obiektu}.
+Dla zwykłej kolejki aplikacyjnej \code{std::mutex} bywa
+najprostszy i najbardziej wiarygodny.
+
+\subsection{Zagłodzenie, \emph{livelock} i błędne podwójne sprawdzenie}
+
+\emph{Deadlock} oznacza brak postępu wskutek cyklicznego oczekiwania.
+\emph{Livelock} występuje, gdy wątki aktywnie reagują na siebie,
+ale nie kończą pracy. \emph{Starvation} to brak postępu konkretnego
+wątku mimo że inne wątki pracują. Te trzy zjawiska należy odróżniać.
+
+W starszym kodzie spotyka się tzw. \emph{double-checked locking}.
+Bez poprawnych atomików albo mutexa nie można go naprawić przez samo
+\code{volatile}. W nowym kodzie znacznie lepiej używać bezpiecznej
+inicjalizacji statycznej zmiennej lokalnej (C++11) lub \code{std::call_once}.
+\code{volatile} nie zapewnia atomowości ani synchronizacji wątków.
+
+
+
+\section{Wynik przyszłego obliczenia: \texttt{future} i \texttt{promise}}
+\label{sec:future-promise}
+
+\code{std::future<T>} reprezentuje możliwość odebrania \emph{jednego}
+wyniku typu \code{T}, który może jeszcze nie być dostępny.
+\code{std::promise<T>} umożliwia producentowi ten wynik ustawić.
+Te obiekty odnoszą się do wspólnego \emph{stanu asynchronicznego}
+(ang. \emph{shared state}). Sam \code{promise} nie uruchamia wątku.
+
+\begin{center}
+\fbox{\small\strut\code{promise.set_value(x)}\quad
+$\longrightarrow$\quad stan współdzielony\quad $\longrightarrow$\quad
+\code{future.get()}}
+\end{center}
+
+\begin{lstlisting}[caption={Ręczne przekazanie wyniku z wątku (C++11).}]
+#include <future>
+#include <iostream>
+#include <thread>
+#include <utility>
+
+void compute(std::promise<int> producer) {
+    producer.set_value(6 * 7);
+}
+
+int main() {
+    std::promise<int> promise;
+    std::future<int> result = promise.get_future();
+
+    std::thread worker(compute, std::move(promise));
+    std::cout << result.get() << '\n'; // 42
+    worker.join();
+}
+\end{lstlisting}
+
+\code{future.get()} czeka, jeśli wynik nie jest jeszcze gotowy, po czym
+odbiera go (lub ponownie zgłasza wyjątek). Zwykłe \code{future}
+jest jednokrotnego odbioru: po \code{get()} obiekt przestaje być
+ważnym uchwytem do stanu i ponowne \code{get()} nie jest dozwolone.
+\code{wait()} tylko czeka, natomiast \code{wait_for()} i \code{wait_until()}
+pozwalają ograniczyć czas oczekiwania.
+
+\subsection{Przekazywanie wyjątku i \emph{broken promise}}
+
+Producent może przekazać wyjątek za pomocą \code{set_exception()}.
+Jeśli \code{promise} zostanie zniszczony bez przekazania wyniku,
+stan otrzymuje błąd \code{broken_promise}, który zostanie zgłoszony
+podczas odbioru przez \code{future.get()}.
+
+\begin{lstlisting}[caption={Przekazanie wyjątku przez promise (C++14).}]
+#include <exception>
+#include <future>
+#include <iostream>
+#include <stdexcept>
+#include <thread>
+#include <utility>
+
+int main() {
+    std::promise<int> producer;
+    auto f = producer.get_future();
+
+    std::thread worker([p = std::move(producer)]() mutable {
+        try {
+            throw std::runtime_error("Calculation failed");
+        } catch (...) {
+            p.set_exception(std::current_exception());
+        }
+    });
+
+    try {
+        std::cout << f.get() << '\n';
+    } catch (const std::exception& e) {
+        std::cout << e.what() << '\n';
+    }
+    worker.join();
+}
+\end{lstlisting}
+
+\subsection{Wiele odbiorców: \texttt{shared\_future}}
+
+\code{std::shared_future<T>} można kopiować i wielokrotnie odczytywać.
+Każdy odbiorca uzyskuje dostęp do tego samego wyniku. Uzyskujemy go
+np. przez \code{future.share()}.
+
+\begin{lstlisting}[caption={Dwa wątki odczytują ten sam wynik (C++11).}]
+#include <future>
+#include <iostream>
+#include <thread>
+
+int main() {
+    std::promise<int> p;
+    std::shared_future<int> f = p.get_future().share();
+    int a = 0, b = 0;
+
+    std::thread first([&] { a = f.get(); });
+    std::thread second([&] { b = f.get(); });
+
+    p.set_value(42);
+    first.join();
+    second.join();
+    std::cout << a << ' ' << b << '\n'; // 42 42
+}
+\end{lstlisting}
+
+\section{Uruchamianie zadań: \texttt{std::async}}
+\label{sec:async}
+
+\code{std::async} wiąże wywołanie funkcji ze stanem asynchronicznym
+i zwraca \code{std::future<R>} dla typu wyniku \code{R}.
+W odróżnieniu od \code{promise} nie trzeba samodzielnie obsługiwać
+przekazywania wartości ani wyjątków. Wariant
+\code{std::launch::async} uruchamia funkcję w innym wątku.
+
+\begin{lstlisting}[caption={Dwa niezależne obliczenia przez async (C++11).}]
+#include <future>
+#include <iostream>
+
+int square(int x) { return x * x; }
+
+int main() {
+    auto f1 = std::async(std::launch::async, square, 6);
+    auto f2 = std::async(std::launch::async, square, 7);
+
+    // Oba zadania wystartowaly przed pobraniem wynikow.
+    std::cout << f1.get() + f2.get() << '\n'; // 85
+}
+\end{lstlisting}
+
+\subsection{Polityki uruchamiania}
+
+\begin{center}
+\begin{tabularx}{\textwidth}{@{}lX@{}}
+\toprule
+\textbf{Polityka} & \textbf{Znaczenie} \\
+\midrule
+\code{std::launch::async} & Funkcja zostaje uruchomiona w osobnym wątku; wywołujący może kontynuować pracę. \\
+\code{std::launch::deferred} & Funkcja zostaje wykonana dopiero przy pierwszym nieczasowym oczekiwaniu (np. \code{get()} lub \code{wait()}), w wątku, który tę operację wykonuje. \\
+Brak jawnej polityki & Implementacja może wybrać \code{async}, \code{deferred} (lub dopuszczoną politykę implementacyjną). \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+Nie wolno utożsamiać samego wywołania \code{std::async(f)}
+z gwarancją równoległości. Jeśli potrzebujesz niezależnego wątku,
+wybierz jawnie \code{std::launch::async}.
+
+\begin{lstlisting}[caption={Opóźnione wykonanie: deferred (C++11).}]
+#include <future>
+#include <iostream>
+
+int main() {
+    auto f = std::async(std::launch::deferred, [] {
+        std::cout << "Executing the task\n";
+        return 42;
+    });
+    std::cout << "Before get\n";
+    std::cout << f.get() << '\n';
+}
+\end{lstlisting}
+
+W tym przypadku komunikat \code{Before get} zawsze poprzedza wykonanie
+funkcji odroczonej, ponieważ została ona uruchomiona dopiero przez \code{get()}.
+
+\subsection{Destruktor tymczasowego \texttt{future} może blokować}
+
+Istotna pułapka polega na tym, że zniszczenie \emph{ostatniego} uchwytu
+do niezakończonego stanu utworzonego przez \code{std::async}
+z polityką \code{async} może czekać na ukończenie zadania.
+Zapis poniżej nie uruchamia efektywnie obu prac obok siebie:
+
+\begin{lstlisting}[caption={Pułapka: tymczasowe future; fragment ilustracyjny.}]
+// Kazdy tymczasowy future jest niszczony na koncu instrukcji.
+std::async(std::launch::async, expensive_a);
+std::async(std::launch::async, expensive_b);
+\end{lstlisting}
+
+Poprawnie przechowujemy wyniki obu wywołań, zanim zaczniemy czekać:
+
+\begin{lstlisting}[caption={Zadania mogą pracować równolegle; fragment.}]
+auto a = std::async(std::launch::async, expensive_a);
+auto b = std::async(std::launch::async, expensive_b);
+a.wait();
+b.wait();
+\end{lstlisting}
+
+\subsection{Oczekiwanie z limitem czasu i polityka deferred}
+
+\code{wait_for()} zwraca jeden z trzech statusów:
+\code{ready}, \code{timeout} lub \code{deferred}.
+Przy zadaniu odroczonym samo \code{wait_for()} nie uruchamia pracy.
+Niepoprawna pętla sprawdzająca wyłącznie \code{ready}
+może więc kręcić się bez końca.
+
+\begin{lstlisting}[caption={Rozróżnianie statusów future (C++11).}]
+#include <chrono>
+#include <future>
+#include <iostream>
+
+int main() {
+    auto f = std::async(std::launch::deferred, [] { return 42; });
+    auto status = f.wait_for(std::chrono::milliseconds(1));
+
+    if (status == std::future_status::deferred) {
+        std::cout << "Deferred: get starts the computation\n";
+    } else if (status == std::future_status::timeout) {
+        std::cout << "Not ready yet\n";
+    } else {
+        std::cout << "Already ready\n";
+    }
+    std::cout << f.get() << '\n';
+}
+\end{lstlisting}
+
+\subsection{Wyjątki z zadań i brak automatycznego anulowania}
+
+Jeśli funkcja uruchomiona przez \code{std::async} zgłosi wyjątek,
+wyjątek jest przechowywany w stanie asynchronicznym, a \code{get()}
+zgłasza go w wątku odbierającym wynik. \code{wait_for()}
+\emph{nie anuluje} pracy przy przekroczeniu czasu: tylko informuje,
+że wynik jeszcze nie jest gotowy.
+
+\begin{lstlisting}[caption={Wyjątek z async zostaje przekazany przez get() (C++11).}]
+#include <future>
+#include <iostream>
+#include <stdexcept>
+
+int main() {
+    auto f = std::async(std::launch::async, []() -> int {
+        throw std::runtime_error("Task failed");
+    });
+    try {
+        std::cout << f.get() << '\n';
+    } catch (const std::runtime_error& e) {
+        std::cout << e.what() << '\n';
+    }
+}
+\end{lstlisting}
+
+\section{\texttt{std::packaged\_task}: funkcja z wynikiem future}
+\label{sec:packaged}
+
+\code{std::packaged_task<R(Args...)>} opakowuje funkcję w zadanie,
+którego wynik lub wyjątek trafia do powiązanego \code{future}.
+W odróżnieniu od \code{std::async} samo utworzenie
+\code{packaged_task} nie uruchamia żadnego wątku.
+
+\begin{lstlisting}[caption={Packaged task i ręcznie uruchomiony wątek (C++11).}]
+#include <future>
+#include <iostream>
+#include <thread>
+#include <utility>
+
+int main() {
+    std::packaged_task<int(int)> task([](int x) {
+        return x * x;
+    });
+    auto f = task.get_future();
+    std::thread worker(std::move(task), 7);
+
+    std::cout << f.get() << '\n'; // 49
+    worker.join();
+}
+\end{lstlisting}
+
+To jeden z elementów potrzebnych do zbudowania puli wątków:
+\emph{task} trafia do kolejki, wątek roboczy go pobiera,
+a klient otrzymuje \code{future}. Pula wątków jest szczególnie
+przydatna dla bardzo wielu małych zadań, ponieważ tworzenie
+odrębnego wątku dla każdego zadania może być kosztowne.
+
+\section{\texttt{std::jthread} i kooperacyjne zatrzymywanie (C++20)}
+\label{sec:jthread}
+
+\code{std::jthread} jest obiektem zarządzającym wątkiem zgodnie z RAII.
+Jeżeli jest dołączalny, destruktor żąda zatrzymania przez
+\code{request_stop()}, a następnie wywołuje \code{join()}.
+Żądanie zatrzymania nie wymusza przerwania funkcji: wątek musi
+sam sprawdzać odpowiedni \code{stop_token}.
+
+\begin{lstlisting}[caption={Kooperacyjne zatrzymywanie wątku (C++20).}]
+#include <chrono>
+#include <iostream>
+#include <thread>
+
+int main() {
+    std::jthread worker([](std::stop_token stop) {
+        while (!stop.stop_requested()) {
+            // Przykladowa porcja pracy.
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        std::cout << "Stopped\n";
+    });
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    worker.request_stop();
+    // Destruktor worker dolaczy watek.
+}
+\end{lstlisting}
+
+Można również przekazywać \code{stop_token} do zadań, które
+reagują na anulowanie w większej liczbie punktów. Dla złożonych
+kolejek C++20 oferuje \code{condition_variable_any} z przeciążeniem
+obsługującym żądanie zatrzymania; zwykłe \code{condition_variable}
+nie ma analogicznego przeciążenia ze \code{stop_token}.
+
+\section{Inne przydatne mechanizmy biblioteki standardowej}
+
+\subsection{\texttt{shared\_mutex}: wielu czytelników, jeden pisarz}
+
+\code{std::shared_mutex} (C++17) pozwala wielu czytelnikom jednocześnie
+uzyskać blokadę współdzieloną, a pisarzowi --- blokadę wyłączną.
+Czytanie chronimy przez \code{std::shared_lock}, zapisy przez
+\code{std::unique_lock}. Nie gwarantuje to braku zagłodzenia wątków;
+polityka przydziału blokad może zależeć od implementacji.
+
+\begin{lstlisting}[caption={Blokada współdzielona i wyłączna (C++17).}]
+#include <iostream>
+#include <mutex>
+#include <shared_mutex>
+
+int main() {
+    std::shared_mutex m;
+    int value = 10;
+    {
+        std::shared_lock<std::shared_mutex> read_lock(m);
+        std::cout << value << '\n';
+    }
+    {
+        std::unique_lock<std::shared_mutex> write_lock(m);
+        value = 20;
+    }
+}
+\end{lstlisting}
+
+\subsection{\texttt{call\_once} i inicjalizacja jednokrotna}
+
+\code{std::call_once} oraz \code{std::once_flag} pozwalają
+wykonać funkcję inicjalizującą co najwyżej raz pomyślnie.
+Jeżeli inicjalizacja rzuci wyjątek, późniejsze wywołanie może
+ponowić próbę. Lokalna statyczna zmienna ma w C++11
+bezpieczną współbieżnie inicjalizację, co często jest prostszą alternatywą.
+
+\begin{lstlisting}[caption={Inicjalizacja wykonywana raz (C++11).}]
+#include <iostream>
+#include <mutex>
+#include <thread>
+
+std::once_flag init_flag;
+int shared_value = 0;
+
+void initialize() { shared_value = 42; }
+void work() {
+    std::call_once(init_flag, initialize);
+    // Kazdy watek po call_once widzi zakonczona inicjalizacje.
+}
+
+int main() {
+    std::thread a(work), b(work);
+    a.join();
+    b.join();
+    std::cout << shared_value << '\n';
+}
+\end{lstlisting}
+
+\subsection{\texttt{thread\_local}: osobny egzemplarz dla wątku}
+
+Zmienne zadeklarowane \code{thread_local} mają osobny egzemplarz
+w każdym wątku. Nie rozwiązują automatycznie problemu komunikacji
+między wątkami, ale przydają się np. do lokalnych buforów roboczych.
+
+\begin{lstlisting}[caption={Pamięć lokalna dla każdego wątku (C++11).}]
+#include <iostream>
+#include <thread>
+
+thread_local int local_counter = 0;
+void count() { ++local_counter; }
+
+int main() {
+    std::thread a(count), b(count);
+    a.join();
+    b.join();
+    std::cout << local_counter << '\n'; // 0 w watku main
+}
+\end{lstlisting}
+
+\subsection{Semafory, zapadki i bariery w C++20}
+
+\begin{description}[style=nextline]
+\item[\code{std::counting_semaphore<N>}]
+Ogranicza liczbę równoczesnych wejść. Operacja \code{acquire()}
+pobiera zezwolenie, a \code{release()} je zwraca.
+\item[\code{std::latch}]
+Jednorazowy punkt synchronizacji: po odpowiedniej liczbie zgłoszeń
+\code{count_down()} czekające wątki mogą kontynuować.
+\item[\code{std::barrier}]
+Punkt synchronizacji wielokrotnego użytku dla kolejnych faz pracy.
+\end{description}
+
+\begin{lstlisting}[caption={Semafor dopuszcza maksymalnie dwa zadania naraz (C++20).}]
+#include <chrono>
+#include <iostream>
+#include <semaphore>
+#include <thread>
+#include <vector>
+
+int main() {
+    std::counting_semaphore<2> slots(2);
+    std::vector<std::jthread> workers;
+    for (int i = 0; i < 4; ++i) {
+        workers.emplace_back([&, i] {
+            slots.acquire();
+            // Jednoczesnie w sekcji moze byc najwyzej 2 watki.
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            slots.release();
+        });
+    }
+    // Destruktory jthread dolaczaja watki przed destruktorem slots.
+}
+\end{lstlisting}
+
+\nota{W przykładzie z semaforem zmienne zostały zadeklarowane w kolejności,
+dzięki której wektor \code{workers} zostaje zniszczony przed \code{slots}.
+Ma to znaczenie dla czasu życia obiektów współdzielonych przez wątki.}
+
+% === Rozszerzenie: zadania, pula wątków, anulowanie ===
+\section{Zadania, pule wątków i planowanie pracy}
+\label{sec:thread-pool}
+
+Wątek jest zasobem systemowym, a zadanie jest jednostką pracy. Wiele
+krótkich zadań nie powinno wymagać utworzenia osobnego wątku na każde
+wywołanie. \emph{Thread pool} utrzymuje ograniczoną liczbę pracowników,
+którzy pobierają zadania ze współdzielonej kolejki.
+
+\subsection{Minimalna pula wątków ze zwracaniem \texttt{future}}
+
+Poniższa implementacja jest przykładem dydaktycznym w C++20.
+Łączy kilka poznanych mechanizmów:
+\begin{itemize}
+\item \code{std::jthread} i \code{std::condition_variable} do obsługi pracowników;
+\item \code{std::packaged_task} i \code{std::future} do przekazywania wyników;
+\item \code{std::function} do przechowywania zadań w jednej kolejce.
+\end{itemize}
+Metoda \code{submit} zwraca \code{future} z wynikiem.
+Wyjątek zgłoszony przez zadanie zostaje ponowiony podczas \code{get()}.
+
+\begin{lstlisting}[caption={Prosta pula: kompletna implementacja C++20.}]
+#include <condition_variable>
+#include <cstddef>
+#include <functional>
+#include <future>
+#include <memory>
+#include <mutex>
+#include <queue>
+#include <stdexcept>
+#include <thread>
+#include <type_traits>
+#include <utility>
+#include <vector>
+
+class ThreadPool {
+    std::mutex m_;
+    std::condition_variable cv_;
+    std::queue<std::function<void()>> tasks_;
+    bool closing_ = false;
+    // workers_ jest ostatni: jego destruktory wywolaja join
+    // PRZED zniszczeniem m_, cv_ i kolejki.
+    std::vector<std::jthread> workers_;
+
+public:
+    explicit ThreadPool(std::size_t count) {
+        if (count == 0) throw std::invalid_argument("count=0");
+        workers_.reserve(count);
+        for (std::size_t i = 0; i < count; ++i) {
+            workers_.emplace_back([this] {
+                for (;;) {
+                    std::function<void()> work;
+                    {
+                        std::unique_lock lock(m_);
+                        cv_.wait(lock, [&] {
+                            return closing_ || !tasks_.empty();
+                        });
+                        if (closing_ && tasks_.empty()) return;
+                        work = std::move(tasks_.front());
+                        tasks_.pop();
+                    }
+                    work(); // poza sekcja krytyczna
+                }
+            });
+        }
+    }
+
+    ThreadPool(const ThreadPool&) = delete;
+    ThreadPool& operator=(const ThreadPool&) = delete;
+
+    template<class F>
+    auto submit(F&& f)
+        -> std::future<std::invoke_result_t<std::decay_t<F>&>> {
+        using Result = std::invoke_result_t<std::decay_t<F>&>;
+        auto task = std::make_shared<std::packaged_task<Result()>>(
+            std::forward<F>(f));
+        auto result = task->get_future();
+        {
+            std::lock_guard lock(m_);
+            if (closing_)
+                throw std::runtime_error("Pool is closing");
+            tasks_.emplace([task] { (*task)(); });
+        }
+        cv_.notify_one();
+        return result;
+    }
+
+    ~ThreadPool() {
+        {
+            std::lock_guard lock(m_);
+            closing_ = true;
+        }
+        cv_.notify_all();
+        // Destruktory jthread czekaja na pracownikow.
+    }
+};
+\end{lstlisting}
+
+\begin{lstlisting}[caption={Użycie puli i odbiór wyników; dołącz do programu z klasą ThreadPool.}]
+#include <iostream>
+
+int main() {
+    ThreadPool pool(3);
+    auto a = pool.submit([] { return 40 + 2; });
+    auto b = pool.submit([] { return 6 * 7; });
+    std::cout << a.get() << " " << b.get() << '\n';
+}
+\end{lstlisting}
+
+Przykład nie implementuje wszystkich funkcji puli produkcyjnej:
+nie ma limitu długości kolejki, priorytetów, \emph{work stealing},
+możliwości natychmiastowego porzucenia zadania ani kooperacyjnego
+anulowania pojedynczego zadania. Destruktor wykonuje model
+\emph{graceful shutdown}: przestaje przyjmować zadania, pozwala
+dokończyć prace oczekujące w kolejce i czeka na zakończenie pracowników.
+Wywołujący musi zadbać, żeby inne wątki nie używały obiektu puli podczas
+jego niszczenia. Nie należy też niszczyć puli z jej własnego pracownika.
+
+\nota{Gdy pula ma jednego pracownika, zadanie oczekujące synchronicznie
+na \code{future} innego zadania umieszczonego w \emph{tej samej} puli
+może wywołać zakleszczenie. Równie ważna jest kolejność niszczenia
+składowych wykorzystywanych przez pracowników.}
+
+\subsection{Anulowanie zadania: prośba, nie wymuszone przerwanie}
+
+\code{std::stop_source} dostarcza możliwość wysłania żądania, a
+\code{std::stop_token} pozwala je obserwować. Mogą istnieć liczni
+odbiorcy jednego tokenu, a sygnał pozostaje ustawiony po wywołaniu
+\code{request_stop()}. Mechanizm sam nie przerywa instrukcji,
+blokującego wywołania systemowego ani obliczenia, które ignoruje token.
+
+\begin{lstlisting}[caption={Jedna prośba o zatrzymanie i kilka punktów kontroli.}]
+#include <chrono>
+#include <iostream>
+#include <stop_token>
+#include <thread>
+
+void work(std::stop_token token) {
+    for (int i = 0; i < 100; ++i) {
+        if (token.stop_requested()) {
+            std::cout << "Cancelled after " << i << " steps\n";
+            return;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+}
+
+int main() {
+    std::stop_source source;
+    std::jthread worker(work, source.get_token());
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    source.request_stop();
+}
+\end{lstlisting}
+
+Możliwa jest także reakcja w callbacku rejestrowanym przez
+\code{std::stop_callback}. Trzeba uważać, by callback nie blokował
+mutexa, który jest już trzymany przez wątek wywołujący
+\code{request_stop()}, ponieważ callback może zostać wykonany
+\emph{synchronicznie} w tym wywołaniu.
+
+\subsection{Czekanie z możliwością zatrzymania}
+
+\code{std::condition_variable_any} ma w C++20 przeciążenie
+\code{wait(lock, token, pred)}. Dzięki niemu kolejka zadań może
+wybudzać się również po prośbie o zatrzymanie.
+
+\begin{lstlisting}[caption={Oczekiwanie na stan lub anulowanie w C++20.}]
+#include <condition_variable>
+#include <mutex>
+#include <stop_token>
+
+std::mutex m;
+std::condition_variable_any cv;
+bool ready = false;
+
+void wait_for_work(std::stop_token token) {
+    std::unique_lock lock(m);
+    bool completed = cv.wait(lock, token, [&] { return ready; });
+    if (!completed) {
+        // Stop requested zanim predykat stal sie prawdziwy.
+        return;
+    }
+    // W tym miejscu trzymamy m, a ready jest prawdziwe.
+}
+\end{lstlisting}
+
+Sam token nie zastępuje sygnalizacji \code{cv.notify_one()} po zmianie
+predykatu. Wykorzystanie tokenów nie zwalnia także z wymagania, by
+stan zadania i jego zasoby pozostawały ważne aż do zakończenia pracy.
+
+\subsection{Wiele zadań i wyjątki: kiedy użyć \texttt{async}, a kiedy puli?}
+
+\code{std::async(std::launch::async, f)} jest dobry, gdy liczba zadań
+jest mała, a każde zadanie względnie kosztowne. Pula sprawdza się,
+gdy zadań jest wiele i nie chcemy tworzyć osobnego wątku dla każdego.
+Z kolei \code{std::jthread} jest wygodny, gdy potrzebujemy długowiecznego
+pracownika wykonującego pętlę. W praktyce można też użyć gotowego
+\emph{executora} lub biblioteki wyspecjalizowanej w planowaniu zadań.
+
+Gdy funkcja w wątku rzuca wyjątek i nie przechwytuje go lokalnie,
+program może zakończyć się przez \code{std::terminate}. Wymianę
+wyjątków między wątkami organizujemy przez \code{future},
+\code{promise::set_exception} lub \code{std::exception_ptr}.
+
+\section{Skalowanie i koszt współbieżności}
+
+Przyspieszenie równoległego algorytmu jest ograniczone nie tylko przez
+liczbę rdzeni, ale także przez odsetek części sekwencyjnej i koszty
+synchronizacji. Jeśli część $s\in[0,1]$ pracy musi pozostać sekwencyjna,
+to idealizowane prawo Amdahla daje
+\[
+S(p)\le \frac{1}{s+(1-s)/p},
+\]
+gdzie $p$ to liczba procesorów/rdzeni roboczych. Jest to uproszczony
+model pomijający np. pamięć, uruchamianie wątków i nierównomierność pracy.
+
+W praktyce należy rozważyć: narzut utworzenia i obudzenia wątku,
+przeciążenie wspólnego mutexa, współdzielenie linii cache
+(\emph{false sharing}), ograniczoną przepustowość pamięci i liczbę
+rzeczywiście fizycznych rdzeni. \code{std::thread::hardware_concurrency()}
+może być użyteczną wskazówką, ale nie gwarantuje liczby dostępnych
+rdzeni i może zwrócić zero.
+
+Równoległość nie jest synonimem wydajności: drobne zadania,
+trudne do przewidzenia skoki oraz intensywna konkurencja o pamięć
+mogą działać wolniej od wariantu jednowątkowego. Pomiary należy
+wykonywać na reprezentatywnych danych w konfiguracji Release,
+a poprawność sprawdzać niezależnie od benchmarków.
+
+
+
+\section{Przykład numeryczny: równoległe sumowanie}
+\label{sec:numerical}
+
+Załóżmy, że mamy duży wektor wartości i chcemy policzyć sumę. Możemy
+podzielić zakres na dwie rozłączne części, jedną zsumować w zadaniu
+\code{std::async}, a drugą w bieżącym wątku.
+
+\begin{lstlisting}[caption={Dwa niezależne fragmenty obliczenia sumy (C++11).}]
+#include <future>
+#include <iostream>
+#include <numeric>
+#include <vector>
+
+int main() {
+    std::vector<double> values(100000, 1.0);
+    auto middle = values.begin() + values.size() / 2;
+
+    auto right = std::async(std::launch::async, [&] {
+        return std::accumulate(middle, values.end(), 0.0);
+    });
+
+    double left = std::accumulate(values.begin(), middle, 0.0);
+    double total = left + right.get();
+    std::cout << total << '\n'; // 100000
+}
+\end{lstlisting}
+
+Odczytywane fragmenty \code{values} pozostają niezmienne aż do zakończenia
+obliczeń, więc nie ma wyścigu danych. Trzeba jednak pamiętać, że
+\emph{koszt uruchomienia zadania} może przewyższać korzyść, jeżeli
+obliczenia są zbyt krótkie. Przy sumach zmiennoprzecinkowych inna
+kolejność dodawania może ponadto zmienić wynik z powodu zaokrągleń.
+
+% === Rozszerzenie: OpenMP ===
+\section{OpenMP: programowanie równoległe przez dyrektywy}
+\label{sec:openmp}
+
+\emph{OpenMP} (\emph{Open Multi-Processing}) to standard API do
+programowania równoległego na pamięci współdzielonej, stosowany
+w C, C++ i Fortranie. Nie jest pojedynczą klasą ani tradycyjną
+biblioteką szablonową C++: łączy \emph{dyrektywy kompilatora},
+\emph{bibliotekę funkcji wykonawczych} (\code{omp.h}) i \emph{zmienne
+środowiskowe}. Posiada również konstrukcje do pracy na akceleratorach,
+lecz tutaj skupimy się na wielordzeniowym CPU.
+
+Zaletą OpenMP jest możliwość stopniowego równoleglenia istniejących pętli.
+Kod źródłowy pozostaje zazwyczaj podobny do wersji sekwencyjnej.
+Ceną jest konieczność rozumienia prywatności zmiennych, zależności
+pomiędzy iteracjami i synchronizacji.
+
+\nota{Specyfikacja OpenMP ma własne wersje (m.in. 5.2 i 6.0),
+niezależne od C++20. W przykładach poniżej używamy głównie
+klasycznych dyrektyw dostępnych w wielu kompilatorach. Samo istnienie
+mechanizmu w specyfikacji nie gwarantuje, że konkretna wersja GCC,
+Clang, MSVC lub Intel oneAPI obsługuje go w pełni.}
+
+\subsection{Kompilacja i konfiguracja OpenMP}
+
+Dla GCC i typowych konfiguracji Clang można użyć flagi
+\code{-fopenmp}. W Clangu konieczne może być dodatkowo
+zainstalowanie odpowiedniego środowiska wykonawczego OpenMP
+(np. \code{libomp}). W MSVC wsparcie i zestaw flag zależą od
+wersji oraz wybranego trybu OpenMP.
+
+\begin{lstlisting}[language=bash,caption={Kompilacja programu OpenMP w GCC.}]
+g++ -std=c++20 -O2 -Wall -Wextra -fopenmp example.cpp -o example
+./example
+
+# Przykladowe uruchomienie z 4 watkami:
+OMP_NUM_THREADS=4 ./example
+\end{lstlisting}
+
+W CMake można uniknąć ręcznego wpisywania flag:
+\begin{lstlisting}[language=bash,caption={Minimalny CMakeLists.txt (tekst pliku).}]
+cmake_minimum_required(VERSION 3.16)
+project(OpenMPDemo LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 20)
+find_package(OpenMP REQUIRED COMPONENTS CXX)
+add_executable(example example.cpp)
+target_link_libraries(example PRIVATE OpenMP::OpenMP_CXX)
+\end{lstlisting}
+
+Biblioteka wykonawcza udostępnia funkcje do odczytu stanu środowiska:
+\begin{itemize}
+\item \code{omp_get_thread_num()} --- identyfikator wątku;
+\item \code{omp_get_num_threads()} --- liczba uczestników aktualnego zespołu;
+\item \code{omp_get_max_threads()} --- górna granica następnego zespołu;
+\item \code{omp_set_num_threads()} --- ustawianie żądanej liczby wątków;
+\item \code{omp_get_wtime()} --- czas ścienny w sekundach.
+\end{itemize}
+Poza regionem równoległym \code{omp_get_num_threads()} zwraca~1.
+Wartość \code{omp_get_max_threads()} nie jest liczbą fizycznych rdzeni.
+
+\subsection{Pierwszy region: \texttt{parallel}}
+
+\code{\#pragma omp parallel} tworzy zespół wątków, którego uczestnicy
+wykonują blok. Wątek napotykający dyrektywę staje się wątkiem
+głównym tego zespołu (numer~0). Zakończenie bloku obejmuje domyślną
+synchronizację uczestników.
+
+\begin{lstlisting}[caption={Region równoległy OpenMP.}]
+#include <iostream>
+#include <omp.h>
+
+int main() {
+    #pragma omp parallel num_threads(4)
+    {
+        int id = omp_get_thread_num();
+        int count = omp_get_num_threads();
+        #pragma omp critical
+        {
+            std::cout << "Thread " << id
+                      << " of " << count << '\n';
+        }
+    }
+    std::cout << "Region finished\n";
+}
+\end{lstlisting}
+
+\code{num_threads(4)} jest żądaniem liczby wątków, a faktyczna liczba
+może zależeć od ograniczeń środowiska wykonawczego. \code{critical}
+chroni tu przed przeplataniem fragmentów wypisywanego tekstu,
+nie narzuca kolejności identyfikatorów wątków.
+
+\subsection{Równoległa pętla \texttt{parallel for}}
+
+Najczęstsze zastosowanie OpenMP polega na podziale \emph{niezależnych}
+iteracji jednej pętli między uczestników zespołu.
+
+\begin{lstlisting}[caption={Wypełnianie wektora: niezależne iteracje.}]
+#include <cstddef>
+#include <vector>
+
+int main() {
+    constexpr long long n = 100000;
+    std::vector<double> squares(static_cast<std::size_t>(n));
+
+    #pragma omp parallel for default(none) shared(squares, n) \
+        schedule(static)
+    for (long long i = 0; i < n; ++i) {
+        squares[static_cast<std::size_t>(i)] =
+            static_cast<double>(i) * i;
+    }
+}
+\end{lstlisting}
+
+\code{default(none)} wymaga jawnego określenia udziału zmiennych,
+które nie mają z góry ustalonych atrybutów współdzielenia. Jest
+wartościowym narzędziem kontroli poprawności. Zmienna sterująca
+pętlą \code{i} jest prywatna na mocy reguł dyrektywy \code{for}.
+Każdy wątek zapisuje inny element wektora; nie ma konfliktu,
+zakładając że nikt nie zmienia równolegle rozmiaru ani struktury wektora.
+
+\subsection{\texttt{shared}, \texttt{private}, \texttt{firstprivate}, \texttt{lastprivate}}
+
+\begin{description}[style=nextline]
+\item[\code{shared(x)}] Wątki odnoszą się do tego samego obiektu.
+Dostępy konfliktowe wymagają ochrony lub podziału danych.
+\item[\code{private(x)}] Każdy uczestnik ma własny egzemplarz
+(z zachowaniem reguł inicjalizacji odpowiednich typów);
+nie należy zakładać skopiowania początkowej wartości zmiennej pierwotnej.
+\item[\code{firstprivate(x)}] Nowy egzemplarz zostaje zainicjalizowany
+wartością odpowiadającej mu zmiennej sprzed regionu.
+\item[\code{lastprivate(x)}] Po regionie wynik z logicznie ostatniej
+iteracji (niekoniecznie wykonanej na końcu w czasie rzeczywistym)
+zostaje przypisany do zmiennej pierwotnej.
+\end{description}
+
+\begin{lstlisting}[caption={Przykład firstprivate i lastprivate w OpenMP.}]
+#include <iostream>
+
+int main() {
+    int seed = 10;
+    int last = -1;
+
+    #pragma omp parallel for firstprivate(seed) lastprivate(last)
+    for (int i = 0; i < 8; ++i) {
+        int local = seed + i;
+        last = local;
+    }
+    std::cout << last << '\n'; // 17
+}
+\end{lstlisting}
+
+Zmienna \code{seed} jest kopiowana do prywatnych egzemplarzy.
+Wartość \code{last} po zakończeniu odpowiada iteracji $i=7$,
+nie zaś temu wątkowi, który jako ostatni fizycznie zakończył pracę.
+
+\subsection{Wyścig w redukcji i klauzula \texttt{reduction}}
+
+Poniższa konstrukcja jest \textbf{błędna}:
+\begin{lstlisting}[caption={NIEPOPRAWNIE: konfliktowe modyfikacje sumy.}]
+// Fragment celowo bledny:
+// double sum = 0;
+// #pragma omp parallel for
+// for (int i = 0; i < n; ++i) sum += values[i];
+\end{lstlisting}
+
+Każdy wątek modyfikuje wspólny \code{sum}. Możemy chronić dodawanie
+blokadą, lecz w klasycznym sumowaniu wygodniejsze są prywatne sumy,
+łączone pod koniec obliczeń:
+
+\begin{lstlisting}[caption={Redukcja równoległa w OpenMP.}]
+#include <iostream>
+#include <vector>
+
+int main() {
+    std::vector<double> values(1000000, 1.0);
+    const long long n = static_cast<long long>(values.size());
+    double sum = 0.0;
+
+    #pragma omp parallel for reduction(+:sum) schedule(static)
+    for (long long i = 0; i < n; ++i) {
+        sum += values[static_cast<std::size_t>(i)];
+    }
+    std::cout << sum << '\n'; // 1000000
+}
+\end{lstlisting}
+
+OpenMP tworzy prywatne wartości redukcji i łączy je operatorem
+\code{+}. Dostępne są również inne redukcje, np. \code{*},
+\code{min} i \code{max} (zależnie od typu oraz konstrukcji).
+Ważne: dla liczb zmiennoprzecinkowych kolejność działań może być
+inna przy różnych zespołach i harmonogramach. Wyniki mogą zatem
+różnić się na ostatnich cyfrach, bo
+\[
+ (a+b)+c\ne a+(b+c)
+\]
+może zachodzić w arytmetyce IEEE~754. Dla algorytmów numerycznych
+mających wymagania reprodukowalności nie wystarczy zakładać
+identycznych bitowo wyników każdej redukcji.
+
+\subsection{Harmonogramowanie iteracji: \texttt{schedule}}
+
+\begin{center}
+\small
+\begin{tabularx}{\textwidth}{@{}p{0.29\textwidth}X@{}}
+\toprule
+\textbf{Tryb} & \textbf{Znaczenie} \\
+\midrule
+\code{static} & Przydział iteracji ustalany na początku; mały narzut, dobry dla równych kosztów. \\
+\code{static,k} & Przydział kolejnych porcji po $k$ iteracji w sposób cykliczny. \\
+\code{dynamic,k} & Porcje po $k$ iteracji przydzielane pracownikom w trakcie pracy; dobre dla nierównych obciążeń, większy narzut. \\
+\code{guided,k} & Rozmiary przydzielanych porcji zasadniczo maleją, do narzuconego minimum; kompromis między narzutem a równoważeniem. \\
+\code{runtime} & Ustawienia pobierane z środowiska, m.in. \code{OMP_SCHEDULE}. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\begin{lstlisting}[caption={Równoważenie kosztów obliczeń w pętli.}]
+#pragma omp parallel for schedule(dynamic, 8)
+for (int i = 0; i < n; ++i) {
+    perform_variable_cost_work(i);
+}
+\end{lstlisting}
+
+Przy równomiernych obliczeniach \code{static} bywa tańszy od
+\code{dynamic}. Dla zadań nieregularnych dynamiczny harmonogram
+zmniejsza bezczynność pracowników, ale może pogorszyć lokalność pamięci.
+Doboru dokonujemy na podstawie pomiarów, nie wyłącznie intuicji.
+
+\subsection{Synchronizacja: \texttt{critical}, \texttt{atomic}, \texttt{barrier}, \texttt{nowait}}
+
+\begin{description}[style=nextline]
+\item[\code{critical}] Chroni region wykonywany jednocześnie najwyżej
+przez jeden wątek w danej grupie nazwanych regionów krytycznych.
+\item[\code{atomic}] Zapewnia atomową obsługę wspieranego wyrażenia
+(np. inkrementacji); nie obejmuje dowolnego bloku instrukcji.
+\item[\code{barrier}] Wymaga, żeby uczestnicy zespołu dotarli do
+punktu synchronizacji, zanim którykolwiek przejdzie dalej.
+\item[\code{nowait}] Usuwa domyślną barierę tam, gdzie klauzula jest
+dopuszczalna; wymaga osobnego rozumowania o zależnościach danych.
+\end{description}
+
+\begin{lstlisting}[caption={Dwie alternatywy zwiększania licznika.}]
+int counter = 0;
+
+#pragma omp parallel for
+for (int i = 0; i < 10000; ++i) {
+    #pragma omp atomic update
+    ++counter;
+}
+// counter == 10000
+\end{lstlisting}
+
+Dla tej operacji \code{reduction(+:counter)} zwykle ogranicza
+rywalizację lepiej niż atomowa inkrementacja przy każdej iteracji.
+Z kolei \code{critical} jest przydatny, gdy atomowo musi wykonać się
+cały fragment kodu, a nie tylko jedno proste wyrażenie.
+
+\begin{lstlisting}[caption={Bariera wewnątrz istniejącego zespołu.}]
+#pragma omp parallel
+{
+    prepare_local_data();
+    #pragma omp barrier
+    consume_results_after_everyone_prepared();
+}
+\end{lstlisting}
+
+Nie można wstawiać bariery w taki sposób, aby część wątków zespołu
+ją pomijała, a pozostałe na niej czekały. Podobnie \code{nowait}
+nie może być dodawane mechanicznie, jeśli następna pętla potrzebuje
+wyników pierwszej.
+
+\subsection{\texttt{sections} i \texttt{single}}
+
+Gdy mamy kilka niezależnych, różnych funkcji, wygodne bywa
+\code{sections}; gdy chcemy pojedynczego producenta zadań,
+wybieramy \code{single}:
+
+\begin{lstlisting}[caption={Kilka różnych zadań i jedna sekcja inicjalizacyjna.}]
+#pragma omp parallel sections
+{
+    #pragma omp section
+    load_input();
+
+    #pragma omp section
+    preprocess();
+}
+
+#pragma omp parallel
+{
+    #pragma omp single
+    initialize_once();
+    // Wszystkie watki mijaja koniec single po barierze.
+}
+\end{lstlisting}
+
+Powyższy przykład \code{sections} ma sens tylko wtedy, gdy
+\code{load_input()} i \code{preprocess()} są rzeczywiście niezależne.
+W przeciwnym razie potrzebna jest synchronizacja albo zadania
+z opisanymi zależnościami.
+
+\subsection{Zadania OpenMP: \texttt{task}, \texttt{taskwait}, \texttt{taskgroup}}
+
+Podział pętli \code{for} pasuje do regularnych obliczeń. Dla pracy
+nieregularnej, np. rekursywnego przetwarzania drzewa, używa się
+\code{task}. Dyrektywa tworzy jednostkę pracy, którą środowisko
+wykonawcze może przydzielić pracownikowi zespołu. Nie jest to
+równoznaczne z utworzeniem nowego wątku systemowego.
+
+\begin{lstlisting}[caption={Tworzenie i oczekiwanie na zadania OpenMP.}]
+#include <iostream>
+
+int main() {
+    int results[4]{};
+    #pragma omp parallel
+    {
+        #pragma omp single
+        {
+            for (int i = 0; i < 4; ++i) {
+                #pragma omp task firstprivate(i) shared(results)
+                {
+                    results[i] = i * i;
+                }
+            }
+            #pragma omp taskwait
+        }
+    }
+    for (int x : results) std::cout << x << ' ';
+}
+\end{lstlisting}
+
+\code{taskwait} oczekuje na odpowiednie bezpośrednie zadania potomne
+bieżącego zadania. Gdy chcemy objąć również ich potomków,
+praktyczną konstrukcją jest \code{taskgroup}. Koniec regionu
+\code{parallel} również zapewnia zakończenie prac należących
+do tej struktury zadaniowej.
+
+\subsection{Zależności pomiędzy zadaniami: \texttt{depend}}
+
+\begin{lstlisting}[caption={Zadanie drugie korzysta z wyniku pierwszego.}]
+#include <cassert>
+
+int main() {
+    int a = 0, b = 0;
+    #pragma omp parallel
+    {
+        #pragma omp single
+        {
+            #pragma omp task shared(a) depend(out:a)
+            {
+                a = 21;
+            }
+            #pragma omp task shared(a,b) depend(in:a)
+            {
+                b = a * 2;
+            }
+            #pragma omp taskwait
+        }
+    }
+    assert(b == 42);
+}
+\end{lstlisting}
+
+Klauzule \code{depend(in:...)}, \code{depend(out:...)} i
+\code{depend(inout:...)} opisują zależności danych m.in.
+pomiędzy zadaniami rodzeństwa. Nie zastępują synchronizacji
+przy dowolnych dostępach do innych, nieopisanych zasobów.
+
+\subsection{\texttt{collapse} i \texttt{simd}: pętle wielowymiarowe i wektoryzacja}
+
+\code{collapse(2)} łączy przestrzeń iteracji dwóch odpowiednio
+zagnieżdżonych pętli, zwiększając liczbę możliwych porcji pracy.
+\code{simd} natomiast przekazuje kompilatorowi informację,
+że iteracje dają się wykonać w modelu SIMD. Wektoryzacja i
+równoległość wielowątkowa są różnymi poziomami przyspieszania.
+
+\begin{lstlisting}[caption={Tablica 2D: parallel for z collapse(2).}]
+#include <vector>
+
+int main() {
+    const int rows = 400, cols = 400;
+    std::vector<double> a(rows * cols);
+    #pragma omp parallel for collapse(2) schedule(static)
+    for (int i = 0; i < rows; ++i)
+        for (int j = 0; j < cols; ++j)
+            a[i * cols + j] = i + 0.5 * j;
+}
+\end{lstlisting}
+
+\begin{lstlisting}[caption={Wektoryzacja bez obowiązkowego tworzenia wielu wątków.}]
+void scale(double* dest, const double* src, int n, double alpha) {
+    #pragma omp simd
+    for (int i = 0; i < n; ++i)
+        dest[i] = alpha * src[i];
+}
+\end{lstlisting}
+
+Prawidłowość \code{simd} wymaga faktycznej niezależności iteracji,
+w tym braku niedozwolonego nakładania się zapisów i odczytów.
+Nie należy wprowadzać dyrektywy w kodzie o nieustalonym aliasingu
+bez wcześniejszej analizy zależności.
+
+\subsection{Zmienne środowiskowe OpenMP i diagnostyka}
+
+\begin{center}
+\small
+\begin{tabularx}{\textwidth}{@{}p{0.3\textwidth}X@{}}
+\toprule
+\textbf{Zmienna} & \textbf{Rola} \\
+\midrule
+\code{OMP_NUM_THREADS} & Żądana liczba wątków w zespołach. \\
+\code{OMP_DYNAMIC} & Pozwala środowisku dynamicznie dostosowywać liczbę wątków. \\
+\code{OMP_SCHEDULE} & Harmonogram stosowany przy \code{schedule(runtime)}. \\
+\code{OMP_PROC_BIND} & Strategia wiązania wątków z zasobami obliczeniowymi. \\
+\code{OMP_PLACES} & Definiuje miejsca wykonania dla mechanizmu wiązania. \\
+\code{OMP_MAX_ACTIVE_LEVELS} & Ogranicza liczbę aktywnych poziomów zagnieżdżonych regionów. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+Przykładowa sesja uruchomieniowa:
+\begin{lstlisting}[language=bash,caption={Sterowanie środowiskiem bez zmiany źródeł.}]
+OMP_NUM_THREADS=8 OMP_SCHEDULE=dynamic,32 ./example
+OMP_NUM_THREADS=4 OMP_PROC_BIND=close ./example
+\end{lstlisting}
+
+Rzeczywista dostępność i interpretacja opcji dotyczących wiązania
+wątków zależą od środowiska wykonawczego i maszyny. Zagnieżdżone
+regiony OpenMP oraz łączenie OpenMP z \code{std::thread}
+może spowodować \emph{oversubscription}: więcej aktywnych
+wątków roboczych niż zasobów obliczeniowych.
+
+\subsection{OpenMP a model pamięci C++}
+
+OpenMP określa własny model pamięci, operację \emph{flush} oraz
+semantykę synchronizacji dyrektyw, takich jak \code{barrier},
+\code{critical} i \code{atomic}. \emph{Flush} nie jest funkcją
+\code{std::atomic_thread_fence}, a samo słowo ,,flush'' nie znaczy
+,,wyczyść wszystkie cache procesora''.
+
+W praktyce warto trzymać się jednej, konsekwentnej reguły:
+\begin{itemize}
+\item dane dzielone między iteracje OpenMP synchronizujemy przede
+wszystkim przez odpowiednie konstrukcje OpenMP;
+\item dane wymieniane pomiędzy własnymi wątkami C++ synchronizujemy
+przez \code{std::mutex}, \code{std::atomic} lub inne narzędzia C++;
+\item przy \emph{mieszaniu} obu modeli wymagane jest szczególnie
+staranne rozumowanie o zgodności mechanizmów, zamiast zakładania,
+że przypadkowe \code{flush} naprawi wyścig danych.
+\end{itemize}
+
+Wyjątków C++ nie należy wypuszczać poza regiony OpenMP w sposób
+naruszający zasady specyfikacji. Jeżeli zadanie może zgłosić wyjątek,
+trzeba obsłużyć go wewnątrz odpowiedniego regionu i przekazać
+informację o błędzie w kontrolowany sposób po zakończeniu pracy.
+
+\subsection{OpenMP czy \texttt{std::thread}, \texttt{async}, a może Ranges?}
+
+\begin{center}
+\small
+\begin{tabularx}{\textwidth}{@{}p{0.28\textwidth}X@{}}
+\toprule
+\textbf{Mechanizm} & \textbf{Typowy przypadek użycia} \\
+\midrule
+\code{std::thread}/\code{jthread} & Długowieczny wątek, własny protokół komunikacji, kontrola czasu życia. \\
+\code{std::async} & Niewiele niezależnych obliczeń z wynikiem w \code{future}. \\
+Pula wątków & Wiele krótkich lub średnich zadań, ograniczona liczba pracowników. \\
+OpenMP \code{parallel for} & Obliczenia naukowe i numeryczne z niezależnymi iteracjami. \\
+OpenMP \code{task} & Dynamiczne drzewo prac i zależności. \\
+\code{std::execution::par} & Algorytmy standardowe C++17+ z odpowiednią polityką wykonania i dostępnym backendem. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+Polityka \code{std::execution::par} nie stanowi gwarancji faktycznego
+wielowątkowego wykonania na każdym kompilatorze i bibliotece
+standardowej. \emph{Ranges views} z C++20 są zazwyczaj przede
+wszystkim leniwymi adaptatorami zakresów, nie automatycznym
+mechanizmem równoległego planowania.
+
+\subsection{Studium numeryczne: porównanie trzech sposobów sumowania}
+
+Rozważmy trzy warianty: zwykły \code{std::accumulate}, równoległe
+sumowanie przez \code{std::async} oraz OpenMP \code{reduction}.
+W przykładzie\footnote{Przy dzieleniu dużego wektora na wiele części
+należy uwzględnić balans obciążenia, rozmiary porcji i koszt
+agregacji wyników.} obliczamy sumę kwadratów wejściowych liczb
+przez OpenMP, a następnie porównujemy z referencyjną pętlą:
+
+\begin{lstlisting}[caption={Praktyczny przykład: suma kwadratów OpenMP z pomiarem.}]
+#include <cmath>
+#include <iostream>
+#include <omp.h>
+#include <vector>
+
+int main() {
+    constexpr int n = 1000000;
+    std::vector<double> a(n);
+    for (int i = 0; i < n; ++i) a[i] = i * 1e-5;
+
+    double sequential = 0.0;
+    double t0 = omp_get_wtime();
+    for (double x : a) sequential += x * x;
+    double t1 = omp_get_wtime();
+
+    double parallel = 0.0;
+    #pragma omp parallel for reduction(+:parallel) schedule(static)
+    for (int i = 0; i < n; ++i)
+        parallel += a[i] * a[i];
+    double t2 = omp_get_wtime();
+
+    std::cout << "sequential: " << sequential
+              << ", time: " << t1 - t0 << " s\n";
+    std::cout << "OpenMP: " << parallel
+              << ", time: " << t2 - t1 << " s\n";
+    std::cout << "relative error: "
+              << std::abs(sequential - parallel) /
+                 (1.0 + std::abs(sequential)) << '\n';
+}
+\end{lstlisting}
+
+\nota{Ten program jest demonstracją interfejsu, a nie metodologicznie
+pełnym benchmarkiem. Należy wykonać rozgrzewkę, wiele powtórzeń,
+uwzględnić rozrzut wyników i sprawdzić, czy kompilator nie usunął
+obliczeń. Koszt dostępu do pamięci może ograniczać przyspieszenie;
+przy małym \code{n} równoległa wersja może być wolniejsza.}
+
+
+
+\section{Porównanie i zasady projektowania}
+\label{sec:choose}
+
+Po zapoznaniu się z modelem pamięci i OpenMP potrafimy rozróżnić
+trzy poziomy pracy: \emph{własność wątku} (\code{thread}/\code{jthread}),
+\emph{własność zadania i jego wyniku} (\code{future}, pule) oraz
+\emph{deklaratywny podział iteracji/zadań} (OpenMP). Wybór nie
+powinien zależeć jedynie od liczby linijek kodu.
+
+
+\begin{center}
+\small
+\begin{tabularx}{\textwidth}{@{}lX@{}}
+\toprule
+\textbf{Narzędzie} & \textbf{Kiedy używać} \\
+\midrule
+\code{thread} & Potrzebna jest bezpośrednia kontrola nad wątkiem i jego czasem życia. \\
+\code{jthread} & W C++20, gdy przydaje się RAII i kooperacyjny sygnał zatrzymania. \\
+\code{mutex} & Kilka operacji musi spójnie chronić współdzielony stan. \\
+\code{condition_variable} & Wątek powinien zasnąć do spełnienia warunku na stanie. \\
+\code{atomic} & Niezależne, atomowe operacje na zmiennej lub starannie zaprojektowana synchronizacja. \\
+\code{promise} & Producent sam decyduje, kiedy dostarczyć wynik albo wyjątek. \\
+\code{future} & Odbiór jednego wyniku i ewentualne oczekiwanie. \\
+\code{shared_future} & Kilku odbiorców potrzebuje tej samej wartości. \\
+\code{async} & Chcemy uruchomić funkcję i odebrać jej wynik bez zarządzania wątkiem. \\
+\code{packaged_task} & Trzeba oddzielić zadanie od mechanizmu jego uruchamiania. \\
+Pula wątków & Dużo zadań i ograniczona liczba pracowników; kontrolowane zamykanie. \\
+OpenMP & Duże obliczenia z niezależnymi iteracjami albo grafem zadań. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\subsection{Najczęstsze błędy}
+
+\begin{enumerate}
+\item Użycie zwykłej zmiennej współdzielonej bez synchronizacji
+(\emph{data race}, niezdefiniowane zachowanie).
+\item Założenie, że \code{++x} na zwykłym \code{int} jest atomowe.
+\item Zniszczenie aktywnego \code{std::thread} bez \code{join()} lub \code{detach()}.
+\item Przekazanie referencji do obiektu, którego czas życia kończy się
+przed zakończeniem pracy wątku.
+\item Oczekiwanie przez \code{condition_variable} bez predykatu.
+\item Mylenie powiadomienia z trwałym zapisem informacji o stanie.
+\item Założenie, że domyślne \code{std::async(f)} zawsze uruchamia nowy wątek.
+\item Natychmiastowe niszczenie tymczasowego \code{future} z \code{std::async}.
+\item Traktowanie \code{wait_for()} jako anulowania zadania.
+\item Próba wielokrotnego \code{get()} na zwykłym \code{future}.
+\item Nadmierne używanie \code{memory_order_relaxed} bez dowodu poprawności.
+\item Zakładanie, że dla każdego drobnego zadania opłaca się uruchomić
+osobny wątek.
+\item Przenoszenie \code{memory_order_relaxed} do algorytmu publikującego dane
+bez analizy zależności między wątkami.
+\item Stosowanie \code{\#pragma omp parallel for} do pętli z zależnościami
+między iteracjami albo wspólnym niechronionym akumulatorem.
+\item Mieszanie własnej puli wątków z OpenMP bez kontroli liczby aktywnych
+pracowników; pojawia się ryzyko \emph{oversubscription}.
+\end{enumerate}
+
+\subsection{Standard języka a dostępność API}
+
+\begin{center}
+\begin{tabularx}{\textwidth}{@{}lX@{}}
+\toprule
+\textbf{Standard} & \textbf{Wybrane mechanizmy} \\
+\midrule
+C++11 & \code{thread}, \code{mutex}, \code{condition_variable}, \code{atomic}, \code{promise}, \code{future}, \code{async}, \code{packaged_task}, \code{call_once}, \code{thread_local}. \\
+C++14 & M.in. ułatwienia związane z lambdami, np. inicjalizujące przechwycenie użyte w przykładzie \code{promise}. \\
+C++17 & \code{scoped_lock}, \code{shared_mutex}, \code{shared_lock} (ta ostatnia od C++14). \\
+C++20 & \code{jthread}, \code{stop_token}, \code{atomic::wait}, \code{semaphore}, \code{latch}, \code{barrier}, \code{osyncstream}. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+Przykład z inicjalizującym przechwyceniem:
+\begin{center}
+\code{[p = std::move(producer)]}
+\end{center}
+wymaga C++14, mimo że sam \code{std::promise} istnieje od C++11.
+
+\section{Kompilacja, sprawdzanie i diagnostyka}
+
+Każdy kompletny przykład można zapisać w osobnym pliku z rozszerzeniem
+\code{.cpp}. Dla kodu C++20 typowe wywołanie kompilatora GCC lub Clang to:
+
+\begin{lstlisting}[language=bash,caption={Kompilacja przykładu i uruchomienie programu.}]
+g++ -std=c++20 -O2 -Wall -Wextra -pthread example.cpp -o example
+./example
+\end{lstlisting}
+
+Podczas nauki szczególnie pomocny jest \emph{ThreadSanitizer}, który
+może wykrywać wiele wyścigów danych (dostępność zależy od platformy
+oraz kompilatora):
+
+\begin{lstlisting}[language=bash,caption={Przykładowe uruchomienie z ThreadSanitizer.}]
+g++ -std=c++20 -O1 -g -pthread -fsanitize=thread example.cpp -o example_tsan
+./example_tsan
+\end{lstlisting}
+
+Nawet jeśli test przejdzie tysiąc razy, nie dowodzi to braku błędów
+współbieżności. Poprawność wymaga analizy synchronizacji i czasu życia;
+narzędzia diagnostyczne stanowią jej uzupełnienie.
+
+\section*{Podsumowanie rozdziału}
+\addcontentsline{toc}{section}{Podsumowanie rozdziału}
+
+Z \code{std::thread} i \code{std::jthread} sterujemy \emph{wątkami},
+a z \code{std::async} i \code{std::packaged_task} opisujemy raczej
+\emph{zadania}. \code{future}/\code{promise} tworzą interfejs dostarczania
+i odbioru jednego wyniku. \code{mutex} i \code{condition_variable}
+pozwalają chronić współdzielony stan i czekać na jego zmianę.
+\code{atomic} udostępnia operacje atomowe oraz mechanizmy porządkowania
+pamięci. Algorytmy \emph{lock-free} wymagają ponadto zarządzania czasem
+życia węzłów i analizy problemu ABA. Pula wątków separuje zadania
+od fizycznych pracowników, a OpenMP udostępnia deklaratywny podział
+pracy na iteracje, redukcje i zadania. Żadne z tych narzędzi nie
+zastępuje pozostałych we wszystkich zastosowaniach.
+
+Dobra architektura zaczyna się od pytania, \emph{które dane są współdzielone,
+kto jest właścicielem zadania, kiedy wolno zakończyć jego pracę oraz
+jak przekazać wynik i wyjątek}. Dopiero potem należy wybrać konkretne
+narzędzia biblioteki standardowej.
+
+\section*{Literatura i dokumentacja}
+\addcontentsline{toc}{section}{Literatura i dokumentacja}
+
+\begin{itemize}
+\item \url{https://cppreference.com/cpp/thread/async} --- \code{std::async} i polityki uruchamiania.
+\item \url{https://en.cppreference.com/w/cpp/thread/future} --- \code{std::future}.
+\item \url{https://cppreference.com/cpp/thread/condition_variable/wait} --- oczekiwanie z predykatem.
+\item \url{https://en.cppreference.com/w/cpp/atomic/atomic/wait} --- \code{atomic::wait} w C++20.
+\item \url{https://en.cppreference.com/w/cpp/atomic/memory_order} --- porządek pamięci.
+\item \url{https://en.cppreference.com/w/cpp/atomic/atomic/compare_exchange} --- CAS.
+\item \url{https://www.openmp.org/specifications/} --- oficjalne wersje i dokumentacja OpenMP (w tym 5.2 i 6.0).
+\item \url{https://www.openmp.org/spec-html/5.2/openmp.html} --- treść specyfikacji OpenMP 5.2.
+\item \url{https://www.openmp.org/spec-html/5.2/openmpse4.html} --- model pamięci OpenMP.
+\item Anthony Williams, \emph{C++ Concurrency in Action}, wyd. 2, Manning, 2019.
+\end{itemize}

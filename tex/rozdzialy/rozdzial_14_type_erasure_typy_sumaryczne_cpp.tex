@@ -1,0 +1,944 @@
+% ROZDZIAL 14 — Type erasure, typy sumaryczne i interfejsy generyczne (C++20).
+% Fragment do zbiorczego skryptu, BEZ preambuly i \begin{document}.
+% Wymagane: listings, amsmath, amssymb, booktabs, tabularx, array, hyperref.
+% Dolaczenie: \input{rozdzial_14_type_erasure_typy_sumaryczne_cpp.tex}
+% Kompletne programy sa oznaczone w podpisach listingow.
+
+\chapter{Wymazywanie typów i typy sumaryczne}
+\label{chap:cpp14-type-erasure}
+
+\section{Problem: jak reprezentować różne rodzaje wartości?}
+
+W programowaniu generycznym często chcemy posługiwać się różnymi typami
+przez wspólny interfejs. C++ oferuje kilka mechanizmów realizacji tego celu,
+ale mechanizmy te nie są zamienne. Istotne są co najmniej cztery pytania:
+\begin{enumerate}
+\item Czy zestaw dozwolonych typów jest \emph{zamknięty} (ustalony z góry),
+      czy \emph{otwarty} (może zostać rozszerzony o nowy typ)?
+\item Czy chcemy przechować \emph{wartość}, czy jedynie referencję/uchwyt
+      do istniejącego obiektu?
+\item Czy wywoływane operacje mają być znane już podczas kompilacji,
+      czy wybierane dynamicznie w czasie działania programu?
+\item Czy dopuszczamy alokację dynamiczną, kopiowanie oraz koszt
+      pośredniego wywołania funkcji?
+\end{enumerate}
+
+\emph{Typ sumaryczny} (ang. \emph{sum type}) reprezentuje alternatywę:
+wartość należy do jednego z kilku przypadków. W C++17 taką rolę pełni
+\texttt{std::variant<Ts...>}; \texttt{std::optional<T>} opisuje wariant
+,,brak wartości albo wartość \texttt{T}''. Natomiast \emph{type erasure}
+(\emph{wymazywanie typu}) pozwala ukryć konkretny typ obiektu za
+interfejsem nieparametryzowanym przez ten typ. Standardowe przykłady
+to \texttt{std::any} i \texttt{std::function}.
+
+\begin{center}
+\small
+\begin{tabularx}{\textwidth}{@{}lXX@{}}
+\toprule
+\textbf{Mechanizm} & \textbf{Informacja o typie} & \textbf{Zasadnicze zastosowanie} \\
+\midrule
+\texttt{optional<T>} & Jedna możliwość \texttt{T} lub brak & Wynik opcjonalny, wartość nieobecna \\
+\texttt{variant<Ts...>} & Zamknięty zbiór alternatyw & Zdarzenia, komendy, model stanu \\
+\texttt{any} & Typ ustalany w czasie wykonania & Heterogeniczne wartości bez wspólnego interfejsu operacji \\
+\texttt{function<R(Args...)>} & Dowolny zgodny obiekt wywoływalny & Przechowywany callback, funkcja jako wartość \\
+\texttt{unique\_ptr<Base>} & Otwarta hierarchia klas & Polimorfizm dynamiczny i tożsamość obiektu \\
+Szablon/\texttt{concept} & Typ znany przy instancjowaniu & Polimorfizm statyczny, specjalizacja kodu \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\paragraph{Przykład motywujący.}
+Niech polecenie aplikacji będzie albo prośbą o zapisanie pliku, albo
+prośbą o dodanie dwóch liczb, albo poleceniem zakończenia programu.
+Jeśli znamy te trzy możliwości, użycie \texttt{variant} dobrze wyraża
+model danych. Gdy tworzymy system rozszerzeń umożliwiający niezależnym
+modułom dodawanie nowych rodzajów poleceń, lepszy bywa interfejs
+polimorficzny lub ręcznie zbudowany mechanizm type erasure.
+
+\section{\texttt{std::optional<T>}: wartość, której może nie być}
+\label{sec:cpp14-optional}
+
+Typ \texttt{std::optional<T>} (C++17, nagłówek \texttt{<optional>})
+przechowuje bezpośrednio obiekt typu \texttt{T}, jeżeli jest on obecny,
+lub reprezentuje stan pusty. Jest to pełnoprawna \emph{wartość}, a nie
+wskaźnik. W szczególności pusty \texttt{optional} nie oznacza wskaźnika
+zerowego, a niepusty nie wymaga automatycznie osobnej alokacji dynamicznej.
+
+\begin{lstlisting}[caption={Najważniejsze operacje optional (C++17); kompletny program.}]
+#include <cassert>
+#include <optional>
+#include <string>
+
+int main() {
+    std::optional<int> x;         // stan pusty
+    assert(!x.has_value());
+    assert(x == std::nullopt);
+
+    x = 42;
+    assert(x.has_value());
+    assert(*x == 42);
+    assert(x.value() == 42);
+    assert(x.value_or(-1) == 42);
+
+    x.reset();
+    assert(x.value_or(-1) == -1);
+    x.emplace(7);
+    assert(*x == 7);
+
+    std::optional<std::string> name{std::in_place, 3, 'a'};
+    assert(*name == "aaa");
+}
+\end{lstlisting}
+
+Dostęp przez \texttt{*x} i \texttt{x->...} wymaga obecności wartości:
+\emph{użycie pustego obiektu w taki sposób jest niezdefiniowanym
+zachowaniem}. Metoda \texttt{value()} wykonuje sprawdzenie i dla stanu
+pustego zgłasza \texttt{std::bad\_optional\_access}. Warto pamiętać,
+że \texttt{value\_or(default)} przyjmuje wartość domyślną jako argument
+funkcji: wyrażenie tworzące argument jest obliczane również wtedy,
+gdy \texttt{optional} zawiera wartość. Może ponadto następować kopiowanie
+lub przeniesienie przechowywanego obiektu.
+
+\subsection{Praktyczny przykład: parsowanie liczby}
+
+Funkcja parsująca dane wejściowe może zwrócić \texttt{optional}, jeśli
+interesuje nas tylko informacja ,,udało się/nie udało się''.
+\texttt{std::from\_chars} unika wyjątków i nie wymaga tworzenia dodatkowego
+łańcucha zakończonego zerem. W przykładzie wymagamy, aby \emph{cały}
+łańcuch był prawidłową liczbą.
+
+\begin{lstlisting}[caption={Parsowanie int do optional (C++17); kompletny program.}]
+#include <cassert>
+#include <charconv>
+#include <optional>
+#include <string_view>
+#include <system_error>
+
+std::optional<int> parse_int(std::string_view text) {
+    int result = 0;
+    auto [ptr, ec] = std::from_chars(
+        text.data(), text.data() + text.size(), result);
+    if (ec != std::errc{} || ptr != text.data() + text.size())
+        return std::nullopt;
+    return result;
+}
+
+int main() {
+    assert(parse_int("123") == 123);
+    assert(parse_int("123x") == std::nullopt);
+    assert(parse_int("") == std::nullopt);
+    assert(parse_int("99999999999999999999") == std::nullopt);
+}
+\end{lstlisting}
+
+\subsection{Własność, referencje i koszt}
+
+\texttt{optional<T>} posiada swoją wartość i zwykle zajmuje więcej pamięci
+niż sam \texttt{T}, ponieważ musi przechowywać informację, czy wartość
+istnieje. Rozmiar zależy od typu i implementacji. Standard C++20
+nie udostępnia \texttt{std::optional<T\&>}. Jeśli wynik ma wskazywać na
+istniejący obiekt, można użyć wskaźnika nieposiadającego własności albo
+\texttt{std::optional<std::reference\_wrapper<T>>}. W obu przypadkach
+programista odpowiada za czas życia wskazywanego obiektu.
+
+\begin{lstlisting}[caption={Opcjonalna referencja: brak przenoszenia własności; fragment.}]
+#include <functional>
+#include <optional>
+#include <string>
+
+std::optional<std::reference_wrapper<const std::string>>
+find_name(bool exists, const std::string& name) {
+    if (exists) return std::cref(name);
+    return std::nullopt;
+}
+// Zwracana referencja jest poprawna tylko gdy `name` nadal istnieje.
+\end{lstlisting}
+
+Gdy brak wartości jest sytuacją normalną, \texttt{optional} najczęściej
+czytelniej wyraża intencję niż wyjątkowe zakończenie funkcji. Jeżeli
+konieczna jest informacja \emph{dlaczego} nie uzyskano wyniku, należy
+zaprojektować osobny typ błędu, użyć \texttt{variant} lub (w C++23)
+\texttt{std::expected<T,E>}.
+
+\section{\texttt{std::variant<Ts...>}: zamknięta alternatywa typów}
+\label{sec:cpp14-variant}
+
+\texttt{std::variant<Ts...>} (C++17, nagłówek \texttt{<variant>})
+przechowuje \emph{jedną aktywną alternatywę} z listy typów \texttt{Ts...}.
+Nie jest odpowiednikiem \texttt{std::tuple<Ts...>}: krotka zawiera
+\emph{wszystkie} składowe, a wariant dokładnie jeden z dopuszczonych
+przypadków (poza szczególnym stanem \texttt{valueless\_by\_exception()}).
+
+\begin{lstlisting}[caption={Tworzenie i badanie aktywnej alternatywy (C++17); kompletny program.}]
+#include <cassert>
+#include <string>
+#include <variant>
+
+int main() {
+    using Value = std::variant<int, std::string>;
+    Value x = 7;
+    assert(x.index() == 0);
+    assert(std::holds_alternative<int>(x));
+    assert(std::get<int>(x) == 7);
+
+    x = std::string("hello");
+    assert(x.index() == 1);
+    assert(std::get_if<int>(&x) == nullptr);
+    assert(std::get_if<std::string>(&x) != nullptr);
+
+    x.emplace<0>(19);
+    assert(std::get<0>(x) == 19);
+}
+\end{lstlisting}
+
+Niepoprawne \texttt{std::get<T>(x)} (gdy aktywny jest inny typ)
+zgłasza \texttt{std::bad\_variant\_access}. Alternatywa
+\texttt{std::get\_if<T>(\&x)} zwraca \texttt{nullptr}, a zatem nadaje się
+do sprawdzania bez wyjątku. \texttt{std::get<T>} i
+\texttt{std::holds\_alternative<T>} wymagają, aby \texttt{T} występował
+\emph{dokładnie raz} w liście alternatyw; dla powtarzających się typów
+używamy indeksów. Nie należy także zapominać o możliwym niepowodzeniu
+operacji konwersji przy konstruowaniu wariantu.
+
+\subsection{Domyślna alternatywa i \texttt{std::monostate}}
+
+Domyślnie konstruowany wariant próbuje skonstruować pierwszą alternatywę.
+Jeżeli chcemy jawnie reprezentować stan pusty, można umieścić na początku
+\texttt{std::monostate}; zapewnia on także domyślną konstruowalność
+wariantu, gdy inny pierwszy typ nie jest domyślnie konstruowalny.
+
+\begin{lstlisting}[caption={Jawny stan początkowy monostate; kompletny program.}]
+#include <cassert>
+#include <string>
+#include <variant>
+
+int main() {
+    using State = std::variant<std::monostate, int, std::string>;
+    State s;
+    assert(std::holds_alternative<std::monostate>(s));
+    s = std::string("ready");
+    assert(std::get<std::string>(s) == "ready");
+}
+\end{lstlisting}
+
+\subsection{Odwiedzanie wariantu: \texttt{std::visit}}
+
+Samo wielokrotne sprawdzanie \texttt{holds\_alternative} szybko
+prowadzi do rozbudowanych instrukcji \texttt{if}. Mechanizm
+\texttt{std::visit(visitor, variant)} wywołuje odwiedzającego z aktywną
+wartością odpowiedniego typu. Gdy odwiedzający jest lambdą generyczną,
+kompilator instancjuje jej operator wywołania dla różnych alternatyw.
+
+\begin{lstlisting}[caption={Jeden odwiedzający generyczny; kompletny program.}]
+#include <cassert>
+#include <string>
+#include <type_traits>
+#include <variant>
+
+int main() {
+    std::variant<int, double, std::string> v = "hi";
+
+    const std::size_t size = std::visit([](const auto& x) {
+        using T = std::decay_t<decltype(x)>;
+        if constexpr (std::is_same_v<T, std::string>)
+            return x.size();
+        else
+            return sizeof(x);
+    }, v);
+
+    assert(size == 2);
+}
+\end{lstlisting}
+
+Do osobnej obsługi poszczególnych typów wygodny jest wzorzec
+\texttt{overloaded}, znany również z rozdziału o lambdach.
+Wykorzystuje on dziedziczenie po kilku obiektach funkcyjnych oraz
+ujawnienie wszystkich operatorów wywołania za pomocą \texttt{using}.
+
+\begin{lstlisting}[caption={overloaded oraz std::visit (C++17); kompletny program.}]
+#include <cassert>
+#include <string>
+#include <variant>
+
+template<class... Fs>
+struct overloaded : Fs... {
+    using Fs::operator()...;
+};
+template<class... Fs> overloaded(Fs...) -> overloaded<Fs...>;
+
+int main() {
+    using Data = std::variant<int, double, std::string>;
+    Data data = std::string("abc");
+
+    auto length = std::visit(overloaded{
+        [](int) { return std::size_t{1}; },
+        [](double) { return std::size_t{1}; },
+        [](const std::string& s) { return s.size(); }
+    }, data);
+    assert(length == 3);
+}
+\end{lstlisting}
+
+W przypadku odwiedzania zwracającego wartość wymagany jest zgodny typ
+wyniku wszystkich możliwych wywołań (w praktyce należy zapewnić
+identyczny typ i kategorię wartości zwracanych wyrażeń, z wyjątkiem
+szczególnych reguł dla \texttt{void}). Przy wielu wariantach
+\texttt{std::visit} uwzględnia \emph{kombinacje} alternatyw. To daje
+czytelny kod przy małej liczbie przypadków, ale może zwiększyć liczbę
+instancjacji szablonów.
+
+\begin{lstlisting}[caption={Odwiedzenie dwóch wariantów naraz; kompletny program.}]
+#include <cassert>
+#include <variant>
+
+int main() {
+    std::variant<int, double> a = 3;
+    std::variant<int, double> b = 2.5;
+    const double sum = std::visit(
+        [](const auto& x, const auto& y) -> double {
+            return static_cast<double>(x) + static_cast<double>(y);
+        }, a, b);
+    assert(sum == 5.5);
+}
+\end{lstlisting}
+
+\subsection{Modyfikacja stanu i kwalifikacja \texttt{const}}
+
+\texttt{std::visit} respektuje typ i kategorię wartości przekazanego
+wariantu. Odwiedzając obiekt przez \texttt{variant\&}, możemy modyfikować
+aktywną alternatywę; przez \texttt{const variant\&} uzyskujemy
+referencję stałą. Przy przekazaniu \texttt{std::move(v)} odwiedzający
+może otrzymać referencję rvalue i przenieść przechowywaną wartość.
+Przeniesienie nie musi zmieniać aktywnego indeksu wariantu, ale zawartość
+przeniesionego obiektu może zostać zmieniona zgodnie z semantyką typu.
+
+\begin{lstlisting}[caption={Modyfikacja aktywnej alternatywy; kompletny program.}]
+#include <cassert>
+#include <variant>
+
+int main() {
+    std::variant<int, double> v = 10;
+    std::visit([](auto& x) { x += 1; }, v);
+    assert(std::get<int>(v) == 11);
+}
+\end{lstlisting}
+
+\subsection{Stan \texttt{valueless\_by\_exception}}
+
+\texttt{variant} może w wyjątkowych okolicznościach utracić aktywną
+alternatywę wskutek nieudanego przypisania lub rekonstrukcji typu,
+którego operacja zgłasza wyjątek. Stan ten identyfikujemy przez
+\texttt{valueless\_by\_exception()}, a \texttt{index()} zwraca w nim
+\texttt{std::variant\_npos}. W takim stanie \texttt{std::visit} zgłasza
+\texttt{std::bad\_variant\_access}. Nie należy jednak traktować
+\texttt{valueless\_by\_exception()} jako zwykłej ,,pustej'' alternatywy;
+przeznaczony do tego jest \texttt{std::monostate}.
+
+\paragraph{Ważne ograniczenia.}
+\texttt{variant} nie przechowuje typów referencyjnych ani \texttt{void};
+nie można także dodać dowolnego nowego typu bez zmiany listy alternatyw.
+Duży wariant może zajmować pamięć odpowiadającą największej alternatywie
+plus informację o aktywnym przypadku i ewentualne wyrównanie; dokładny
+rozmiar nie jest stałą wielkością określoną przez standard.
+
+\section{Przykład projektowy: interpreter prostych poleceń}
+\label{sec:cpp14-commands}
+
+Rozpatrzmy miniaturowy model poleceń. Każdy rodzaj polecenia ma inne pola,
+ale wszystkie należą do zamkniętej rodziny. \texttt{variant} oddziela
+\emph{dane} od \emph{operacji}, a \texttt{visit} pozwala jednoznacznie
+obsłużyć każdy przypadek.
+
+\begin{lstlisting}[caption={Modelowanie poleceń za pomocą variant; kompletny program.}]
+#include <cassert>
+#include <string>
+#include <variant>
+#include <vector>
+
+struct Add  { int a, b; };
+struct Save { std::string filename; };
+struct Quit {};
+using Command = std::variant<Add, Save, Quit>;
+
+struct Execute {
+    int& total;
+    bool& stopped;
+
+    void operator()(const Add& c) const {
+        total += c.a + c.b;
+    }
+    void operator()(const Save& c) const {
+        if (c.filename.empty()) stopped = true;
+    }
+    void operator()(const Quit&) const {
+        stopped = true;
+    }
+};
+
+int main() {
+    std::vector<Command> commands{
+        Add{2, 3}, Save{"result.txt"}, Add{4, 5}, Quit{}
+    };
+    int total = 0;
+    bool stopped = false;
+    for (const auto& command : commands) {
+        if (stopped) break;
+        std::visit(Execute{total, stopped}, command);
+    }
+    assert(total == 14);
+    assert(stopped);
+}
+\end{lstlisting}
+
+Dodanie nowego typu polecenia, np. \texttt{Delete}, wymaga rozszerzenia
+\texttt{Command} i obsługi nowego przypadku. W dobrze skonstruowanym
+odwiedzającym brakująca obsługa będzie błędem kompilacji. To zaleta
+typów sumarycznych przy modelowaniu \emph{zamkniętego} katalogu zdarzeń.
+
+\section{\texttt{std::any}: wartość o nieznanym typie}
+\label{sec:cpp14-any}
+
+\texttt{std::any} (C++17, nagłówek \texttt{<any>}) może przechowywać
+obiekt dowolnego typu spełniającego wymaganie kopiowalności i pozwala
+później odzyskać dokładny typ przez \texttt{std::any\_cast}. To klasyczna
+implementacja \emph{type erasure}: użytkownik obiektu \texttt{any}
+nie zna szablonowego typu przechowywanej wartości.
+
+\begin{lstlisting}[caption={std::any i bezpieczne wydobycie typu (C++17); kompletny program.}]
+#include <any>
+#include <cassert>
+#include <string>
+
+int main() {
+    std::any value = 17;
+    assert(value.has_value());
+    assert(std::any_cast<int>(value) == 17);
+
+    if (auto ptr = std::any_cast<int>(&value)) {
+        *ptr += 1;
+    }
+    assert(std::any_cast<int>(value) == 18);
+
+    value.emplace<std::string>("text");
+    assert(std::any_cast<int>(&value) == nullptr);
+    assert(std::any_cast<const std::string&>(value) == "text");
+
+    value.reset();
+    assert(!value.has_value());
+}
+\end{lstlisting}
+
+\texttt{std::any\_cast<T>(value)} zgłasza \texttt{std::bad\_any\_cast},
+jeśli aktywny typ nie odpowiada żądanemu. Wariant wskaźnikowy
+\texttt{std::any\_cast<T>(\&value)} zwraca \texttt{nullptr}; jest zatem
+wygodny do ostrożnego sprawdzania typu. \texttt{type()} udostępnia
+\texttt{std::type\_info} opisujący aktualnie przechowywany typ,
+a dla pustego obiektu zwraca \texttt{typeid(void)}.
+
+\begin{lstlisting}[caption={\texttt{any\_cast} nie jest konwersją numeryczną; kompletny program.}]
+#include <any>
+#include <cassert>
+#include <typeinfo>
+
+int main() {
+    std::any value = 42;
+    assert(value.type() == typeid(int));
+    assert(std::any_cast<double>(&value) == nullptr);
+    assert(std::any_cast<int>(&value) != nullptr);
+}
+\end{lstlisting}
+
+\texttt{any} przechowuje \emph{wartość}, nie udostępnia jednak uniwersalnego
+operatora \texttt{+}, porównania czy drukowania tej wartości. Aby wykonać
+operację, trzeba znać typ albo dostarczyć odrębny mechanizm dyspozycji.
+Ponadto przechowywany typ musi być kopiowalny: \texttt{std::any}
+nie nadaje się do bezpośredniego przechowywania \texttt{std::unique\_ptr<T>}.
+Niektóre implementacje wykorzystują \emph{small-object optimization},
+ale standard nie obiecuje uniknięcia alokacji dla konkretnego małego typu.
+
+\paragraph{Kiedy używać?}
+\texttt{std::any} ma sens m.in. w luźno typowanych zasobnikach kontekstu,
+gdy autor zasobnika nie zna listy możliwych typów, a odbiorca umie
+jawnie odtworzyć typ właściwego wpisu. Jeśli rodzaje wartości są znane,
+\texttt{variant} daje z reguły silniejszą kontrolę statyczną i czytelniejszą
+obsługę przypadków. Unikaj \texttt{any} jako sposobu na ukrycie
+źle określonych kontraktów interfejsu.
+
+\section{\texttt{std::function}: wymazywanie typu obiektu wywoływalnego}
+\label{sec:cpp14-function}
+
+\texttt{std::function<R(Args...)>} (C++11, nagłówek
+\texttt{<functional>}) przechowuje kopiowalny obiekt wywoływalny zgodny
+z podaną sygnaturą. Może to być wskaźnik do funkcji, funktor,
+wyrażenie lambda, a także obiekt związany z metodą składową. Konkretny
+typ obiektu zostaje ukryty, ale interfejs jego wywołania jest znany:
+\texttt{R(Args...)}.
+
+\begin{lstlisting}[caption={Jeden typ std::function dla różnych obiektów wywoływalnych; kompletny program.}]
+#include <cassert>
+#include <functional>
+
+int times_two(int x) { return 2 * x; }
+struct PlusThree {
+    int operator()(int x) const { return x + 3; }
+};
+
+int main() {
+    std::function<int(int)> f = times_two;
+    assert(f(4) == 8);
+
+    f = PlusThree{};
+    assert(f(4) == 7);
+
+    int delta = 5;
+    f = [delta](int x) { return x + delta; };
+    assert(f(4) == 9);
+}
+\end{lstlisting}
+
+\subsection{Pusty obiekt i koszt abstrakcji}
+
+Domyślnie skonstruowany \texttt{std::function} jest pusty. Jego
+\texttt{operator bool()} informuje, czy istnieje obiekt wywoływalny;
+próba wywołania pustego obiektu zgłasza \texttt{std::bad\_function\_call}.
+W porównaniu z bezpośrednim wywołaniem szablonu \texttt{std::function}
+może wymagać pośredniego wywołania i dodatkowego przechowywania stanu,
+a czasami także alokacji dynamicznej. Nie jest jednak poprawne twierdzenie,
+że każdy \texttt{std::function} \emph{zawsze} wykonuje alokację.
+
+\begin{lstlisting}[caption={Pusty std::function i jawne sprawdzanie; kompletny program.}]
+#include <cassert>
+#include <functional>
+
+int main() {
+    std::function<void()> callback;
+    assert(!callback);
+    callback = [] {};
+    assert(static_cast<bool>(callback));
+    callback();
+    callback = nullptr;
+    assert(!callback);
+}
+\end{lstlisting}
+
+\subsection{Ograniczenie kopiowalności i czas życia przechwyceń}
+
+W C++20 \texttt{std::function} wymaga kopiowalności typu przechowywanego
+obiektu wywoływalnego. Dlatego lambda zawierająca \emph{move-only}
+\texttt{std::unique\_ptr} nie może być bezpośrednio umieszczona w
+\texttt{std::function}. W C++23 pojawił się
+\texttt{std::move\_only\_function} dla takiego zastosowania.
+
+Przechwytywanie przez referencję wymaga ponadto, aby obiekt odniesienia
+pozostawał żywy podczas każdego późniejszego wywołania. Sam
+\texttt{std::function} kontroluje czas życia \emph{przechowywanej lambdy},
+ale nie przedłuża automatycznie czasu życia obiektów, do których lambda
+odwołuje się przez referencje lub nieposiadające własności wskaźniki.
+
+\begin{lstlisting}[caption={Callback utrzymujący obiekt przy życiu przez \texttt{shared\_ptr}; kompletny program.}]
+#include <cassert>
+#include <functional>
+#include <memory>
+
+int main() {
+    auto state = std::make_shared<int>(10);
+    std::function<int()> get_value = [state] {
+        return *state;
+    };
+    state.reset();
+    assert(get_value() == 10);
+}
+\end{lstlisting}
+
+Trwałe przechwycenie \texttt{shared\_ptr} może z kolei utworzyć cykl
+własności, np. gdy obiekt przechowuje callback, a callback przechwytuje
+\texttt{shared\_ptr} do tego samego obiektu. Wówczas często lepiej
+przechwycić \texttt{weak\_ptr} i uzyskać tymczasową własność przez
+\texttt{lock()}.
+
+\begin{lstlisting}[caption={Callback niewymuszający przedłużania życia obiektu; kompletny program.}]
+#include <cassert>
+#include <functional>
+#include <memory>
+#include <optional>
+
+int main() {
+    auto state = std::make_shared<int>(42);
+    std::weak_ptr<int> weak = state;
+
+    std::function<std::optional<int>()> read = [weak]()
+        -> std::optional<int> {
+        if (auto shared = weak.lock()) return *shared;
+        return std::nullopt;
+    };
+
+    assert(read() == 42);
+    state.reset();
+    assert(!read().has_value());
+}
+\end{lstlisting}
+
+\subsection{Szablon, wskaźnik do funkcji czy \texttt{std::function}?}
+
+Jeżeli funkcja korzysta z obiektu wywoływalnego tylko podczas bieżącego
+wywołania, często najprościej użyć szablonu. Pozwala to kompilatorowi
+znać konkretny typ i daje okazję do \emph{inliningu}. Wskaźnik do funkcji
+jest lekki, ale nie przechowa samodzielnie stanu przechwycenia lambdy.
+\texttt{std::function} ułatwia natomiast przechowywanie i zastępowanie
+heterogenicznych callbacków o wspólnej sygnaturze.
+
+\begin{lstlisting}[caption={Wywołanie generyczne bez type erasure; kompletny program.}]
+#include <cassert>
+#include <functional>
+#include <utility>
+
+template<class F, class... Args>
+decltype(auto) call_now(F&& f, Args&&... args) {
+    return std::invoke(std::forward<F>(f),
+                       std::forward<Args>(args)...);
+}
+
+int main() {
+    int factor = 3;
+    auto f = [factor](int x) { return factor * x; };
+    assert(call_now(f, 7) == 21);
+}
+\end{lstlisting}
+
+\section{Własny mechanizm type erasure: \texttt{Printable}}
+\label{sec:cpp14-custom-erasure}
+
+Pokażemy teraz, jak samodzielnie zbudować typ o stałym interfejsie,
+który może przechowywać różne wartości drukowalne do strumienia. Celowo
+nie wykorzystamy dziedziczenia typów użytkownika po wspólnej klasie
+bazowej. Użytkownik powinien móc przekazać \texttt{int},
+\texttt{std::string} albo własny typ, dla którego działa
+\texttt{operator<<}. Wymagamy przy tym \emph{semantyki wartości}:
+kopiowanie \texttt{Printable} ma kopiować przechowywany obiekt.
+
+\paragraph{Idea implementacji.}
+Wewnątrz opakowania znajdują się:
+\begin{enumerate}
+\item abstrakcyjny interfejs \texttt{Concept} z operacjami \texttt{print}
+      i \texttt{clone};
+\item szablonowy model \texttt{Model<T>}, który przechowuje konkretną
+      wartość i realizuje interfejs;
+\item wskaźnik \texttt{unique\_ptr<Concept>}, ukrywający konkretny
+      typ w miejscu użycia \texttt{Printable}.
+\end{enumerate}
+
+\begin{lstlisting}[caption={Własne kopiowalne type erasure (C++20); kompletny program.}]
+#include <cassert>
+#include <concepts>
+#include <memory>
+#include <ostream>
+#include <sstream>
+#include <string>
+#include <type_traits>
+#include <utility>
+
+class Printable {
+    struct Concept {
+        virtual ~Concept() = default;
+        virtual void print(std::ostream&) const = 0;
+        virtual std::unique_ptr<Concept> clone() const = 0;
+    };
+
+    template<class T>
+    struct Model final : Concept {
+        T value;
+        template<class U>
+        explicit Model(U&& x) : value(std::forward<U>(x)) {}
+        void print(std::ostream& os) const override {
+            os << value;
+        }
+        std::unique_ptr<Concept> clone() const override {
+            return std::make_unique<Model<T>>(value);
+        }
+    };
+
+    std::unique_ptr<Concept> self_;
+
+public:
+    Printable() = default;
+
+    template<class T>
+      requires (!std::same_as<std::remove_cvref_t<T>, Printable> &&
+                std::copy_constructible<std::decay_t<T>> &&
+                requires(std::ostream& os,
+                         const std::decay_t<T>& value) {
+                    { os << value } -> std::same_as<std::ostream&>;
+                })
+    Printable(T&& value)
+        : self_(std::make_unique<Model<std::decay_t<T>>>(
+              std::forward<T>(value))) {}
+
+    Printable(const Printable& other)
+        : self_(other.self_ ? other.self_->clone() : nullptr) {}
+
+    Printable(Printable&&) noexcept = default;
+
+    Printable& operator=(const Printable& other) {
+        if (this != &other) {
+            Printable tmp(other); // najpierw bezpieczna kopia
+            swap(tmp);            // potem nie-rzucajaca zamiana
+        }
+        return *this;
+    }
+
+    Printable& operator=(Printable&&) noexcept = default;
+
+    void swap(Printable& other) noexcept {
+        self_.swap(other.self_);
+    }
+
+    void print(std::ostream& os) const {
+        if (self_) self_->print(os);
+        else os << "<empty>";
+    }
+};
+
+int main() {
+    Printable a = 17;
+    Printable b = std::string("hello");
+    Printable c = b; // gleboka kopia wartosci
+    b = 7.5;
+
+    std::ostringstream stream;
+    a.print(stream);
+    c.print(stream);
+    assert(stream.str() == "17hello");
+}
+\end{lstlisting}
+
+\subsection{Analiza własności i kosztów}
+
+Ten interfejs jest \emph{otwarty}: każdy nowy typ spełniający wymagania
+może zostać opakowany bez modyfikowania klasy \texttt{Printable}.
+Użytkownik nie musi dziedziczyć po klasie bazowej, co jest ważną zaletą
+w porównaniu ze zwykłym polimorfizmem opartym na \texttt{Base}.
+\texttt{Model<T>} jest instancjonowany w czasie kompilacji, natomiast
+\texttt{print()} jest wywoływane dynamicznie przez ukryty interfejs.
+Kopiowanie przez \texttt{clone()} zachowuje rzeczywisty typ wartości.
+
+Wersja edukacyjna wykorzystuje osobną alokację dynamiczną przy
+przechowywaniu niepustej wartości i kolejną alokację przy głębokim
+kopiowaniu. Nie wykorzystuje \emph{small-buffer optimization}, które
+mogłoby przechowywać niewielkie obiekty bezpośrednio wewnątrz opakowania.
+W produkcyjnym type erasure trzeba dodatkowo przemyśleć \emph{wyrównanie},
+przenoszenie, bezpieczne niszczenie, usuwanie typów niekopiowalnych,
+kwalifikatory \texttt{const}, obsługę wyjątków i stabilność ABI.
+
+\paragraph{Gwarancja silna przypisania kopiującego.}
+Tworzenie obiektu \texttt{tmp(other)} może zakończyć się wyjątkiem.
+Wówczas obiekt docelowy pozostaje niezmieniony. Jeśli kopia się uda,
+\texttt{swap(tmp)} jest operacją \texttt{noexcept}; stara zawartość
+zostanie zniszczona razem z \texttt{tmp}. Jest to klasyczny idiom
+\emph{copy-and-swap}. Alternatywą jest niekopiowalne opakowanie,
+które usuwa operacje kopiowania i przechowuje tylko obiekty przenoszalne.
+
+\section{Type erasure a dziedziczenie i polimorfizm statyczny}
+\label{sec:cpp14-comparison}
+
+\subsection{Wspólna baza klas}
+
+Gdy typy zostały zaprojektowane jako część wspólnej hierarchii,
+\texttt{std::unique\_ptr<Base>} pozwala przechowywać obiekty o różnych
+typach dynamicznych i wywoływać ich operacje wirtualne. Implementacje
+muszą dziedziczyć po \texttt{Base}, a tworzenie kopii polimorficznej
+wymaga własnego protokołu (np. \texttt{clone()}). Z drugiej strony
+\texttt{unique\_ptr} jasno wyraża własność i nie kopiuje obiektów
+wskutek zwykłego kopiowania uchwytu (ponieważ kopiowanie jest zabronione).
+
+\begin{lstlisting}[caption={Polimorfizm przez bazę i \texttt{unique\_ptr}; kompletny program.}]
+#include <cassert>
+#include <memory>
+#include <string>
+#include <vector>
+
+struct Shape {
+    virtual ~Shape() = default;
+    virtual int area() const = 0;
+};
+struct Square final : Shape {
+    int side;
+    explicit Square(int s) : side(s) {}
+    int area() const override { return side * side; }
+};
+struct Rectangle final : Shape {
+    int width, height;
+    Rectangle(int w, int h) : width(w), height(h) {}
+    int area() const override { return width * height; }
+};
+
+int main() {
+    std::vector<std::unique_ptr<Shape>> shapes;
+    shapes.push_back(std::make_unique<Square>(3));
+    shapes.push_back(std::make_unique<Rectangle>(2, 5));
+    assert(shapes[0]->area() + shapes[1]->area() == 19);
+}
+\end{lstlisting}
+
+\subsection{Kiedy nie wymazywać typu?}
+
+Jeżeli algorytm potrzebuje konkretnego typu wyłącznie podczas jednego
+wywołania, parametr szablonowy z \texttt{concept} jest często prostszy
+i pozwala unikać alokacji. Type erasure ma sens przede wszystkim na
+granicy interfejsów, gdy wartości o różnych typach muszą być
+\emph{przechowywane w jednej strukturze}, przekazywane przez stabilny
+interfejs albo zastępowane w trakcie działania programu.
+
+\begin{center}
+\small
+\begin{tabularx}{\textwidth}{@{}lXX@{}}
+\toprule
+\textbf{Rozwiązanie} & \textbf{Zalety} & \textbf{Ograniczenia} \\
+\midrule
+\texttt{variant<Ts...>} & Typy znane statycznie, sprawdzanie przypadków, lokalne przechowywanie wartości & Zamknięty katalog typów, złożoność odwiedzania i rozmiar największej alternatywy \\
+\texttt{any} & Dowolna kopiowalna wartość, wspólny typ pojemnika & Trzeba odzyskać dokładny typ; brak wspólnego interfejsu operacji \\
+\texttt{function} & Jedna sygnatura dla różnych callbacków & Kopiowalność (C++20), pośrednictwo, możliwe alokacje \\
+Własne type erasure & Otwarty katalog modeli bez wspólnej bazy typów klienta & Złożona implementacja, zarządzanie pamięcią i wyjątkami \\
+\texttt{unique\_ptr<Base>} & Jawna hierarchia, dziedziczone operacje, kontrola własności & Wymaga wspólnej bazy; operacje wirtualne \\
+Szablon z \texttt{concept} & Typ znany kompilatorowi, możliwość optymalizacji & Wiele instancjacji; zwykle nie przechowa różnych typów w jednej kolekcji \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\section{Wydajność: układ pamięci i koszty dynamicznej dyspozycji}
+\label{sec:cpp14-performance}
+
+Nie ma uniwersalnej odpowiedzi na pytanie, który mechanizm jest
+najszybszy. Poniżej wymieniamy dominujące koszty; faktyczne zachowanie
+zależy od rozmiaru typów, optymalizacji kompilatora, struktury programu
+i rozkładu typów w danych.
+
+\begin{itemize}
+\item \texttt{optional<T>} dodaje znacznik obecności; dostęp do zawartości
+      może wymagać sprawdzenia warunku.
+\item \texttt{variant<Ts...>} przechowuje wystarczającą ilość miejsca
+      na największy typ i indeks aktywnej alternatywy; odwiedzający
+      może być implementowany przez instrukcję wyboru lub tablicę
+      funkcji, a szczegóły zależą od kompilatora.
+\item \texttt{any} przechowuje metadane typu oraz wartość, potencjalnie
+      w osobno alokowanym buforze.
+\item \texttt{function} może wymagać pośredniego wywołania i przechowania
+      stanu lambdy; czasami da się uniknąć alokacji.
+\item Własna implementacja z \texttt{unique\_ptr<Concept>} wykonuje
+      alokację dynamiczną i pośrednie wywołanie wirtualne.
+\end{itemize}
+
+Przede wszystkim trzeba mierzyć \emph{rzeczywisty} przypadek użycia.
+Jednorazowy koszt konstruowania callbacku może być nieistotny, gdy jego
+wykonanie trwa długo, ale może dominować w pętli składającej się z
+milionów krótkich operacji.
+
+\subsection{Test bez mylenia czasu kompilacji z wykonaniem}
+
+Rzetelne porównanie wymaga rozgrzania kodu, wykorzystania odpowiedniego
+zestawu danych, uwzględnienia optymalizacji i sprawdzenia, czy kompilator
+nie usunął mierzonej pracy. Warto rozdzielać koszt \emph{tworzenia}
+opakowania od kosztu \emph{wywołania} i analizować nie tylko średni
+czas, ale też rozkład wyników oraz liczbę alokacji. Benchmarku
+porównującego dwa mechanizmy nie traktujemy jako dowodu ich przewagi
+we wszystkich zastosowaniach.
+
+\section{Granice bezpieczeństwa: wyjątki, czas życia i współbieżność}
+
+\paragraph{Wyjątki.}
+\texttt{optional::value()}, \texttt{variant::get}, \texttt{any\_cast}
+i wywołanie pustego \texttt{std::function} mogą zgłaszać odpowiednie
+wyjątki. Konstrukcja zawartości i przypisanie także mogą rzucać,
+ponieważ wykonują operacje typu przechowywanego. Należy rozróżniać
+\emph{brak wartości} (normalny stan \texttt{optional}) od
+\emph{niepowodzenia operacji}, któremu warto nadać osobną reprezentację.
+
+\paragraph{Czas życia.}
+\texttt{variant}, \texttt{optional} i \texttt{any} posiadają własne
+przechowywane wartości. Można jednak umieścić w nich wskaźniki,
+\texttt{reference\_wrapper} albo inne nieposiadające własności uchwyty;
+wtedy odpowiedzialność za czas życia wskazywanych danych pozostaje po
+stronie programisty. To samo dotyczy referencji przechwyconych przez
+lambdę umieszczoną w \texttt{std::function}.
+
+\paragraph{Wątki.}
+Żaden z opisanych typów nie czyni dowolnych współbieżnych modyfikacji
+tego samego obiektu bezpiecznymi. Przykładowo równoczesny zapis do
+jednego \texttt{variant} i odczyt jego aktywnej zawartości bez
+synchronizacji mogą powodować wyścig danych. Gdy callback jest
+uruchamiany równolegle, trzeba osobno określić zasady synchronizacji
+stanu przechwyconego przez lambdę.
+
+\section{Nowości po C++20 i świadomy wybór standardu}
+
+W całym rozdziale przykłady są zgodne z C++20. W nowszych standardach
+pojawiają się udogodnienia, które warto znać, ale których \emph{nie wolno}
+zakładać przy kompilacji z \texttt{-std=c++20}:
+\begin{itemize}
+\item \textbf{C++23:} \texttt{std::expected<T,E>} --- wynik albo
+      jawna wartość błędu;
+\item \textbf{C++23:} \texttt{std::move\_only\_function} --- opakowanie
+      dla obiektów wywoływalnych, które nie muszą być kopiowalne;
+\item \textbf{C++23:} monadyczne operacje \texttt{optional::and\_then},
+      \texttt{optional::transform} i \texttt{optional::or\_else};
+\item \textbf{C++26:} \texttt{std::function\_ref} --- niewłaścicielski
+      widok na obiekt wywoływalny, którego czas życia musi zostać
+      zapewniony przez wywołującego.
+\end{itemize}
+
+Dostępność funkcji bibliotecznych w konkretnym kompilatorze i jego
+bibliotece standardowej może być opóźniona w stosunku do daty
+opublikowania standardu.
+
+\section{Zasady projektowania i typowe błędy}
+\label{sec:cpp14-guidelines}
+
+\begin{enumerate}
+\item Wybieraj \texttt{optional<T>}, gdy brak wyniku jest normalny i
+      nie potrzebujesz szczegółowego typu błędu.
+\item Wybieraj \texttt{variant}, gdy zestaw przypadków jest znany
+      i zamknięty; obsługuj je przez \texttt{visit}, jeśli pozwala to
+      uniknąć łańcucha ręcznych kontroli typu.
+\item Stosuj \texttt{any} tylko tam, gdzie świadomie rezygnujesz
+      ze statycznie określonego zestawu typów i masz jasny protokół
+      odzyskiwania ich wartości.
+\item Używaj \texttt{std::function} do \emph{przechowywanych},
+      kopiowalnych callbacków; dla funkcji wykonywanej natychmiast
+      rozważ parametr szablonowy.
+\item Nie zakładaj, że \texttt{std::function} zawsze alokuje ani
+      że \texttt{std::variant} zawsze jest szybszy. Zmierz przypadek
+      zastosowania.
+\item Nie pozostawiaj referencji lub wskaźników do obiektów, których
+      czas życia zakończy się przed użyciem przechowywanego callbacku.
+\item Unikaj \texttt{std::get} i \texttt{any\_cast} w sytuacjach,
+      w których nie masz gwarancji typu; do sprawdzania wykorzystuj
+      \texttt{get\_if} i wskaźnikowy \texttt{any\_cast}.
+\item Nie używaj \texttt{std::any} do bezpośredniego opakowania
+      typów przenoszalnych, ale niekopiowalnych, np. \texttt{unique\_ptr}.
+\item Rozdziel decyzję o \emph{otwartym zbiorze implementacji} od
+      decyzji o \emph{dynamicznym czasie życia i alokacji}.
+\end{enumerate}
+
+\section*{Podsumowanie rozdziału}
+\addcontentsline{toc}{section}{Podsumowanie rozdziału 14}
+
+\texttt{optional} modeluje brak lub obecność wartości, a
+\texttt{variant} modeluje zamkniętą sumę przypadków. \texttt{any}
+ukrywa typ kopiowalnej wartości, nie narzucając jej operacji.
+\texttt{function} ukrywa typ obiektu wywoływalnego przy zachowaniu
+ustalonej sygnatury. Własne type erasure pozwala opakować otwartą
+rodzinę obcych typów bez wymagania wspólnej klasy bazowej, ale wymaga
+starannego określenia semantyki własności, kopiowania i wyjątków.
+Dobry projekt zaczyna się więc od określenia kontraktu: \emph{które
+przypadki istnieją, kto posiada obiekty, jakie operacje udostępniamy
+oraz czy zbiór typów ma pozostać otwarty}.
+
+\section*{Dokumentacja i literatura}
+\addcontentsline{toc}{section}{Dokumentacja i literatura rozdziału 14}
+\begin{itemize}
+\item \url{https://en.cppreference.com/w/cpp/utility/optional} --- \texttt{std::optional}.
+\item \url{https://en.cppreference.com/w/cpp/utility/variant} --- \texttt{std::variant}.
+\item \url{https://en.cppreference.com/w/cpp/utility/any} --- \texttt{std::any}.
+\item \href{https://en.cppreference.com/w/cpp/utility/functional/function}{cppreference: \texttt{std::function}} --- dokumentacja opakowania wywołań.
+\item Bjarne Stroustrup, \emph{A Tour of C++}, wyd. 3, Addison--Wesley, 2022.
+\item Klaus Iglberger, \emph{C++ Software Design}, O'Reilly, 2022.
+\end{itemize}

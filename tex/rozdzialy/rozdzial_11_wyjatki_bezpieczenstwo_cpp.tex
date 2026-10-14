@@ -1,0 +1,717 @@
+% ROZDZIAL 11 — Wyjatki i bezpieczenstwo wyjatkowe w C++20
+% Fragment rozdzialu do skryptu. Wymagane pakiety: listings, amsmath, array, hyperref.
+% Uzycie: \input{rozdzial_11_wyjatki_bezpieczenstwo_cpp.tex}
+
+\chapter{Wyjątki i bezpieczeństwo wyjątkowe w C++}
+\label{chap:cpp-exceptions}
+
+\section{Po co C++ ma wyjątki?}
+
+Mechanizm wyjątków oddziela kod realizujący zwykły przebieg algorytmu
+od kodu reagującego na niepowodzenia. Jeżeli funkcja nie może spełnić
+swojego kontraktu, może zgłosić wyjątek poleceniem \texttt{throw}.
+Wówczas wykonanie jest przekazywane do odpowiedniego bloku
+\texttt{catch}; po drodze niszczone są obiekty automatyczne, których
+czas życia dobiegł końca. To ostatnie zjawisko nazywamy
+\emph{odwijaniem stosu} (\emph{stack unwinding}).
+
+Z perspektywy projektowania API warto odróżniać:
+\begin{itemize}
+\item \emph{zwykły wynik} (w tym informację, że elementu nie znaleziono),
+      dla którego często lepszy jest \texttt{std::optional};
+\item \emph{błąd operacji, który wywołujący powinien świadomie obsłużyć},
+      reprezentowany np. przez kod błędu lub, od C++23, \texttt{std::expected};
+\item \emph{niepowodzenie uniemożliwiające dotrzymanie kontraktu},
+      dla którego wyjątek bywa naturalnym sposobem propagacji.
+\end{itemize}
+Nie ma uniwersalnej reguły nakazującej używanie wyjątków wszędzie.
+Znaczenie mają kontrakty funkcji, konwencje projektu, ograniczenia
+środowiska oraz wymagania dotyczące opóźnień wykonania.
+
+\section{Składnia \texttt{try}, \texttt{throw} i \texttt{catch}}
+\label{sec:cpp11-basics}
+
+\begin{lstlisting}
+#include <iostream>
+#include <stdexcept>
+
+double divide(double a, double b) {
+    if (b == 0.0)
+        throw std::invalid_argument("zero denominator");
+    return a / b;
+}
+
+int main() {
+    try {
+        std::cout << divide(10.0, 2.0) << '\n';
+        std::cout << divide(10.0, 0.0) << '\n';
+        std::cout << "not executed\n";
+    } catch (const std::invalid_argument& e) {
+        std::cerr << "invalid input: " << e.what() << '\n';
+    }
+}
+\end{lstlisting}
+
+Instrukcja \texttt{throw E\{...\}} tworzy obiekt wyjątku. Obsługa
+szuka pasującej klauzuli \texttt{catch}; jeśli wyjątek nie zostanie
+obsłużony, program kończy działanie poprzez \texttt{std::terminate}.
+Nie należy zakładać, że nieobsłużony wyjątek zawsze spowoduje pełne
+odwinięcie stosu: szczegóły zakończenia programu mogą zależeć od
+implementacji.
+
+\subsection{Przechwytywanie przez referencję i kolejność klauzul}
+
+Przyjmujemy zwykle \texttt{const E\&}: pozwala to uniknąć niepotrzebnego
+kopiowania i \emph{object slicing} przy przekazywaniu obiektu typu
+pochodnego jako typu bazowego przez wartość.
+
+\begin{lstlisting}
+#include <exception>
+#include <iostream>
+#include <stdexcept>
+
+void handle() {
+    try {
+        throw std::out_of_range("bad index");
+    } catch (const std::out_of_range& e) {
+        std::cout << "out_of_range: " << e.what() << '\n';
+    } catch (const std::exception& e) {
+        std::cout << "other std::exception: " << e.what() << '\n';
+    } catch (...) {
+        std::cout << "unknown exception\n";
+    }
+}
+\end{lstlisting}
+
+Klauzule są sprawdzane w kolejności występowania: najpierw umieszcza
+się typy bardziej szczegółowe, a na końcu bazowe. Wyrażenie
+\texttt{catch (...)} przechwytuje wyjątek dowolnego typu, ale nie
+udostępnia bezpośrednio jego obiektu.
+
+\paragraph{Ponowne zgłoszenie.}
+\texttt{throw;} wewnątrz aktywnej obsługi ponownie zgłasza bieżący
+wyjątek z zachowaniem jego dynamicznego typu. Natomiast
+\texttt{throw e;} zgłasza nowe wyrażenie; w zależności od statycznego
+typu \texttt{e} może prowadzić do kopiowania i obcięcia do klasy
+bazowej.
+
+\begin{lstlisting}
+void log_and_rethrow() {
+    try {
+        throw std::runtime_error("disk error");
+    } catch (const std::exception& e) {
+        std::cerr << e.what() << '\n';
+        throw;                  // keeps original exception object
+        // throw e;              // may slice to std::exception
+    }
+}
+\end{lstlisting}
+
+\section{Odwijanie stosu i RAII}
+\label{sec:cpp11-unwinding}
+
+Najważniejsza reguła praktyczna brzmi: \emph{zwalnianie zasobu powinno
+wynikać z destruktora obiektu zarządzającego zasobem}. Stanowi to
+rozwinięcie idei RAII poznanej w rozdziałach 3 i 10.
+
+\begin{lstlisting}
+#include <iostream>
+#include <stdexcept>
+#include <string>
+
+struct Trace {
+    std::string name;
+    explicit Trace(std::string n) : name(std::move(n)) {
+        std::cout << "create " << name << '\n';
+    }
+    ~Trace() noexcept {
+        std::cout << "destroy " << name << '\n';
+    }
+};
+
+void third() {
+    Trace c{"C"};
+    throw std::runtime_error("failure");
+}
+void second() {
+    Trace b{"B"};
+    third();
+}
+void first() {
+    Trace a{"A"};
+    second();
+}
+// try { first(); } catch (const std::exception&) {}
+// Destruction order: C, B, A.
+\end{lstlisting}
+
+Wyjątek powoduje zakończenie odpowiednich zakresów, a obiekty
+z lokalnym automatycznym czasem przechowywania są niszczone w odwrotnej
+kolejności ich skonstruowania. Jeżeli konstruktor zgłosi wyjątek,
+destruktor \emph{całego, nieutworzonego obiektu} nie jest wywoływany,
+ale niszczone są już w pełni skonstruowane podobiekty bazowe i składowe.
+
+\subsection{Zarządzanie plikiem przy pomocy RAII}
+
+\begin{lstlisting}
+#include <cstdio>
+#include <memory>
+#include <stdexcept>
+
+struct FileCloser {
+    void operator()(std::FILE* file) const noexcept {
+        if (file) std::fclose(file);
+    }
+};
+using File = std::unique_ptr<std::FILE, FileCloser>;
+
+File open_file(const char* name) {
+    File file{std::fopen(name, "rb")};
+    if (!file) throw std::runtime_error("cannot open file");
+    return file;
+}
+\end{lstlisting}
+
+Nawet gdy po otwarciu pliku dalsze operacje zgłoszą wyjątek,
+\texttt{unique\_ptr} wykona deleter. Zauważmy, że
+\texttt{std::fclose} może sygnalizować błąd przy zamykaniu; prosty
+noexcept-deleter ignoruje ten kod błędu. Jeżeli informacja o błędzie
+zamknięcia jest istotna, należy zapewnić osobną, jawną operację
+finalizacji, której wynik można obsłużyć \emph{przed} destrukcją.
+
+\section{Gwarancje bezpieczeństwa wyjątkowego}
+\label{sec:cpp11-guarantees}
+
+Bezpieczeństwo wyjątkowe nie oznacza tylko braku wycieków pamięci.
+Chodzi również o stan obiektów po niepowodzeniu:
+
+\begin{center}
+\begin{tabular}{|p{0.23\textwidth}|p{0.65\textwidth}|}
+\hline
+\textbf{Gwarancja} & \textbf{Znaczenie} \\
+\hline
+No-throw / no-fail & Operacja nie zgłasza wyjątku; w wariancie
+no-fail dodatkowo musi się udać. \\
+\hline
+Silna (strong) & Jeśli pojawi się wyjątek, obserwowalny stan objęty
+kontraktem pozostaje taki jak przed operacją. \\
+\hline
+Podstawowa (basic) & Obiekty zachowują niezmienniki, zasoby nie
+wyciekają, ale stan może się zmienić. \\
+\hline
+Brak gwarancji & Po błędzie mogą zostać naruszone niezmienniki lub
+utracone zasoby. \\
+\hline
+\end{tabular}
+\end{center}
+
+Silna gwarancja nie oznacza automatycznie cofnięcia efektów
+zewnętrznych, np. wysłanego pakietu czy wpisu w bazie danych.
+Zakres transakcyjności trzeba sprecyzować w kontrakcie.
+
+\subsection{Silna gwarancja dzięki operacji „przygotuj, a potem zatwierdź”}
+
+\begin{lstlisting}
+#include <utility>
+#include <vector>
+
+class Table {
+    std::vector<int> data_;
+public:
+    explicit Table(std::vector<int> values)
+        : data_(std::move(values)) {}
+
+    void append_many(const std::vector<int>& more) {
+        auto candidate = data_;          // may throw
+        candidate.insert(candidate.end(),
+                         more.begin(), more.end()); // may throw
+        data_.swap(candidate);           // noexcept for std::vector<int>
+    }
+
+    const std::vector<int>& data() const noexcept { return data_; }
+};
+\end{lstlisting}
+
+Jeżeli kopiowanie lub \texttt{insert} zawiedzie, \texttt{data\_}
+pozostaje nietknięte. Dopiero bezwyjątkowe \texttt{swap} zatwierdza
+przygotowaną wersję. Kosztem jest dodatkowa pamięć i kopiowanie;
+silna gwarancja bywa więc świadomym wyborem projektowym, a nie darmową
+optymalizacją.
+
+\paragraph{Uwaga na aliasing.}
+W przykładzie argument \texttt{more} może nawet odnosić się do
+\texttt{data\_} obiektu \texttt{Table}: kopia \texttt{candidate}
+powstaje przed modyfikacją oryginału. W kodzie operującym bezpośrednio
+na tym samym kontenerze trzeba dodatkowo analizować ważność iteratorów
+i referencji.
+
+\subsection{Konstruktor i niezmienniki klasy}
+
+Dobrze napisany konstruktor tworzy w pełni poprawny obiekt albo
+zgłasza wyjątek. Bezpiecznie zarządzane składowe automatycznie
+posprzątają po częściowo wykonanej inicjalizacji.
+
+\begin{lstlisting}
+#include <memory>
+#include <stdexcept>
+
+class Session {
+    std::unique_ptr<int[]> buffer_;
+    std::size_t size_;
+public:
+    explicit Session(std::size_t n)
+        : buffer_(std::make_unique<int[]>(n)), size_(n) {
+        if (n == 0) throw std::invalid_argument("empty session");
+    }
+    std::size_t size() const noexcept { return size_; }
+};
+\end{lstlisting}
+
+Nie należy zastępować RAII ręcznie pisanymi \texttt{catch}, w których
+sprząta się kolejne zasoby. Takie procedury są podatne na błędy,
+zwłaszcza gdy konstruktor zdobywa wiele zasobów po kolei.
+
+\section{\texttt{noexcept}: deklarowanie i sprawdzanie}
+\label{sec:cpp11-noexcept}
+
+\texttt{noexcept} w specyfikacji funkcji oznacza, że wyjątek nie może
+opuścić jej ciała. Naruszenie tego wymagania kończy się wywołaniem
+\texttt{std::terminate} (nie jest to „ciche zignorowanie” błędu).
+
+\begin{lstlisting}
+void close_handle() noexcept {
+    // cleanup that must not let exceptions escape
+}
+
+void may_fail();
+static_assert(noexcept(close_handle()));
+static_assert(!noexcept(may_fail()));
+\end{lstlisting}
+
+W drugim użyciu \texttt{noexcept(expr)} jest \emph{operatorem}
+zwracającym wartość logiczną w czasie kompilacji. Nie uruchamia on
+samego wyrażenia.
+
+\subsection{Warunkowe \texttt{noexcept}}
+
+\begin{lstlisting}
+#include <type_traits>
+#include <utility>
+
+template<class T>
+void swap_values(T& a, T& b)
+    noexcept(std::is_nothrow_move_constructible_v<T> &&
+             std::is_nothrow_move_assignable_v<T>) {
+    T tmp(std::move(a));
+    a = std::move(b);
+    b = std::move(tmp);
+}
+\end{lstlisting}
+
+Jest to przykład \emph{warunkowej specyfikacji}. Nie oznacza,
+że przedstawiony algorytm daje silną gwarancję, jeżeli przenoszenie
+rzuca wyjątki; dla takich typów stan \texttt{a} lub \texttt{b} może
+się zmienić przed niepowodzeniem. W kodzie generycznym trzeba
+analizować nie tylko składnię, ale też gwarancje operacji typu \texttt{T}.
+
+\subsection{Dlaczego \texttt{noexcept} jest ważne dla \texttt{vector}?}
+
+Przy powiększaniu pojemności kontener może potrzebować przenieść
+lub skopiować stare elementy do nowej pamięci. Dla typów kopiowalnych
+konstrukcja kopiująca bywa bezpieczniejsza, jeśli konstruktor
+przenoszący może zgłosić wyjątek.
+
+\begin{lstlisting}
+#include <type_traits>
+#include <utility>
+
+struct Item {
+    Item() = default;
+    Item(const Item&) {}              // copying available
+    Item(Item&&) noexcept(false) {}   // move may throw
+};
+
+static_assert(std::is_copy_constructible_v<Item>);
+static_assert(!std::is_nothrow_move_constructible_v<Item>);
+
+// std::move_if_noexcept(x) usually gives const Item& here.
+\end{lstlisting}
+
+\texttt{std::move\_if\_noexcept} zwraca \texttt{T\&\&}, jeżeli
+przenoszenie jest zadeklarowane jako bezwyjątkowe albo typ nie jest
+kopiowalny; w przeciwnym razie zwraca \texttt{const T\&}.
+Zasada ta pomaga kontenerom utrzymywać silną gwarancję w wielu,
+ale nie we wszystkich przypadkach. Szczegóły są zależne od
+konkretnej operacji i własności typu elementów.
+
+\subsection{Destruktory i \texttt{std::terminate}}
+
+Domyślnie destruktor jest niewyrzucający, o ile destruktory jego
+składowych i klas bazowych nie wymagają innej specyfikacji.
+Szczególnie podczas odwijania stosu wypuszczenie kolejnego wyjątku
+z destruktora może spowodować \texttt{std::terminate}.
+
+\begin{lstlisting}
+struct SafeCleanup {
+    ~SafeCleanup() noexcept {
+        try {
+            risky_cleanup();
+        } catch (...) {
+            // Log, record an error, or use another no-throw fallback.
+            // Never let it escape this destructor.
+        }
+    }
+    static void risky_cleanup();
+};
+\end{lstlisting}
+
+Nie oznacza to, że każdą awarię należy ukryć. Jeśli operacja
+finalizacji może się nie udać i użytkownik musi znać wynik, projektujmy
+jawną metodę \texttt{close()} lub \texttt{commit()}, a destruktor
+niech pełni rolę bezpiecznej ścieżki awaryjnej.
+
+\section{Własne klasy wyjątków i hierarchia standardowa}
+\label{sec:cpp11-types}
+
+W nagłówkach \texttt{<stdexcept>}, \texttt{<exception>},
+\texttt{<new>} i \texttt{<system\_error>} znajdziemy wiele gotowych
+typów. W typowych zastosowaniach najczęściej spotkamy
+\texttt{std::invalid\_argument}, \texttt{std::out\_of\_range},
+\texttt{std::runtime\_error}, \texttt{std::bad\_alloc} oraz
+\texttt{std::system\_error}.
+
+\begin{lstlisting}
+#include <stdexcept>
+#include <string>
+
+class ParseError : public std::runtime_error {
+    std::size_t position_;
+public:
+    ParseError(std::size_t pos, std::string message)
+        : std::runtime_error(std::move(message)),
+          position_(pos) {}
+
+    std::size_t position() const noexcept { return position_; }
+};
+
+int parse_digit(char c, std::size_t pos) {
+    if (c < '0' || c > '9')
+        throw ParseError(pos, "expected decimal digit");
+    return c - '0';
+}
+\end{lstlisting}
+
+Własna klasa może przechowywać dodatkowe informacje, np. identyfikator
+operacji, pozycję w tekście lub kod błędu. Nie należy umieszczać tam
+niepotrzebnie ogromnych danych. Metoda \texttt{what()} klasy
+\texttt{std::exception} jest wirtualna i \texttt{noexcept}; jeśli
+ją przesłaniamy, musimy zachować zgodny kontrakt i poprawny czas życia
+zwracanego łańcucha.
+
+\paragraph{Błędy systemowe.}
+\texttt{std::system\_error} umożliwia przenoszenie kodu błędu
+\texttt{std::error\_code} wraz z kategorią, np. błędu systemowego,
+bez uzależniania całego API od przypadkowego tekstu \texttt{what()}.
+
+\section{Wyjątki w funkcjach szablonowych i neutralność wyjątkowa}
+
+Komponent generyczny powinien zwykle zachować niezmienniki i pozwolić
+wyjątkom operacji wywołanych na typie \texttt{T} przejść do klienta,
+zamiast pochłaniać je przez \texttt{catch (...)}.
+
+\begin{lstlisting}
+#include <algorithm>
+#include <vector>
+
+template<class T, class Compare>
+void sort_elements(std::vector<T>& xs, Compare comp) {
+    std::sort(xs.begin(), xs.end(), comp);
+    // An exception from comp may propagate to the caller.
+}
+\end{lstlisting}
+
+Należy jednak odróżnić \emph{neutralność wyjątkową} od silnej
+gwarancji. Jeśli komparator zgłosi wyjątek w trakcie sortowania,
+kontener pozostaje poprawnym obiektem, ale jego kolejność nie musi
+odpowiadać stanowi sprzed wywołania.
+
+\section{Przenoszenie wyjątków między funkcjami i wątkami}
+\label{sec:cpp11-exception-ptr}
+
+Typ \texttt{std::exception\_ptr} pozwala zachować wyjątek poza blokiem
+\texttt{catch}, a później zgłosić go ponownie. Jest przydatny
+szczególnie w programowaniu współbieżnym.
+
+\begin{lstlisting}
+#include <exception>
+#include <stdexcept>
+#include <thread>
+
+std::exception_ptr error;
+std::thread worker([&] {
+    try {
+        throw std::runtime_error("worker failed");
+    } catch (...) {
+        error = std::current_exception();
+    }
+});
+worker.join();
+
+if (error) {
+    std::rethrow_exception(error);
+}
+\end{lstlisting}
+
+Zmienna \texttt{error} nie jest tutaj współdzielona jednocześnie przez
+dwa aktywne dostępy: zapis zachodzi w wątku roboczym, a odczyt
+dopiero po \texttt{join()}, które zapewnia wymaganą synchronizację.
+Nie wolno dopuścić, aby wyjątek opuścił funkcję startową zwykłego
+\texttt{std::thread}: typowym skutkiem jest \texttt{std::terminate}.
+
+\subsection{\texttt{std::future} przechowuje wyjątek}
+
+Wspomniane w rozdziale o współbieżności \texttt{std::async} i
+\texttt{std::future} ułatwiają propagowanie niepowodzenia do
+odbiorcy wyniku.
+
+\begin{lstlisting}
+#include <future>
+#include <stdexcept>
+
+auto fut = std::async(std::launch::async, []() -> int {
+    throw std::runtime_error("calculation failed");
+});
+try {
+    (void)fut.get();  // rethrows the stored exception
+} catch (const std::runtime_error&) {
+    // report the failure in the receiving thread
+}
+\end{lstlisting}
+
+Przez \texttt{get()} wynik (lub wyjątek) trafia do wątku odbiorcy.
+W \texttt{std::future} wynik można pobrać tylko raz; inne własności
+tego mechanizmu omówiliśmy w rozdziale o asynchroniczności.
+
+\section{Wyjątki zagnieżdżone i dodatkowy kontekst}
+\label{sec:cpp11-nested}
+
+Gdy funkcja wyższego poziomu rozumie więcej niż warstwa niższa, może
+wzbogacić informację o błędzie i zachować oryginalną przyczynę.
+
+\begin{lstlisting}
+#include <exception>
+#include <stdexcept>
+
+void load_config() {
+    try {
+        throw std::runtime_error("invalid token");
+    } catch (...) {
+        std::throw_with_nested(
+            std::runtime_error("cannot load configuration"));
+    }
+}
+
+void print_nested(const std::exception& e, int depth = 0) {
+    std::cerr << std::string(depth * 2, ' ') << e.what() << '\n';
+    try {
+        std::rethrow_if_nested(e);
+    } catch (const std::exception& inner) {
+        print_nested(inner, depth + 1);
+    } catch (...) {
+        std::cerr << "nested non-standard exception\n";
+    }
+}
+\end{lstlisting}
+
+W tym fragmencie należy dodać nagłówki \texttt{<iostream>} i
+\texttt{<string>} przy samodzielnym uruchamianiu funkcji
+\texttt{print\_nested}. Takie opakowywanie wyjątków nie jest tym
+samym co zgłoszenie \texttt{throw e;}: nowy wyjątek przechowuje
+kontekst, a przyczynę można odzyskać przez \texttt{rethrow\_if\_nested}.
+
+\section{\texttt{std::uncaught\_exceptions} i strażnicy zakresu}
+
+Funkcja \texttt{std::uncaught\_exceptions()} (C++17) zwraca liczbę
+aktualnie nieobsługiwanych obiektów wyjątków w bieżącym wątku.
+Można jej użyć do wykrycia, czy wyjście z zakresu następuje wskutek
+odwijania stosu.
+
+\begin{lstlisting}
+#include <exception>
+
+class FailureGuard {
+    int initial_ = std::uncaught_exceptions();
+    int& failure_count_;
+public:
+    explicit FailureGuard(int& count) noexcept : failure_count_(count) {}
+    FailureGuard(const FailureGuard&) = delete;
+    FailureGuard& operator=(const FailureGuard&) = delete;
+
+    ~FailureGuard() noexcept {
+        if (std::uncaught_exceptions() > initial_) {
+            ++failure_count_; // no-throw bookkeeping
+        }
+    }
+};
+\end{lstlisting}
+
+Porównanie z \emph{początkową liczbą}, a nie tylko z zerem, jest
+ważne przy zagnieżdżonych wyjątkach. Strażnik nie daje jednak
+pełnego, transakcyjnego mechanizmu cofania zmian. W projektach
+korzystających z C++20 można napisać własny scope guard, ale trzeba
+uważnie określić, czy przechowuje funkcję przez kopię, przez
+przeniesienie czy przez referencję i czy jej wywołanie może rzucać.
+
+\section{Wyjątki a alternatywne modele obsługi błędów}
+\label{sec:cpp11-alternatives}
+
+\subsection{\texttt{std::optional}: brak wyniku nie musi być błędem}
+
+\begin{lstlisting}
+#include <optional>
+#include <string_view>
+
+std::optional<std::size_t> find_colon(std::string_view s) {
+    const auto i = s.find(':');
+    if (i == std::string_view::npos) return std::nullopt;
+    return i;
+}
+\end{lstlisting}
+
+Brak dwukropka może być normalnym scenariuszem. Zgłaszanie wyjątku
+przy każdym nieudanym wyszukiwaniu bywa niepotrzebne.
+
+\subsection{\texttt{std::expected<T,E>} — C++23, nie C++20}
+
+\texttt{std::expected} reprezentuje \emph{albo wartość typu T, albo
+błąd typu E}. Został ustandaryzowany w C++23 i nie należy zakładać,
+że nagłówek \texttt{<expected>} jest dostępny w kompilacji C++20.
+
+\begin{lstlisting}
+// This example requires C++23 and <expected>.
+#include <expected>
+#include <string>
+#include <string_view>
+
+std::expected<int, std::string>
+parse_positive(std::string_view text) {
+    if (text == "1") return 1;
+    if (text == "2") return 2;
+    return std::unexpected("expected 1 or 2");
+}
+
+void use_expected() {
+    auto result = parse_positive("3");
+    if (!result) {
+        const std::string& error = result.error();
+        (void)error;
+    }
+}
+\end{lstlisting}
+
+Dzięki temu błędy oczekiwane przez API są jawne w sygnaturze.
+\texttt{std::expected} nie eliminuje wszystkich wyjątków: konstrukcja
+zawartego obiektu czy inne operacje nadal mogą się nie udać.
+W C++20 podobny kontrakt można zrealizować własnym typem
+\texttt{Result}, \texttt{std::variant<T,E>} lub odpowiednią biblioteką.
+
+\subsection{Kody błędów, wyjątki i wydajność}
+
+W konwencjonalnych implementacjach C++ obsługa sukcesu na ścieżce,
+na której żaden wyjątek nie wystąpił, może być bardzo tania, ale samo
+zgłoszenie i obsłużenie wyjątku zwykle kosztuje więcej niż zwrócenie
+prostego kodu błędu. Nie należy jednak zamieniać każdego \texttt{throw}
+na kod zwrotny tylko na podstawie intuicji: warto mierzyć rzeczywistą
+częstotliwość błędów, profilować aplikację i uwzględniać prostotę
+kontraktów.
+
+\section{Typowe błędy i dobre praktyki}
+\label{sec:cpp11-guidelines}
+
+\begin{enumerate}
+\item \textbf{Nie rzucaj wskaźnikami do lokalnych obiektów.}
+      Preferuj wyjątki będące obiektami, zwykle pochodnymi od
+      \texttt{std::exception}.
+\item \textbf{Przechwytuj wyjątki polimorficzne przez
+      \texttt{const\&}.} Unikaj obcinania obiektu (\emph{slicing}).
+\item \textbf{Do ponownego zgłoszenia używaj \texttt{throw;}.}
+      Nie zastępuj go bez namysłu \texttt{throw e;}.
+\item \textbf{Stosuj RAII.} Surowe wywołania \texttt{new}/\texttt{delete}
+      rozdzielone operacjami rzucającymi wyjątki to częsta przyczyna
+      wycieków pamięci.
+\item \textbf{Nie wypuszczaj wyjątków z destruktorów.}
+      Błędy finalizacji zgłaszaj jawnie w odpowiednio zaprojektowanym API.
+\item \textbf{Nie oznaczaj funkcji \texttt{noexcept} bez analizy.}
+      To obietnica z konsekwencją w postaci \texttt{std::terminate}.
+\item \textbf{Nie ukrywaj błędów w pustym \texttt{catch (...)}.}
+      Obsłuż wyjątek, zapisz informację diagnostyczną albo przekaż go wyżej.
+\item \textbf{Określ gwarancję niepowodzenia.} Dla operacji mutujących
+      dane rozważ silną gwarancję i strategię „przygotuj–zatwierdź”.
+\item \textbf{Nie pozwalaj wyjątkom opuszczać funkcji startowej
+      \texttt{std::thread}.} Użyj \texttt{std::exception\_ptr},
+      \texttt{promise/future} lub odpowiedniego wyższego poziomu API.
+\item \textbf{Wybierz właściwy model błędu.} Brak zwykłego wyniku,
+      przewidywalna porażka operacji i naruszenie kontraktu to różne
+      sytuacje.
+\end{enumerate}
+
+\section{Przykład końcowy: transakcyjna aktualizacja danych}
+
+Poniższy program ilustruje współpracę wyjątku, RAII i silnej gwarancji.
+Załóżmy, że aktualizacja dodaje wartości do rejestru, ale w razie błędu
+rejestr ma pozostać bez zmian.
+
+\begin{lstlisting}
+#include <iostream>
+#include <stdexcept>
+#include <utility>
+#include <vector>
+
+class Register {
+    std::vector<int> values_;
+public:
+    Register() : values_{1, 2, 3} {}
+
+    void add_checked(const std::vector<int>& numbers) {
+        std::vector<int> proposed = values_;
+        for (int x : numbers) {
+            if (x < 0) {
+                throw std::invalid_argument("negative input");
+            }
+            proposed.push_back(x);
+        }
+        values_.swap(proposed);
+    }
+
+    const std::vector<int>& values() const noexcept {
+        return values_;
+    }
+};
+
+int main() {
+    Register r;
+    try {
+        r.add_checked({4, -5, 6});
+    } catch (const std::invalid_argument& e) {
+        std::cerr << e.what() << '\n';
+    }
+    // Still {1, 2, 3}; no partial update.
+    for (int x : r.values()) std::cout << x << ' ';
+}
+\end{lstlisting}
+
+Najpierw powstaje kopia danych. Sprawdzanie i alokowanie nowej pamięci
+mogą zgłaszać wyjątki, lecz działają na kopii. Po pomyślnym wykonaniu
+następuje zatwierdzenie przez \texttt{swap}. Jest to wzorzec, który
+można stosować również w rozbudowanych klasach, przy świadomym
+uwzględnieniu kosztów i własności ich składowych.
+
+\section{Podsumowanie rozdziału}
+
+W praktyce mechanizm wyjątków jest najbardziej użyteczny wtedy,
+gdy łączy się go z dobrym modelem własności zasobów i z precyzyjnie
+określonymi gwarancjami operacji. \texttt{throw}, \texttt{catch}
+i \texttt{noexcept} to tylko składnia; o poprawności projektu
+decydują RAII, niezmienniki obiektów, semantyka transakcyjna oraz
+świadome oddzielanie błędów wyjątkowych od zwykłych wariantów wyniku.
+

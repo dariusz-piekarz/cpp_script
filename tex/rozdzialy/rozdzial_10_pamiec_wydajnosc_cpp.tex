@@ -1,0 +1,906 @@
+% ROZDZIAL 10 — Organizacja pamieci i wydajnosc w C++20
+% Fragment do wlaczenia po rozdziale 9.
+% Wymagane pakiety: listings, array, amsmath, hyperref.
+% Uzycie: \input{rozdzial_10_pamiec_wydajnosc_cpp.tex}
+
+\chapter[Organizacja pamięci i wydajność]{Organizacja pamięci, wyrównanie i wydajność niskopoziomowa w C++}
+\label{chap:cpp-memory-performance}
+
+\section{Po co analizować organizację pamięci?}
+
+W rozdziałach o wskaźnikach (rozdział~3), semantyce przenoszenia
+(rozdział~6) i iteratorach (rozdział~8) interesowało nas głównie
+\emph{poprawne zarządzanie obiektami}. Teraz przyjrzymy się temu, jak
+obiekty są reprezentowane w pamięci oraz w jaki sposób wybory
+programisty wpływają na liczbę alokacji i lokalność dostępu do danych.
+
+Rozróżniajmy trzy poziomy opisu:
+\begin{enumerate}
+\item \textbf{Gwarancje języka C++:} rozmiar obiektu, wymagane wyrównanie,
+      czas życia obiektu, legalność dostępu i zasady alokowania pamięci.
+\item \textbf{Szczegóły implementacji:} rozmieszczenie pól, rozmiary
+      wskaźników, zachowanie konkretnego alokatora czy układ binarny ABI.
+\item \textbf{Właściwości sprzętu:} linie cache, hierarchia pamięci,
+      prefetching, przepustowość i zjawisko \emph{false sharing}.
+\end{enumerate}
+
+Kod poprawny według standardu może być wolny; szybki kod działający
+na jednym komputerze może być powolny na innym. Dlatego optymalizacja
+wymaga najpierw \emph{pomiaru}, a następnie weryfikacji hipotezy.
+
+\section{Obiekt, bajt, adres i czas życia}
+\label{sec:cpp10-object}
+
+\subsection{Pamięć nie jest tym samym co obiekt}
+
+W modelu C++ \emph{obszar pamięci} może istnieć bez żywego obiektu typu
+\texttt{T}. Obiekt charakteryzują między innymi typ, rozmiar, czas życia
+i, dla pewnych klas, odpowiednio wywołane konstruktory i destruktory.
+Samo uzyskanie adresu wystarczająco dużego bloku nie oznacza, że
+wolno traktować ten blok jak dowolny obiekt C++.
+
+\begin{lstlisting}
+#include <cstddef>
+#include <type_traits>
+
+static_assert(sizeof(char) == 1);
+static_assert(sizeof(std::byte) == 1);
+static_assert(sizeof(int) >= 1);
+
+struct Point { double x, y; };
+static_assert(sizeof(Point) >= 2 * sizeof(double));
+\end{lstlisting}
+
+\texttt{sizeof(T)} podaje rozmiar obiektu w \emph{bajtach C++}.
+Jeden bajt nie musi mieć ośmiu bitów; ich liczbę określa
+\texttt{CHAR\_BIT} z nagłówka \texttt{<climits>}.
+Rozmiar typu obiektowego jest dodatni. Każdy obiekt ma też
+wymagane \emph{wyrównanie}, które omówimy dalej.
+
+\paragraph{Czas przechowywania a czas życia.}
+Należy odróżnić \emph{storage duration} od \emph{object lifetime}:
+\begin{itemize}
+\item obiekt lokalny ma zazwyczaj automatyczny czas przechowywania;
+\item obiekt z \texttt{static} ma statyczny czas przechowywania;
+\item obiekt \texttt{thread\_local} ma czas przechowywania wątku;
+\item pamięć otrzymana przez \texttt{new} lub alokator jest pamięcią
+      o dynamicznym czasie przechowywania.
+\end{itemize}
+Nie należy utożsamiać tych kategorii z gwarantowanymi fizycznymi
+obszarami „stos” i „sterta”: te nazwy opisują zwyczajowe implementacje,
+a nie pełny model abstrakcyjny języka.
+
+\begin{lstlisting}
+#include <memory>
+
+int global = 17;                 // static storage duration
+thread_local int per_thread = 0; // thread storage duration
+
+void demo() {
+    int local = 5;               // automatic storage duration
+    auto p = std::make_unique<int>(10);
+    // Obiekt *p zyje w pamieci zarzadzanej dynamicznie.
+}
+\end{lstlisting}
+
+\subsection{Reprezentacja obiektu i bezpieczne oglądanie bajtów}
+
+C++ pozwala badać reprezentację bajtową obiektu przez
+\texttt{char}, \texttt{unsigned char} lub \texttt{std::byte}.
+Nie wolno jednak wyciągać z tego wniosku, że dowolny wskaźnik
+\texttt{T*} można przekonwertować na \texttt{U*} i odczytać dane jako
+\texttt{U}: takie postępowanie może naruszyć reguły wyrównania,
+czasu życia i dostępu przez glvalue odpowiedniego typu.
+
+\begin{lstlisting}
+#include <array>
+#include <cstddef>
+#include <cstring>
+#include <cstdint>
+
+std::uint32_t x = 0x12345678;
+std::array<std::byte, sizeof(x)> bytes{};
+std::memcpy(bytes.data(), &x, sizeof(x));
+
+std::uint32_t y = 0;
+std::memcpy(&y, bytes.data(), sizeof(y));
+// y == x
+\end{lstlisting}
+
+Kolejność bajtów zależy od \emph{endianness}. Można ją rozpoznać przez
+\texttt{std::endian} (C++20, nagłówek \texttt{<bit>}), jednak do
+serializacji najlepiej jawnie ustalać porządek bajtów, format pól
+i wersję protokołu. Nie należy wysyłać całej struktury przez
+\texttt{write(fd, \&object, sizeof(object))} jako przenośnego formatu:
+padding, reprezentacja liczb i ABI mogą się różnić.
+
+\subsection{\texttt{std::bit\_cast} i ograniczenia rzutowań}
+
+\texttt{std::bit\_cast<To>(from)} (C++20, \texttt{<bit>}) tworzy wartość
+\texttt{To} przez skopiowanie reprezentacji bitowej, o ile oba typy
+są trywialnie kopiowalne i mają równy rozmiar. Dodatkowo reprezentacja
+musi oznaczać poprawną wartość docelowego typu.
+
+\begin{lstlisting}
+#include <bit>
+#include <cstdint>
+
+float f = 1.0f;
+// Przyklad zaklada sizeof(float) == sizeof(uint32_t).
+// Na typowej platformie wynik to kod bitowy IEEE 754.
+if constexpr (sizeof(float) == sizeof(std::uint32_t)) {
+    auto bits = std::bit_cast<std::uint32_t>(f);
+    (void)bits;
+}
+\end{lstlisting}
+
+Nie mylmy \texttt{bit\_cast} z \texttt{reinterpret\_cast}:
+pierwszy wytwarza \emph{wartość}, drugi może tylko zmienić sposób
+interpretacji wskaźnika; sam nie tworzy obiektu docelowego.
+
+\section{Layout struktury: \texttt{sizeof}, \texttt{alignof}, padding}
+\label{sec:cpp10-layout}
+
+\subsection{Skąd bierze się padding?}
+
+Każdy typ obiektowy ma wymaganie wyrównania. Kompilator może wstawić
+\emph{padding}, czyli nieużywane bajty, aby kolejne pola miały
+odpowiednie adresy, a elementy tablicy struktur były poprawnie
+wyrównane. Rozmieszczenie pól zależy od typu klasy i reguł języka;
+konkretna liczba bajtów paddingu zależy od implementacji.
+
+\begin{lstlisting}
+#include <cstddef>
+#include <iostream>
+
+struct Unordered {
+    char flag;
+    double value;
+    int count;
+};
+
+struct Ordered {
+    double value;
+    int count;
+    char flag;
+};
+
+std::cout << sizeof(Unordered) << '\n';
+std::cout << sizeof(Ordered) << '\n';
+std::cout << alignof(Ordered) << '\n';
+\end{lstlisting}
+
+Na częstym ABI, przy \texttt{sizeof(double)==8},
+\texttt{alignof(double)==8} i \texttt{sizeof(int)==4},
+pierwszy typ zajmuje zwykle 24 bajty, a drugi 16. \textbf{Nie są to
+wartości wymagane przez standard}. Samo przestawienie pól może
+zmniejszyć zapotrzebowanie na pamięć milionów rekordów, ale może też
+pogorszyć czytelność, stabilność ABI lub lokalność dostępu.
+
+\begin{center}
+\small
+\begin{tabular}{|l|p{4.4cm}|p{4.4cm}|}
+\hline
+ & \textbf{Unordered (przykładowo)} & \textbf{Ordered (przykładowo)} \\
+\hline
+Początek & \texttt{flag}: 1 B & \texttt{value}: 8 B \\
+\hline
+Dalej & padding: 7 B & \texttt{count}: 4 B \\
+\hline
+Dalej & \texttt{value}: 8 B & \texttt{flag}: 1 B \\
+\hline
+Koniec & \texttt{count}: 4 B + padding: 4 B & padding: 3 B \\
+\hline
+Razem & 24 B & 16 B \\
+\hline
+\end{tabular}
+\end{center}
+
+\subsection{\texttt{offsetof}, standard-layout i ABI}
+
+Dla typów \emph{standard-layout} makro \texttt{offsetof} pozwala
+poznać przesunięcie pola od początku obiektu. Używanie go z innymi
+typami klas od C++17 jest warunkowo wspierane, dlatego do analiz
+przenośnych przyjmujemy tutaj standard-layout.
+
+\begin{lstlisting}
+#include <cstddef>
+#include <cstdint>
+#include <type_traits>
+
+struct Header {
+    std::uint32_t id;
+    std::uint16_t version;
+};
+static_assert(std::is_standard_layout_v<Header>);
+static_assert(offsetof(Header, version) >=
+              sizeof(std::uint32_t));
+\end{lstlisting}
+
+W analizie ABI trzeba pamiętać o polach wirtualnych, dziedziczeniu,
+przestrzeniach adresowych i konwencjach wywołania. Zmiana kolejności
+pól publicznej struktury używanej w bibliotekach binarnych może
+zmienić jej ABI nawet wtedy, gdy program źródłowy nadal się kompiluje.
+
+\subsection{\texttt{alignof} i \texttt{alignas}}
+
+\texttt{alignof(T)} zwraca wyrównanie typu \texttt{T};
+\texttt{alignas(N)} pozwala narzucić silniejsze wyrównanie.
+Należy zachować ograniczenia języka dotyczące dopuszczalnych wartości
+\texttt{N}. Wyrównanie może zwiększyć rozmiar obiektu, co jest
+istotne przy tablicach.
+
+\begin{lstlisting}
+#include <atomic>
+#include <cstdint>
+
+struct alignas(64) AlignedCounter {
+    std::atomic<std::uint64_t> value{0};
+};
+static_assert(alignof(AlignedCounter) >= 64);
+\end{lstlisting}
+
+Wyrównanie do 64 bajtów ma sens tylko wtedy, gdy wynika z wymagań
+sprzętu lub pomiarów. Nie jest to uniwersalna wielkość linii cache.
+Ponadto \texttt{alignas} nie czyni dostępu do obiektu atomowym,
+nie zastępuje \texttt{std::atomic} i samo nie zapewnia synchronizacji.
+
+\subsection{Czy warto „pakować” struktury?}
+
+Atrybuty kompilatora w rodzaju \texttt{\_\_attribute\_\_((packed))}
+lub \texttt{\#pragma pack} nie stanowią przenośnych mechanizmów
+standardowego C++20. Zmniejszenie rozmiaru może wymusić niewyrównany
+dostęp, obniżyć wydajność, a na niektórych architekturach być
+problemem poprawności. W kodzie protokołów lepiej często dekodować
+pola jawnie z bufora bajtów i nie wiązać formatu z layoutem klasy.
+
+\section{Wyrównane alokacje i czas życia obiektów}
+\label{sec:cpp10-lifetime}
+
+\subsection{Różnica między alokacją a konstruowaniem}
+
+Klasyczne \texttt{new T(args)} wykonuje logicznie dwa zadania:
+pozyskuje odpowiednio wyrównaną pamięć i inicjalizuje w niej obiekt.
+Analogicznie \texttt{delete} niszczy obiekt i zwalnia pamięć.
+Dla narzędzi niskopoziomowych warto rozdzielić te operacje.
+
+\begin{lstlisting}
+#include <new>
+
+struct Widget { explicit Widget(int) {} };
+
+void* mem = ::operator new(sizeof(Widget));
+Widget* w = nullptr;
+try {
+    w = ::new (mem) Widget(5); // placement new
+} catch (...) {
+    ::operator delete(mem);
+    throw;
+}
+w->~Widget();                 // koniec zycia obiektu
+::operator delete(mem);      // zwolnienie samej pamieci
+\end{lstlisting}
+
+Taka konstrukcja jest poprawna dla \texttt{Widget} o wyrównaniu
+obsługiwanym przez zwykłe \texttt{operator new}. Dla typów
+\emph{over-aligned} należy korzystać z odpowiedniej alokacji
+obsługującej \texttt{std::align\_val\_t} lub ze standardowego
+alokatora, który uwzględnia wymagania wyrównania.
+
+\paragraph{Dlaczego to nie jest zalecany idiom aplikacyjny?}
+Obsługa wyjątków, wielokrotnych destruktorów, rozmiaru tablicy
+i zgodności alokacji z dealokacją łatwo prowadzi do błędów.
+W większości kodu wystarczają \texttt{std::vector},
+\texttt{std::make\_unique} i obiekty automatyczne. Rozdzielanie
+alokacji od konstruowania ma sens głównie przy implementowaniu
+kontenerów, pul pamięci i innych abstrakcji zasobów.
+
+\subsection{\texttt{std::construct\_at} i \texttt{std::destroy\_at} (C++20)}
+
+Od C++20 można użyć funkcji z nagłówka \texttt{<memory>} do
+jawnego rozpoczęcia i zakończenia czasu życia obiektu w odpowiednio
+przygotowanej pamięci.
+
+\begin{lstlisting}
+#include <cstddef>
+#include <memory>
+
+struct Tracked {
+    int value;
+    explicit Tracked(int n) : value(n) {}
+};
+
+alignas(Tracked) std::byte buffer[sizeof(Tracked)];
+Tracked* obj = std::construct_at(
+    reinterpret_cast<Tracked*>(buffer), 42);
+// ... korzystamy z *obj ...
+std::destroy_at(obj);
+\end{lstlisting}
+
+\textbf{Ważne:} \texttt{std::destroy\_at} kończy czas życia obiektu, ale
+nie zwalnia jego pamięci. Nie wolno wykonywać dwóch destrukcji tego
+samego żywego obiektu ani odwoływać się do obiektu po destrukcji.
+Ponadto rozmiar i wyrównanie bufora muszą odpowiadać konstruowanemu
+typowi; sam \texttt{reinterpret\_cast} nie naprawia niewłaściwego
+wyrównania.
+
+\subsection{Wyrównany \texttt{operator new}}
+
+Dla typów o szczególnie silnym wyrównaniu istnieją przeciążenia
+alokacji i dealokacji wykorzystujące \texttt{std::align\_val\_t}
+(C++17). Zwykłe \texttt{new Overaligned{}} wybiera odpowiedni
+mechanizm automatycznie.
+
+\begin{lstlisting}
+#include <new>
+
+struct alignas(128) Block { char data[128]; };
+Block* b = new Block{};
+delete b;
+\end{lstlisting}
+
+Jeśli ręcznie używamy \texttt{::operator new} z argumentem
+\texttt{std::align\_val\_t\{128\}}, musimy dobrać zgodną operację
+\texttt{::operator delete} z parametrem wyrównania. Mieszanie tych
+rodzin funkcji jest błędem.
+
+\subsection{Ponowne użycie tej samej pamięci i \texttt{std::launder}}
+
+W tej samej pamięci można zakończyć życie jednego obiektu, a potem
+rozpocząć życie kolejnego, ale dostęp przez wcześniej utworzone
+wskaźniki podlega szczegółowym regułom języka. \texttt{std::launder}
+(C++17) ma zastosowanie w określonych sytuacjach, gdy nowy obiekt
+nie jest przezroczystym zamiennikiem poprzedniego; nie jest
+uniwersalnym remedium na aliasing, nieprawidłowy czas życia
+czy źle wyrównaną pamięć.
+
+\paragraph{Reguła praktyczna.}
+W kodzie aplikacyjnym nie sięgaj po \texttt{std::launder} bez
+konkretnego problemu z czasem życia i bez zrozumienia odpowiednich
+reguł. Preferuj własność zasobu wyrażoną typem RAII.
+
+\section{Alokatory: pamięć, obiekty i bezpieczeństwo wyjątkowe}
+\label{sec:cpp10-allocators}
+
+\subsection{Standardowy model alokatora}
+
+Kontenery standardowe używają \emph{alokatorów} do uzyskiwania
+pamięci na swoje elementy. Alokator nie jest tym samym co funkcja
+\texttt{new} i nie musi budować obiektu w chwili rezerwacji pamięci.
+\texttt{std::allocator\_traits} zapewnia jednolity interfejs do
+alokowania, konstruowania i niszczenia obiektów.
+
+\begin{lstlisting}
+#include <memory>
+
+struct Item { explicit Item(int v) : value(v) {} int value; };
+std::allocator<Item> alloc;
+Item* p = alloc.allocate(2); // pamiec na dwa obiekty
+
+std::allocator_traits<decltype(alloc)>::construct(alloc, p, 5);
+std::allocator_traits<decltype(alloc)>::construct(alloc, p + 1, 7);
+
+// teraz dwa obiekty sa zywe
+std::allocator_traits<decltype(alloc)>::destroy(alloc, p + 1);
+std::allocator_traits<decltype(alloc)>::destroy(alloc, p);
+alloc.deallocate(p, 2);
+\end{lstlisting}
+
+Przykład dla przejrzystości zakłada, że oba konstruktory nie rzucają
+wyjątków. \textbf{Pełna implementacja kontenera} musi zliczać
+pomyślnie skonstruowane obiekty i w razie wyjątku zniszczyć tylko je,
+a potem zwolnić pamięć. Właśnie z tego powodu lepiej opierać się na
+gotowych kontenerach niż ręcznie pisać alokację elementów.
+
+\subsection{Rezerwacja pojemności i realokacja \texttt{vector}}
+
+\texttt{std::vector} przechowuje elementy w pamięci ciągłej, dzięki
+czemu zapewnia dobrą lokalność dostępu. \texttt{reserve} może
+ograniczyć liczbę realokacji, jeśli znamy przewidywaną wielkość
+kontenera.
+
+\begin{lstlisting}
+#include <vector>
+
+std::vector<int> values;
+values.reserve(10'000);
+for (int i = 0; i < 10'000; ++i)
+    values.push_back(i);
+\end{lstlisting}
+
+\texttt{reserve(n)} nie zmienia \texttt{size()}, lecz zapewnia
+\texttt{capacity() >= n}, chyba że zgłoszony zostanie wyjątek.
+Realokacja unieważnia wskaźniki, referencje i iteratory do elementów.
+Nie jest dobrym pomysłem wywoływanie \texttt{reserve(size()+1)}
+przy każdym dodaniu elementu: można w ten sposób utracić
+korzystną politykę geometrycznego wzrostu pojemności.
+
+\subsection{Dlaczego własny alokator to nie pierwszy krok?}
+
+Własny alokator w szablonie kontenera wiąże się z wymaganiami
+dotyczącymi propagowania przy kopiowaniu, przenoszeniu i zamianie
+kontenerów oraz z kwestią porównywania alokatorów.
+Dla większości zastosowań wygodniejsza jest warstwa
+\texttt{std::pmr}, którą poznamy teraz.
+
+\section{\texttt{std::pmr}: polimorficzne zasoby pamięci}
+\label{sec:cpp10-pmr}
+
+\subsection{Alokator jako decyzja w czasie działania}
+
+\texttt{std::pmr} (C++17, \texttt{<memory\_resource>}) oddziela
+\emph{rodzaj kontenera} od \emph{sposobu przydzielania pamięci}.
+\texttt{std::pmr::vector<T>} jest aliasem \texttt{std::vector<T, ...>}
+z alokatorem polimorficznym. Zasób \texttt{memory\_resource}
+można wybierać w czasie działania programu.
+
+\begin{lstlisting}
+#include <memory_resource>
+#include <vector>
+
+std::pmr::monotonic_buffer_resource arena;
+std::pmr::vector<int> numbers{&arena};
+for (int i = 0; i < 100; ++i)
+    numbers.push_back(i);
+\end{lstlisting}
+
+Kontener przechowuje \emph{wskaźnik do zasobu}, ale nie przejmuje
+własności zasobu pamięci. Zasób musi
+pozostać żywy wystarczająco długo, aby obsłużyć wszystkie powiązane
+alokacje i dealokacje. \textbf{Nie wolno niszczyć lub resetować
+areny, gdy żywe obiekty wciąż korzystają z jej pamięci}.
+
+\subsection{Arena monotoniczna: wiele alokacji, jedno zwolnienie}
+
+\texttt{std::pmr::monotonic\_buffer\_resource} wydaje kolejne
+fragmenty pamięci. Jej \texttt{deallocate} nie zwalnia pojedynczych
+bloków; odzyskanie następuje przy \texttt{release()} lub destrukcji
+zasobu. To pasuje do wielu obiektów budowanych razem i usuwanych
+w jednej fazie, np. drzewa parsowania pojedynczego dokumentu.
+
+\begin{lstlisting}
+#include <cstddef>
+#include <memory_resource>
+#include <vector>
+
+alignas(std::max_align_t) std::byte storage[4096];
+std::pmr::monotonic_buffer_resource arena(
+    storage, sizeof(storage),
+    std::pmr::null_memory_resource());
+
+{
+    std::pmr::vector<int> data{&arena};
+    for (int i = 0; i < 32; ++i) data.push_back(i);
+} // kontener znika; jego deallocate nie uwalnia blokow
+// arena jest teraz bezpieczna do zniszczenia lub release()
+\end{lstlisting}
+
+\texttt{null\_memory\_resource()} wymusza niepowodzenie alokacji,
+gdy lokalny bufor się wyczerpie (rzucane jest \texttt{std::bad\_alloc}).
+Jeżeli zamiast niego użyjemy zwykłego zasobu nadrzędnego
+(\emph{upstream}), arena może dobierać kolejne bufory.
+
+\paragraph{Ważna konsekwencja.}
+Gdy \texttt{vector} zwiększa pojemność, porzuca stary blok.
+W przypadku areny monotonicznej ten blok zwykle pozostaje zajęty
+aż do końca całej fazy. Arena nie oznacza zatem automatycznie
+najmniejszego zużycia pamięci; warto stosować \texttt{reserve}.
+
+\subsection{Zasoby pulowe: \texttt{unsynchronized\_pool\_resource}}
+
+Gdy obiekty są często alokowane i usuwane w różnych momentach,
+przydatne bywają pule przechowujące bloki o podobnych rozmiarach.
+
+\begin{lstlisting}
+#include <memory_resource>
+#include <vector>
+
+std::pmr::unsynchronized_pool_resource pool;
+std::pmr::vector<int> items{&pool};
+items.resize(500);
+\end{lstlisting}
+
+\texttt{unsynchronized\_pool\_resource} nie zapewnia bezpieczeństwa
+jednoczesnego użycia z wielu wątków. Do współdzielonego użycia
+istnieje \texttt{synchronized\_pool\_resource}. Wybór zależy od
+profilu alokacji i pomiarów: pule nie są uniwersalnie szybsze.
+
+\subsection{Własny zasób: liczymy rzeczywiste alokacje}
+
+Wariant diagnostyczny może zliczać żądania pamięci i delegować je
+do \texttt{new\_delete\_resource()}. Trzy wirtualne funkcje
+\texttt{do\_allocate}, \texttt{do\_deallocate}, \texttt{do\_is\_equal}
+tworzą podstawę własnej implementacji.
+
+\begin{lstlisting}
+#include <cstddef>
+#include <memory_resource>
+
+struct CountingResource : std::pmr::memory_resource {
+    std::pmr::memory_resource* upstream =
+        std::pmr::new_delete_resource();
+    std::size_t allocations = 0;
+    std::size_t bytes = 0;
+private:
+    void* do_allocate(std::size_t n,
+                      std::size_t alignment) override {
+        void* p = upstream->allocate(n, alignment);
+        ++allocations;
+        bytes += n;
+        return p;
+    }
+    void do_deallocate(void* p, std::size_t n,
+                       std::size_t alignment) override {
+        upstream->deallocate(p, n, alignment);
+    }
+    bool do_is_equal(
+        const std::pmr::memory_resource& other
+    ) const noexcept override {
+        return this == &other;
+    }
+};
+\end{lstlisting}
+
+\begin{lstlisting}
+CountingResource stats;
+{
+    std::pmr::vector<int> data{&stats};
+    for (int i = 0; i < 100; ++i) data.push_back(i);
+}
+// stats.allocations i stats.bytes opisuja zadania
+// przeslane do tego konkretnego zasobu.
+\end{lstlisting}
+
+\textbf{Uwaga:} nie są to wszystkie alokacje programu, a
+\texttt{bytes} oznacza sumę żądanych rozmiarów, nie największe
+jednoczesne zużycie pamięci. Warto liczyć także dealokacje,
+\emph{peak usage} i rozkład rozmiarów bloków.
+
+\subsection{Zagnieżdżone kontenery i propagacja zasobu}
+
+\begin{lstlisting}
+#include <memory_resource>
+#include <string>
+#include <vector>
+
+CountingResource stats;
+std::pmr::vector<std::pmr::string> names{&stats};
+names.emplace_back("alpha");
+names.emplace_back("a rather long text that needs allocation");
+\end{lstlisting}
+
+\texttt{pmr::string} również korzysta z polimorficznego alokatora,
+ale dokładne zachowanie małych napisów zależy od implementacji
+(\emph{small string optimization}). Nie należy zakładać, że każdy
+\texttt{emplace\_back} przydziela pamięć ani że krótki napis wymaga
+alokacji dynamicznej.
+
+\section{Lokalność danych i hierarchia cache}
+\label{sec:cpp10-cache}
+
+\subsection{Dlaczego asymptotyka nie wystarcza?}
+
+Dwa algorytmy o złożoności \(O(n)\) mogą mieć bardzo różną wydajność,
+jeżeli pierwszy czyta sąsiadujące elementy tablicy, a drugi podąża
+za wskaźnikami do rozproszonych obiektów. Procesor pobiera dane
+porcjami (\emph{cache lines}); dostęp sekwencyjny sprzyja
+prefetchingowi, zaś losowy dostęp bywa ograniczony opóźnieniem pamięci.
+
+Nie ma jednego rozmiaru linii cache dla wszystkich procesorów ani
+jednej wartości kosztu trafienia i chybienia. Zależą one od sprzętu,
+aktualnego obciążenia i rodzaju dostępu.
+
+\begin{lstlisting}
+#include <numeric>
+#include <vector>
+
+std::vector<int> v(100000, 1);
+long long sum = std::accumulate(v.begin(), v.end(), 0LL);
+// Dostep sekwencyjny do pamieci ciaglej.
+\end{lstlisting}
+
+Wskaźniki do osobno alokowanych małych węzłów mogą pogorszyć
+lokalność i powiększyć narzut pamięciowy. Nie oznacza to,
+że \texttt{std::vector} jest zawsze lepszy od \texttt{std::list}:
+wybór zależy od wymaganych operacji, unieważniania iteratorów
+i rzeczywistego profilu obciążenia.
+
+\subsection{AoS kontra SoA}
+
+W układzie \emph{Array of Structures} (AoS) przechowujemy obok siebie
+wszystkie składowe kolejnych rekordów. W \emph{Structure of Arrays}
+(SoA) przechowujemy osobne tablice poszczególnych składowych.
+
+\begin{lstlisting}
+#include <vector>
+
+struct PointAoS { float x, y, z, intensity; };
+std::vector<PointAoS> aos;
+
+struct PointSoA {
+    std::vector<float> x, y, z, intensity;
+};
+PointSoA soa;
+\end{lstlisting}
+
+Gdy obliczamy wyłącznie sumę współrzędnych \texttt{x}, układ SoA
+umożliwia odczytywanie samych potrzebnych danych, a nie całych
+rekordów. Ułatwia to też wektoryzację. Jeśli natomiast w każdej
+operacji potrzebujemy wszystkich pól jednego rekordu, AoS może być
+korzystniejszy. Wydajność zależy od rozmiaru danych, kodu i sprzętu.
+
+\begin{center}
+\small
+\begin{tabular}{|p{6.0cm}|p{6.0cm}|}
+\hline
+\textbf{AoS: rekordy obok siebie} & \textbf{SoA: kolumny obok siebie} \\
+\hline
+\texttt{[x1 y1 z1 i1] [x2 y2 z2 i2]} &
+\texttt{[x1 x2 ...] [y1 y2 ...]} \\
+\hline
+Wygodny dostęp do całego punktu & Wygodny dostęp do jednej cechy wszystkich punktów \\
+\hline
+Często mniej kontenerów i prostszy model & Często lepsze wykorzystanie cache w obliczeniach kolumnowych \\
+\hline
+\end{tabular}
+\end{center}
+
+\subsection{Stride, skoki i przewidywanie dostępu}
+
+Przechodzenie po pamięci ze skokiem \(k\) oznacza, że kolejne
+operacje mogą dotykać odległych linii cache. Dla macierzy w układzie
+wierszowym zwykle korzystniej jest przechodzić po kolumnach
+\emph{wewnątrz pojedynczego wiersza}, a następnie po wierszach.
+Zanim zmienimy kolejność pętli, należy uwzględnić zależności
+obliczeniowe, autowektoryzację i to, czy kompilator już dokonał
+danej transformacji.
+
+\begin{lstlisting}
+#include <vector>
+
+constexpr std::size_t rows = 100;
+constexpr std::size_t cols = 200;
+std::vector<double> matrix(rows * cols, 1.0);
+double sum = 0.0;
+for (std::size_t i = 0; i < rows; ++i)
+    for (std::size_t j = 0; j < cols; ++j)
+        sum += matrix[i * cols + j];
+\end{lstlisting}
+
+\section{False sharing i współbieżne liczniki}
+\label{sec:cpp10-false-sharing}
+
+\subsection{Na czym polega false sharing?}
+
+Jeżeli dwa wątki wielokrotnie zapisują \emph{różne} zmienne, ale
+zmienne znajdują się w tej samej linii cache, protokół spójności
+pamięci podręcznej może wymuszać kosztowną wymianę własności tej
+linii między rdzeniami. Nazywamy to \emph{false sharing}.
+Nie oznacza to \emph{data race}, jeżeli poszczególne zmienne są
+atomowe lub inaczej poprawnie synchronizowane.
+
+\begin{lstlisting}
+#include <atomic>
+#include <cstdint>
+
+struct NaiveCounters {
+    std::atomic<std::uint64_t> first{0};
+    std::atomic<std::uint64_t> second{0};
+};
+\end{lstlisting}
+
+Dwa liczniki mogą być blisko siebie, jednak dokładny layout obiektu
+i mapowanie do linii cache nie są gwarantowane. Na niektórych
+platformach ich równoczesna modyfikacja będzie kosztowna.
+
+\subsection{Rozdzielenie liczników w pamięci}
+
+\begin{lstlisting}
+#include <atomic>
+#include <cstdint>
+
+struct alignas(64) IsolatedAtomic {
+    std::atomic<std::uint64_t> value{0};
+};
+struct SeparatedCounters {
+    IsolatedAtomic first, second;
+};
+\end{lstlisting}
+
+Tu użyliśmy 64 bajtów wyłącznie jako \emph{przykładowej} wartości.
+Od C++17 w nagłówku \texttt{<new>} istnieją dwie stałe
+opisujące zalecane odstępy dla danych często modyfikowanych przez
+różne wątki (\emph{destructive interference}) oraz dla danych,
+które powinny pozostawać blisko siebie (\emph{constructive
+interference}). Pełną nazwę pierwszej z nich pokazuje kod poniżej.
+Wartości stałych zależą od implementacji; nie stanowią pomiaru
+rozmiaru linii cache w uruchomionym procesorze.
+
+\begin{lstlisting}
+#include <atomic>
+#include <new>
+
+struct alignas(
+    std::hardware_destructive_interference_size
+) Counter {
+    std::atomic<unsigned> value{0};
+};
+\end{lstlisting}
+
+Rozdzielenie liczników zwiększa rozmiar struktury. Przy milionie
+liczników koszt pamięciowy może przewyższyć korzyść. Technika ma
+największy sens, gdy oddzielne wątki często zapisują niewielką
+liczbę niezależnych pól.
+
+\subsection{False sharing a semantyka atomowa}
+
+\texttt{std::memory\_order\_relaxed} wystarczy do niektórych
+niezależnych liczników, gdy zależy nam wyłącznie na atomowym
+zliczaniu; nie gwarantuje jednak synchronizacji innych danych.
+Usunięcie false sharing nie zastępuje poprawnego modelu pamięci
+współbieżnej. Szczegółowe zasady operacji atomowych były omawiane
+w rozdziale~1 o współbieżności.
+
+\section{Jak rzetelnie mierzyć wydajność?}
+\label{sec:cpp10-benchmark}
+
+\subsection{Zasady pomiarów}
+
+Najważniejsze pytanie brzmi nie „czy ten kod wygląda szybciej?”,
+lecz „czy w rzeczywistym scenariuszu uzyskujemy powtarzalną poprawę?”.
+Doświadczenie powinno uwzględniać:
+\begin{enumerate}
+\item kompilację zoptymalizowaną (np. \texttt{-O2} lub \texttt{-O3});
+\item \emph{warm-up} i wielokrotne uruchomienia;
+\item jednakowe dane oraz taki sam rezultat dla obu wariantów;
+\item ochronę przed usunięciem testowanej pracy przez optymalizator;
+\item pomiar rozkładu wyników, a nie pojedynczego odczytu;
+\item ograniczenie wpływu alokacji, I/O, schedulerów i skalowania CPU;
+\item kontrolę zużycia pamięci, a nie tylko czasu;
+\item narzędzia profilujące (np. Linux \texttt{perf}, odpowiedniki
+      sprzętowe lub profilery danego środowiska).
+\end{enumerate}
+
+\subsection{Minimalna funkcja pomiarowa}
+
+\begin{lstlisting}
+#include <chrono>
+#include <utility>
+
+template<class F>
+auto measure(F&& f) {
+    auto start = std::chrono::steady_clock::now();
+    auto result = std::forward<F>(f)();
+    auto stop = std::chrono::steady_clock::now();
+    return std::pair{result, stop - start};
+}
+\end{lstlisting}
+
+Taka funkcja przydaje się do nauki, ale \emph{nie jest kompletna}
+biblioteka benchmarkowa. Dla zbyt krótkich fragmentów narzut
+pomiaru może przeważać nad czasem pracy. Dla liczb zmiennoprzecinkowych
+porównywanie różnych kolejności sumowania wymaga ostrożności,
+ponieważ zmiana kolejności działań może zmienić zaokrąglenia.
+
+\subsection{Sanitizatory i wydajność}
+
+Sanitizatory, np. AddressSanitizer i UndefinedBehaviorSanitizer,
+są narzędziami do badania poprawności pamięci i innych błędów.
+Wprowadzają narzut, dlatego \emph{pomiarów porównawczych wydajności}
+nie należy bezrefleksyjnie wykonywać na buildach sanitizowanych.
+Bezpieczny cykl pracy wygląda następująco: test poprawności,
+profilowanie zwykłego buildu, zmiana jednej rzeczy, ponowny test
+poprawności i ponowny pomiar.
+
+\section{Przykładowy projekt: szybkie przetwarzanie wielu punktów}
+\label{sec:cpp10-project}
+
+Przyjmijmy, że program przechowuje milion punktów \((x,y,z,I)\)
+i dla każdego oblicza tylko prosty filtr zależny od \(x\) i \(I\).
+Możemy rozważyć dwa modele:
+\begin{enumerate}
+\item \textbf{AoS:} \texttt{vector<Point>} --- prostszy interfejs,
+      wygodny dostęp do pełnego punktu.
+\item \textbf{SoA:} osobne \texttt{vector<float>} na \(x,y,z,I\) ---
+      możliwy mniejszy transfer danych potrzebnych do filtru.
+\end{enumerate}
+
+Następnie oceniamy, czy warto użyć \texttt{reserve} przed zapełnieniem
+kontenerów; jeśli rekordy są tworzone na potrzeby jednego zapytania,
+możemy sprawdzić arenę monotoniczną. Trzeba jednak rozróżnić
+\emph{koszt wypełnienia struktur} od \emph{kosztu przetwarzania}: arena
+zmienia zachowanie alokacji, nie gwarantuje poprawy pracy procesora
+nad danymi.
+
+Dla kodu numerycznego duży wpływ może mieć też wybór kolejności
+wymiarów macierzy, reprezentacji sąsiedztwa w siatce czy sposobu
+obliczania operatora na konkretnym punkcie zamiast konstruowania
+dużych obiektów pośrednich. Właściwa reprezentacja danych potrafi
+dać większy zysk niż drobne optymalizacje pojedynczych instrukcji.
+
+\section{Jak dobrać technikę?}
+
+\begin{center}
+\small
+\begin{tabular}{|p{5.7cm}|p{6.7cm}|}
+\hline
+\textbf{Problem} & \textbf{Pierwszy sensowny krok} \\
+\hline
+Za dużo dynamicznych alokacji & \texttt{reserve}, ograniczenie obiektów pośrednich, pomiar alokacji \\
+\hline
+Wiele obiektów znika razem & \texttt{pmr::monotonic\_buffer\_resource} po kontroli czasu życia \\
+\hline
+Dużo małych alokacji o różnej żywotności & \texttt{pmr::...pool\_resource} i pomiar \\
+\hline
+Praca nad jedną kolumną wielu rekordów & Porównanie AoS z SoA \\
+\hline
+Losowe skoki po pamięci & Sprawdzenie lokalności, zmian formatu danych i blokowania pętli \\
+\hline
+Niezależne atomiki spowalniają się nawzajem & Analiza false sharing i separacja intensywnie zapisywanych pól \\
+\hline
+Trzeba uzyskać silne wyrównanie & \texttt{alignas}, odpowiednia alokacja i kontrola \texttt{alignof} \\
+\hline
+Trzeba napisać kontener lub pulę & \texttt{allocator\_traits}, zarządzanie czasem życia, RAII \\
+\hline
+Potrzeba przenośnej serializacji & Jawny format bajtowy, bez kopiowania całych struktur \\
+\hline
+\end{tabular}
+\end{center}
+
+\section{Typowe błędy i pułapki}
+
+\begin{enumerate}
+\item \textbf{Wniosek „\texttt{sizeof(T)} to suma pól”.}
+      Padding może zwiększyć rozmiar, a reguły klas mogą być złożone.
+\item \textbf{Uznanie layoutu z jednej kompilacji za standard.}
+      ABI, wyrównanie i rozmiary typów różnią się między platformami.
+\item \textbf{Nieprawidłowe \texttt{reinterpret\_cast}.}
+      Sama zmiana typu wskaźnika nie legalizuje dostępu do danych.
+\item \textbf{Mylenie pamięci z czasem życia obiektu.}
+      \texttt{allocate} nie zastępuje konstruowania obiektów klasowych.
+\item \textbf{Zwalnianie pamięci bez destruktora.}
+      Dla nietrywialnych typów może wyciekać zasób zarządzany przez obiekt.
+\item \textbf{Niezgodna para alokacja--dealokacja.}
+      Szczególnie ważne przy over-alignment i ręcznej alokacji.
+\item \textbf{Pozostawienie kontenera po zniszczeniu areny \texttt{pmr}.}
+      Jego pamięć staje się niepoprawna; wynik to niezdefiniowane zachowanie.
+\item \textbf{Wywołanie \texttt{release()} przy żywych obiektach.}
+      Arena może unieważnić ich pamięć bez wywoływania destruktorów.
+\item \textbf{Założenie, że \texttt{monotonic\_buffer\_resource} oszczędza
+      pamięć.} Zwolnienie pojedynczych bloków zwykle nie następuje.
+\item \textbf{Współdzielenie \texttt{unsynchronized\_pool\_resource}
+      między wątkami bez ochrony.} Zasób nie jest thread-safe.
+\item \textbf{Optymalizacja poprzez mniejszą strukturę bez pomiaru.}
+      Mniejszy \texttt{sizeof} nie gwarantuje krótszego czasu wykonania.
+\item \textbf{Rzekoma optymalizacja przez \texttt{volatile}.}
+      \texttt{volatile} nie zapewnia synchronizacji między wątkami.
+\item \textbf{Pomiar jednego przebiegu.} Scheduler, częstotliwości
+      zegara i cache mogą silnie zniekształcić wynik.
+\item \textbf{Użycie sanitizatora jako miary szybkości.}
+      Narzut instrumentacji zmienia charakterystykę programu.
+\end{enumerate}
+
+\paragraph{Pytania kontrolne.}
+\begin{enumerate}
+\item Czym różnią się \texttt{sizeof(T)} i \texttt{alignof(T)}?
+\item Dlaczego zmiana kolejności pól może zmienić rozmiar struktury?
+\item Czy placement \texttt{new} przydziela pamięć?
+\item Jaka jest różnica między \texttt{destroy\_at} a \texttt{deallocate}?
+\item Kiedy arena monotoniczna może zużywać więcej pamięci niż oczekujemy?
+\item Dlaczego \texttt{pmr::vector<T>} nie jest właścicielem zasobu?
+\item Kiedy SoA może przyspieszyć obliczenia na rekordach?
+\item Czy false sharing i data race są tym samym problemem?
+\item Dlaczego \texttt{std::memory\_order\_relaxed} nie rozwiązuje
+      wszystkich problemów synchronizacji?
+\item Jak odróżnić realną poprawę wydajności od szumu pomiarowego?
+\end{enumerate}
+
+\paragraph{Dalsza lektura.}
+Dokumentacja \emph{cppreference} obejmuje hasła \emph{Object},
+\emph{Object lifetime}, \texttt{alignof}, \texttt{alignas},
+\texttt{std::construct\_at} oraz \texttt{allocator\_traits}.
+Osobno warto przeczytać opis zasobów \texttt{std::pmr}
+i własności \emph{hardware interference size}.
+W praktyce polecam analizę śladów alokacji, profilery
+wydajności i \emph{Compiler Explorer} do porównywania
+wygenerowanego kodu maszynowego.

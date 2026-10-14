@@ -1,0 +1,986 @@
+% Rozdzial 18: Testowanie, debugowanie i profilowanie w C++20.
+% Wylacznie tresc rozdzialu; bez \documentclass i \begin{document}.
+% Zgodny ze skryptem: listings, amsmath, amssymb, booktabs, tabularx,
+% enumitem, hyperref oraz makra \code, \term, \nota.
+% Przyklady terminalowe: zasadniczo Linux/macOS z GCC/Clang;
+% roznice na Windows/MSVC zaznaczono osobno.
+% Uzycie: \input{rozdzial_18_testowanie_debugowanie_profilowanie_cpp.tex}
+
+\chapter{Testowanie, debugowanie i profilowanie C++}
+\label{chap:cpp18-test-debug-profile}
+
+\section{Trzy różne pytania o program}
+
+Po napisaniu i skompilowaniu programu nie wiemy jeszcze, czy jest on
+poprawny, bezpieczny i wydajny. Każdą z tych własności sprawdza się
+innymi metodami:
+\begin{description}[style=nextline]
+\item[Testowanie (\emph{testing})]
+Czy program daje oczekiwane wyniki na wybranych danych oraz czy
+spełnia wymagane kontrakty? Testy wykrywają błędy, lecz ich pozytywny
+wynik nie jest ogólnym dowodem poprawności.
+\item[Debugowanie (\emph{debugging})]
+Gdzie i dlaczego program odbiega od oczekiwanego zachowania?
+Debugger pozwala obserwować stos wywołań, zmienne, wątki i kolejne
+instrukcje.
+\item[Profilowanie (\emph{profiling})]
+Gdzie program zużywa czas procesora, pamięć i inne zasoby?
+Profilowanie wskazuje rzeczywiste wąskie gardła; samo zgadywanie
+na podstawie długości kodu często prowadzi do błędnych optymalizacji.
+\end{description}
+
+Istotne jest także rozróżnienie \emph{testu poprawności} od
+\emph{benchmarku}: pierwszy sprawdza warunek logiczny, drugi mierzy
+wielkość fizyczną (np. czas, przepustowość, alokacje). Szybki, lecz
+błędny algorytm nie jest dobrym rozwiązaniem.
+
+\nota{W~tym rozdziale podstawowym standardem jest C++20. GoogleTest,
+Google Benchmark, GDB, LLDB, Valgrind i~narzędzia \code{perf} nie są
+częścią standardowej biblioteki C++; wymagają odpowiednich instalacji.
+Polecenia zależą od systemu operacyjnego i~kompilatora.}
+
+\section{Strategia testowania i testowalny projekt}
+\label{sec:cpp18-strategy}
+
+\subsection{Poziomy testów}
+
+\begin{center}
+\small
+\begin{tabularx}{\textwidth}{@{}p{0.29\textwidth}X@{}}
+\toprule
+Rodzaj testu & Co sprawdza i kiedy jest przydatny?\\
+\midrule
+Jednostkowy (\emph{unit}) & Mała, izolowana funkcja lub klasa; szybka informacja zwrotna.\\
+Integracyjny & Współdziałanie komponentów, np. parsera i~bazy danych.\\
+Systemowy / end-to-end & Cały scenariusz użytkownika, często z~rzeczywistym wejściem/wyjściem.\\
+Regresyjny & Przypadek, który wcześniej ujawniał błąd; nie powinien powrócić.\\
+Własnościowy / losowy & Niezmienniki dla wielu zestawów danych, nie tylko pojedyncze wyniki.\\
+Wydajnościowy & Czas, przepustowość, opóźnienie, pamięć; wymaga kontrolowanego środowiska.\\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+Dobry test powinien być \emph{powtarzalny}, \emph{niezależny} od innych
+testów i~możliwie mały. W~praktyce wydzielamy obliczenia od efektów
+ubocznych (sieci, zegara, plików, losowości), dzięki czemu zależności
+możemy zastąpić kontrolowanymi implementacjami.
+
+\subsection{Kontrakty, przypadki brzegowe i błędy numeryczne}
+
+Rozważmy funkcję obliczającą średnią. Jej kontrakt powinien ustalać
+zachowanie dla pustego zakresu; poniżej zgłaszamy wyjątek.
+
+\begin{lstlisting}[caption={Prosta funkcja z jawnym kontraktem dla pustego zakresu (C++20).}]
+#include <numeric>
+#include <span>
+#include <stdexcept>
+
+double average(std::span<const double> xs) {
+    if (xs.empty())
+        throw std::invalid_argument("empty range");
+    return std::accumulate(xs.begin(), xs.end(), 0.0)
+         / static_cast<double>(xs.size());
+}
+\end{lstlisting}
+
+Testujemy nie tylko wartości typowe, lecz także rozmiary $0$ i~$1$,
+wartości ujemne, powtórzenia, skrajne zakresy oraz dane naruszające
+warunki wejściowe. Dla liczb zmiennoprzecinkowych zwykła równość
+\code{a == b} nie zawsze jest właściwa: wynik może zależeć od porządku
+dodawania i~optymalizacji. Stosujemy tolerancję dostosowaną do skali
+i~wymagań zadania, a~nie arbitralne \code{1e-6} dla każdego algorytmu.
+
+\section{Testy bez zewnętrznego frameworka}
+
+\subsection{\texttt{assert} i \texttt{static\_assert}}
+
+\code{assert(expr)} z~nagłówka \code{<cassert>} sprawdza warunek
+w~czasie działania, lecz może zostać usunięte przy zdefiniowanym
+\code{NDEBUG}. \code{static_assert} sprawdza warunek w~czasie
+kompilacji. W~szczególności zwykłe \code{assert} nie nadaje się do
+walidacji niepoprawnych danych wejściowych w~kodzie produkcyjnym.
+
+\begin{lstlisting}[caption={Asercja kompilacyjna i kontrola zachowania funkcji.}]
+#include <cassert>
+#include <concepts>
+#include <type_traits>
+
+constexpr int square(int x) { return x * x; }
+static_assert(square(6) == 36);
+static_assert(std::integral<int>);
+static_assert(!std::is_copy_constructible_v<void>);
+
+int main() {
+    assert(square(7) == 49);
+}
+\end{lstlisting}
+
+\nota{Przy \code{-DNDEBUG} argument \code{assert} może w~ogóle nie być
+wykonywany. Nie wolno umieszczać w~nim niezbędnych efektów ubocznych,
+np.~\code{assert(++counter == 1)}. \code{static_assert} również nie
+zastępuje testów dla danych znanych dopiero podczas wykonania.}
+
+\subsection{Niezależne testy danych wejściowych}
+
+Poniższy program można skompilować i~uruchomić bez dodatkowej biblioteki.
+Sprawdza wynik, wyjątek i~przypadek jednoelementowy.
+
+\begin{lstlisting}[caption={Samodzielny test funkcji average (C++20).}]
+#include <cassert>
+#include <cmath>
+#include <stdexcept>
+#include <vector>
+
+// Zakladamy definicje average z poprzedniego przykladu.
+int main() {
+    const std::vector<double> xs{1.0, 2.0, 3.0, 4.0};
+    assert(std::abs(average(xs) - 2.5) < 1e-12);
+    const std::vector<double> one{7.0};
+    assert(average(one) == 7.0);
+
+    bool caught = false;
+    const std::vector<double> empty;
+    try {
+        average(empty);
+    } catch (const std::invalid_argument&) {
+        caught = true;
+    }
+    assert(caught);
+}
+\end{lstlisting}
+
+W~realnym projekcie lepiej użyć frameworka, który rejestruje testy,
+raportuje niepowodzenia i~pozwala uruchamiać wybrane przypadki.
+
+\section{GoogleTest: testy jednostkowe w praktyce}
+\label{sec:cpp18-gtest}
+
+Biblioteka \emph{GoogleTest} (często \code{gtest}) udostępnia makra
+\code{TEST}, \code{TEST_F}, \code{EXPECT_*} i~\code{ASSERT_*}.
+Assercje \code{EXPECT_*} zapisują niepowodzenie i~pozwalają wykonać
+resztę funkcji testowej, podczas gdy \code{ASSERT_*} przerywają
+bieżącą funkcję testową. To nie są mechanizmy obsługi wyjątków C++.
+
+\begin{lstlisting}[caption={GoogleTest: wyniki, wyjatki i przyblizona rownosc.}]
+// Plik: average_test.cpp
+#include <gtest/gtest.h>
+#include <stdexcept>
+#include <vector>
+
+#include "average.hpp"
+// Funkcja average jest zdefiniowana w pliku average.cpp.
+TEST(AverageTest, ComputesMean) {
+    const std::vector<double> xs{2.0, 4.0, 6.0};
+    EXPECT_NEAR(average(xs), 4.0, 1e-12);
+}
+
+TEST(AverageTest, RejectsEmptyInput) {
+    const std::vector<double> empty;
+    EXPECT_THROW(average(empty), std::invalid_argument);
+}
+
+TEST(AverageTest, HandlesSingleton) {
+    const std::vector<double> xs{7.0};
+    ASSERT_EQ(xs.size(), 1u);
+    EXPECT_DOUBLE_EQ(average(xs), 7.0);
+}
+\end{lstlisting}
+
+\code{EXPECT_NEAR(a,b,tol)} sprawdza bezwzględną różnicę, dlatego
+niekiedy lepiej użyć własnego testu tolerancji względnej. Makro
+\code{EXPECT_DOUBLE_EQ} porównuje liczby z~tolerancją opartą na ULP;
+nie należy utożsamiać go z~matematyczną równością liczb rzeczywistych.
+
+\subsection{Fixture i testy parametryzowane}
+
+\emph{Fixture} przygotowuje stan wspólny dla testów. Każdy test
+\code{TEST_F} otrzymuje osobny egzemplarz fixture, dzięki czemu zmiany
+jednego testu nie powinny wpływać na inny.
+
+\begin{lstlisting}[caption={Fixture z przygotowanym wektorem.}]
+#include <gtest/gtest.h>
+#include <algorithm>
+#include <vector>
+
+class VectorTest : public ::testing::Test {
+protected:
+    std::vector<int> values{3, 1, 4, 1, 5};
+};
+
+TEST_F(VectorTest, SortsAscending) {
+    std::sort(values.begin(), values.end());
+    EXPECT_TRUE(std::is_sorted(values.begin(), values.end()));
+}
+
+TEST_F(VectorTest, StartsFromOriginalState) {
+    EXPECT_EQ(values.front(), 3);
+    EXPECT_EQ(values.size(), 5u);
+}
+\end{lstlisting}
+
+Dla wielu par wejście--wynik przydatne są testy parametryzowane:
+
+\begin{lstlisting}[caption={GoogleTest: test parametryzowany z zestawem wartosci.}]
+#include <gtest/gtest.h>
+#include <tuple>
+
+constexpr int square(int x) { return x * x; }
+
+class SquareTest
+    : public ::testing::TestWithParam<std::tuple<int, int>> {};
+
+TEST_P(SquareTest, MatchesExpected) {
+    auto [x, expected] = GetParam();
+    EXPECT_EQ(square(x), expected);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    Values, SquareTest,
+    ::testing::Values(
+        std::tuple{0, 0},
+        std::tuple{2, 4},
+        std::tuple{-3, 9}));
+\end{lstlisting}
+
+\subsection{Mocki i testowanie współpracy komponentów}
+
+\emph{GoogleMock} pozwala tworzyć kontrolowane implementacje
+interfejsów i~sprawdzać wywołania między obiektami. Używaj go tam,
+gdzie zachowanie naprawdę zależy od interakcji; nadmierne mockowanie
+utrwala przypadkowe szczegóły implementacji.
+
+\begin{lstlisting}[caption={GoogleMock: sprawdzenie pojedynczego wywolania.}]
+#include <gmock/gmock.h>
+#include <string_view>
+
+struct Sender {
+    virtual ~Sender() = default;
+    virtual bool send(std::string_view) = 0;
+};
+
+struct MockSender : Sender {
+    MOCK_METHOD(bool, send, (std::string_view), (override));
+};
+
+void notify(Sender& s) { (void)s.send("ready"); }
+
+TEST(NotificationTest, SendsOneMessage) {
+    MockSender sender;
+    EXPECT_CALL(sender, send("ready"))
+        .Times(1).WillOnce(::testing::Return(true));
+    notify(sender);
+}
+\end{lstlisting}
+
+Własne wyjątki, klasy niewspierające kopiowania i~asynchroniczne
+wywołania wymagają odpowiedniego projektu fixture/mocków.
+Dla operacji wykonywanych w~innym wątku szczególnie istotne jest
+kontrolowane oczekiwanie na koniec pracy przed zniszczeniem mocka.
+
+\subsection{CMake i CTest: mały projekt wieloplikowy}
+\label{sec:cpp18-cmake-test}
+
+Poniższa organizacja zakłada, że \code{average} ma deklarację w~pliku
+\code{average.hpp}, definicję w~\code{average.cpp}, a~testy w~pliku
+\code{average_test.cpp}. W~przykładzie \code{average_test.cpp}
+należy dodać \verb|#include "average.hpp"| zamiast deklarować
+funkcję ręcznie. Plik nagłówkowy może wyglądać następująco:
+
+\begin{lstlisting}[caption={Plik average.hpp: deklaracja API testowanej funkcji.}]
+#pragma once
+#include <span>
+double average(std::span<const double> xs);
+\end{lstlisting}
+
+Plik \code{average.cpp} zawiera kod pierwszego przykładu
+z~tej części rozdziału (z~dołączonym \code{average.hpp});
+w~pliku testów umieszczamy testy z~sekcji~\ref{sec:cpp18-gtest}.
+
+\begin{lstlisting}[language=bash,caption={Struktura projektu z GoogleTest.}]
+project/
+  CMakeLists.txt
+  average.hpp
+  average.cpp
+  average_test.cpp
+\end{lstlisting}
+
+\begin{lstlisting}[language=bash,caption={CMakeLists.txt: biblioteka, testy i automatyczna rejestracja w CTest.}]
+cmake_minimum_required(VERSION 3.20)
+project(cpp18_tests LANGUAGES CXX)
+
+add_library(core average.cpp)
+target_compile_features(core PUBLIC cxx_std_20)
+target_include_directories(core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+
+# GoogleTest musi byc zainstalowany lub dostarczony przez menedzer pakietow.
+find_package(GTest CONFIG REQUIRED)
+
+add_executable(core_tests average_test.cpp)
+target_link_libraries(core_tests PRIVATE core GTest::gtest_main)
+
+enable_testing()
+include(GoogleTest)
+gtest_discover_tests(core_tests)
+\end{lstlisting}
+
+\begin{lstlisting}[language=bash,caption={Budowanie i uruchamianie testow przez CMake/CTest.}]
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+cmake --build build -j
+ctest --test-dir build --output-on-failure
+./build/core_tests --gtest_filter='AverageTest.*'
+\end{lstlisting}
+
+\nota{W~systemach z~generatorem wielokonfiguracyjnym (np.~Visual
+Studio) wariant budowania wybiera się przez \code{--config Debug}.
+Przykład wymaga zainstalowanego GoogleTest; alternatywą jest
+\code{FetchContent} z~\emph{przypiętą} wersją zależności, a~nie
+pobieranie nieokreślonej wersji podczas każdego budowania.}
+
+\section{Testy własnościowe, generatywne i fuzzing}
+\label{sec:cpp18-property}
+
+Sprawdzanie setek wartości jest bardziej użyteczne, jeśli testuje
+\emph{własność}, a~nie jedynie listę ręcznie wpisanych wyników.
+Na przykład po posortowaniu ciągu musi on być niemalejący i~mieć
+tę samą multizbiorowość wartości co przed sortowaniem.
+
+\begin{lstlisting}[caption={Powtarzalny test wlasnosciowy przy uzyciu generatora losowego.}]
+#include <algorithm>
+#include <cassert>
+#include <random>
+#include <vector>
+
+int main() {
+    std::mt19937 gen(123456u);  // Ustalony seed.
+    std::uniform_int_distribution<int> count(0, 300);
+    std::uniform_int_distribution<int> value(-1000, 1000);
+
+    for (int trial = 0; trial < 1000; ++trial) {
+        std::vector<int> x(count(gen));
+        for (int& v : x) v = value(gen);
+        auto original = x;
+        std::sort(x.begin(), x.end());
+        assert(std::is_sorted(x.begin(), x.end()));
+        std::sort(original.begin(), original.end());
+        assert(x == original);
+    }
+}
+\end{lstlisting}
+
+W~testach losowych przechowuj \emph{seed} i~minimalny przykład,
+który ujawnił błąd. Warto również stosować \emph{shrinking}:
+automatyczne zmniejszanie wejścia do możliwie prostego kontrprzykładu.
+
+\emph{Fuzzing} automatycznie generuje wejścia, kierując się m.in.
+pokryciem kodu. W~Clangu narzędzie \emph{libFuzzer} może wywoływać
+poniższą funkcję z~wieloma binarnymi danymi wejściowymi.
+
+\begin{lstlisting}[caption={Minimalny punkt wejsciowy dla libFuzzer (Clang).}]
+#include <cstddef>
+#include <cstdint>
+#include <vector>
+
+extern "C" int LLVMFuzzerTestOneInput(
+    const std::uint8_t* data, std::size_t size) {
+    // Podmien na testowany parser lub dekoder.
+    std::vector<std::uint8_t> bytes(data, data + size);
+    if (bytes.size() > 2 && bytes[0] == 0x42) {
+        // Przypadek zalezy od danych; nie wolno zakladac ich poprawnosci.
+        (void)bytes[1];
+    }
+    return 0;
+}
+\end{lstlisting}
+
+\begin{lstlisting}[language=bash,caption={Budowanie harnessu fuzzingu w Clangu.}]
+clang++ -std=c++20 -O1 -g \
+  -fsanitize=fuzzer,address,undefined fuzz.cpp -o fuzz
+./fuzz -max_total_time=30
+\end{lstlisting}
+
+Po zgłoszeniu awarii zapisujemy minimalny przypadek jako test
+regresyjny. Fuzzer nie dowodzi braku błędów, a~jego skuteczność zależy
+od jakości punktów wejściowych i~stanu pokrycia.
+
+\section{Debugowanie: od komunikatu do przyczyny}
+\label{sec:cpp18-debug}
+
+\subsection{Informacje debugowe i rodzaje kompilacji}
+
+Użyteczne opcje GCC/Clang to \code{-g} (symbole debugowe),
+\code{-O0} (łatwe śledzenie krokowe) oraz \code{-Og} (optymalizacje
+starające się zachować dobrą obserwowalność w~debuggerze). Program
+kompilowany z~\code{-O2} może nie mieć osobnej zmiennej ani instrukcji
+odpowiadającej każdej linii kodu źródłowego.
+
+\begin{lstlisting}[language=bash,caption={Budowanie programu do debugowania.}]
+g++ -std=c++20 -g -O0 -Wall -Wextra -Wpedantic \
+    app.cpp -o app_debug
+
+gdb ./app_debug
+\end{lstlisting}
+
+Nie wszystkie błędy są odtwarzalne przy \code{-O0}; niektóre pojawiają
+się dopiero przy \code{-O2} lub \code{-O3}. Do ich analizy warto
+pozostawić \code{-g} także w~wersji zoptymalizowanej i~zachować
+niestripowane symbole debugowe.
+
+\subsection{GDB: breakpoint, stos i obserwacja zmiennych}
+
+\begin{lstlisting}[caption={Program do cwiczenia debugowania.}]
+#include <stdexcept>
+#include <vector>
+
+int element_at(const std::vector<int>& v, std::size_t index) {
+    return v.at(index);  // Moze zglosic std::out_of_range.
+}
+
+int main() {
+    const std::vector<int> v{3, 5, 8};
+    return element_at(v, 5);
+}
+\end{lstlisting}
+
+\begin{lstlisting}[language=bash,caption={Typowa sesja w GDB.}]
+(gdb) break element_at        # Punkt zatrzymania.
+(gdb) run                     # Uruchom program.
+(gdb) info args               # Argumenty funkcji.
+(gdb) print index             # Wartosc zmiennej.
+(gdb) backtrace               # Stos wywolan.
+(gdb) next                    # Nastepna linia bez wchodzenia.
+(gdb) step                    # Wejdz do wywolywanej funkcji.
+(gdb) catch throw             # Zatrzymaj przy zglaszaniu wyjatku.
+(gdb) continue                # Kontynuuj.
+\end{lstlisting}
+
+\code{break}, \code{watch}, \code{next}, \code{step},
+\code{finish}, \code{frame}, \code{print} i~\code{bt} to podstawowe
+narzędzia. \emph{Watchpoint} śledzi zmianę pamięci, ale możliwość
+sprzętowego śledzenia zależy od architektury i~debuggera.
+
+\subsection{Wątki i deadlock w debuggerze}
+
+W~aplikacji wielowątkowej sama analiza wątku \code{main} nie
+wystarczy. W~GDB:
+
+\begin{lstlisting}[language=bash,caption={Diagnostyka wielowatkowosci w GDB.}]
+(gdb) info threads
+(gdb) thread 3
+(gdb) bt
+(gdb) thread apply all bt
+(gdb) set print pretty on
+\end{lstlisting}
+
+Jeśli wątki zatrzymały się w~\code{mutex::lock()} lub
+\code{condition_variable::wait()}, trzeba odtworzyć graf
+zależności: który wątek posiada dany mutex i~na co czeka.
+Program zakleszczony nie musi zawierać wyścigu danych, więc
+ThreadSanitizer nie zastąpi analizy zakleszczeń.
+
+\subsection{LLDB: odpowiednik na macOS i innych platformach}
+
+LLDB oferuje analogiczne operacje:
+
+\begin{lstlisting}[language=bash,caption={Podstawowe polecenia LLDB.}]
+(lldb) breakpoint set --name element_at
+(lldb) run
+(lldb) frame variable
+(lldb) thread backtrace
+(lldb) thread list
+(lldb) thread backtrace all
+(lldb) next
+(lldb) step
+(lldb) continue
+\end{lstlisting}
+
+W~VS Code można podłączyć GDB/LLDB poprzez odpowiednie rozszerzenie,
+a~następnie korzystać z~breakpointów, podglądu zmiennych i~stosów.
+Dokładny adapter oraz konfiguracja \code{launch.json} zależą od
+systemu, rozszerzenia i~narzędzi zainstalowanych lokalnie.
+
+\section{Sanitizatory i narzędzia wykrywania błędów}
+\label{sec:cpp18-sanitizers}
+
+Sanitizatory dodają do programu kod kontrolujący określone klasy
+błędów w~czasie wykonywania. W~odróżnieniu od debuggera mogą
+wykryć nieprawidłową operację \emph{w~chwili jej wykonania}, zanim
+zauważymy błędny rezultat.
+
+\begin{center}
+\small
+\begin{tabularx}{\textwidth}{@{}p{0.28\textwidth}X@{}}
+\toprule
+Narzędzie & Główne zastosowanie\\
+\midrule
+AddressSanitizer (ASan) & Wyjście poza granice, use-after-free, część przypadków wycieków.\\
+UndefinedBehaviorSanitizer (UBSan) & Np. przepełnienie \code{signed int}, błędne przesunięcia, null dereference, alignment.\\
+ThreadSanitizer (TSan) & Wiele wyścigów danych i~część problemów synchronizacji.\\
+MemorySanitizer (MSan) & Odczyty niezainicjalizowanej pamięci; wymaga specjalnych warunków instrumentacji.\\
+Valgrind Memcheck & Wykrywanie wybranych błędów pamięci i~wycieków (na wspieranych systemach).\\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\subsection{AddressSanitizer i UndefinedBehaviorSanitizer}
+
+Poniższy program jest \emph{celowo niepoprawny}; dostęp do elementu
+po zwolnieniu pamięci jest niezdefiniowanym zachowaniem. Nie należy
+interpretować jego wyniku bez instrumentacji.
+
+\begin{lstlisting}[caption={Celowo bledny program: use-after-free.}]
+int main() {
+    int* p = new int(42);
+    delete p;
+    return *p;  // UB: odczyt z nieistniejacego obiektu.
+}
+\end{lstlisting}
+
+\begin{lstlisting}[language=bash,caption={Instrumentacja ASan i UBSan; GCC/Clang.}]
+g++ -std=c++20 -O1 -g -fno-omit-frame-pointer \
+    -fsanitize=address,undefined -fno-sanitize-recover=all \
+    bad.cpp -o bad_san
+./bad_san
+\end{lstlisting}
+
+ASan i~UBSan można często połączyć. ASan/TSan/MSan nie są natomiast
+zwykle łączone ze sobą w~jednym procesie: używamy osobnych
+konfiguracji i~uruchomień. Raporty sanitizatorów zależą od wersji
+kompilatora, wsparcia runtime i~platformy.
+
+\subsection{ThreadSanitizer i wyścig danych}
+
+Przykładowy wyścig występuje przy równoczesnym modyfikowaniu
+zwykłego licznika. To również \emph{celowo błędny} kod:
+
+\begin{lstlisting}[caption={Celowo bledne wspoldzielenie licznika.}]
+#include <thread>
+
+int main() {
+    int x = 0;
+    std::thread t1([&] { ++x; });
+    std::thread t2([&] { ++x; });
+    t1.join();
+    t2.join();
+}
+\end{lstlisting}
+
+\begin{lstlisting}[language=bash,caption={Oddzielna konfiguracja z ThreadSanitizer.}]
+g++ -std=c++20 -O1 -g -pthread \
+    -fsanitize=thread race.cpp -o race_tsan
+./race_tsan
+\end{lstlisting}
+
+\nota{Brak zgłoszenia w~danym uruchomieniu \emph{nie} dowodzi braku
+wyścigów danych. TSan ma ograniczenia platformowe, może zgłaszać
+wyniki fałszywie dodatnie dla niestandardowej synchronizacji i~nie
+gwarantuje wykrywania deadlocków.}
+
+\subsection{Valgrind i testy wycieków}
+
+Na wspieranych systemach Linux przydatna jest kontrola programów
+bez kompilacyjnej instrumentacji:
+
+\begin{lstlisting}[language=bash,caption={Przykladowe badanie pamieci przez Valgrind Memcheck.}]
+valgrind --tool=memcheck --leak-check=full \
+         --show-leak-kinds=all ./app_debug
+\end{lstlisting}
+
+Różne narzędzia mają inne modele wykrywania i~inne koszty
+wykonania. Wybór zależy od konkretnej klasy błędów; wyniki dobrze
+weryfikować na małym, odtwarzalnym przypadku testowym.
+
+\section{Analiza statyczna, ostrzeżenia i pokrycie kodu}
+\label{sec:cpp18-static}
+
+Kompilator potrafi zgłosić wiele usterek jeszcze przed wykonaniem
+programu. Warto utrzymywać ostrzeżenia w~CI i~unikać wyciszania ich
+bez zrozumienia przyczyny.
+
+\begin{lstlisting}[language=bash,caption={Przykladowe ostrzezenia GCC/Clang.}]
+g++ -std=c++20 -Wall -Wextra -Wpedantic -Wconversion \
+    -Wshadow -Werror -c core.cpp
+\end{lstlisting}
+
+Opcje zależą od kompilatora; \code{-Werror} bywa pożyteczne przy
+stabilnej bazie kodu, lecz aktualizacja kompilatora może wprowadzić
+nowe diagnostyki. \emph{clang-tidy} wykonuje zestaw analiz
+statycznych, np. dotyczących nowoczesnych idiomów C++, błędów
+potencjalnych i~stylu.
+
+\begin{lstlisting}[language=bash,caption={Analiza projektu ze zbiorem komend kompilacji.}]
+cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+clang-tidy -p build src/core.cpp
+\end{lstlisting}
+
+\subsection{Pokrycie testami: co liczby naprawdę oznaczają?}
+
+\emph{Line coverage} mierzy wykonane linie, \emph{branch coverage}
+wykonane gałęzie, a~\emph{function coverage} wywołane funkcje.
+Wysoki procent nie oznacza sprawdzenia wszystkich kombinacji wejść
+ani dowodu poprawności. Na przykład test może wykonać gałąź, nie
+sprawdzając rezultatu.
+
+\begin{lstlisting}[language=bash,caption={Pokrycie testow z GCC i gcov (przykladowy projekt).}]
+g++ -std=c++20 --coverage -O0 -g core.cpp tests.cpp -o tests
+./tests
+gcov core.cpp
+\end{lstlisting}
+
+Dla Clanga dostępny jest osobny zestaw instrumentacji LLVM:
+\begin{lstlisting}[language=bash,caption={Clang: instrumentacja i raport pokrycia.}]
+clang++ -std=c++20 -O0 -g -fprofile-instr-generate \
+    -fcoverage-mapping core.cpp tests.cpp -o tests
+LLVM_PROFILE_FILE=tests.profraw ./tests
+llvm-profdata merge -sparse tests.profraw -o tests.profdata
+llvm-cov report ./tests -instr-profile=tests.profdata
+\end{lstlisting}
+
+W~szczególności należy testować \emph{warunki brzegowe}, a~nie
+maksymalizować jedynie procent pokrycia.
+
+\section{Benchmarking: jak mierzyć szybkość bez samooszukiwania}
+\label{sec:cpp18-benchmark}
+
+\subsection{Pułapki mikrobenchmarków}
+
+Nowoczesny kompilator usuwa obliczenia o~nieobserwowalnych efektach,
+wykonuje \emph{constant folding} i~wektoryzuje pętle. Dlatego mierzenie
+pustej pętli lub stałego obliczenia może nie mieć związku z~realną
+wydajnością. Wynik zależy ponadto od rozgrzania cache, alokacji,
+obciążenia systemu, zegarów CPU, temperatury i~danych testowych.
+
+\begin{lstlisting}[caption={Pomiar algorytmu z rzeczywistym wynikiem (bez biblioteki benchmark).}]
+#include <chrono>
+#include <iostream>
+#include <numeric>
+#include <vector>
+
+int main() {
+    std::vector<int> data(1'000'000, 1);
+    using clock = std::chrono::steady_clock;
+    long long checksum = 0;
+
+    for (int repetition = 0; repetition < 10; ++repetition) {
+        auto start = clock::now();
+        const auto result = std::accumulate(
+            data.begin(), data.end(), 0LL);
+        auto finish = clock::now();
+        checksum += result;  // Wynik jest wykorzystany po pomiarze.
+        auto us = std::chrono::duration_cast<
+            std::chrono::microseconds>(finish - start).count();
+        std::cout << "Trial " << repetition << ": " << us << " us\n";
+    }
+    std::cout << "checksum=" << checksum << '\n';
+}
+\end{lstlisting}
+
+To ilustracja, nie wzorcowy mikrobenchmark: optymalizator może
+ułatwić sobie obliczenia na regularnych danych; dodatkowo
+\code{std::cout} poza odcinkiem pomiarowym zmienia warunki
+między próbami. Użyteczne benchmarki wymagają wielu powtórzeń,
+przygotowanych danych i~analizy rozkładu czasów.
+
+\subsection{Google Benchmark}
+
+\emph{Google Benchmark} automatyzuje wielokrotne uruchamianie i~raportuje
+miary czasowe. W~krytycznym fragmencie wykorzystujemy
+\code{benchmark::DoNotOptimize}, aby wynik obliczenia nie został
+trywialnie usunięty; nie wyłącza to jednak wszystkich optymalizacji
+na badanym wyrażeniu.
+
+\begin{lstlisting}[caption={Samodzielny benchmark sumowania wielu elementow.}]
+// Plik: benchmark_sum.cpp
+#include <benchmark/benchmark.h>
+#include <numeric>
+#include <vector>
+
+static void BM_Accumulate(benchmark::State& state) {
+    const std::vector<int> data(state.range(0), 1);
+    for (auto _ : state) {
+        const auto sum = std::accumulate(
+            data.begin(), data.end(), 0LL);
+        benchmark::DoNotOptimize(sum);
+    }
+    state.SetItemsProcessed(state.iterations() * state.range(0));
+}
+
+BENCHMARK(BM_Accumulate)->Arg(1024)->Arg(1 << 20);
+BENCHMARK_MAIN();
+\end{lstlisting}
+
+\begin{lstlisting}[language=bash,caption={Budowanie z biblioteka Google Benchmark dostarczona przez CMake.}]
+# W CMakeLists.txt:
+# find_package(benchmark CONFIG REQUIRED)
+# add_executable(bench benchmark_sum.cpp)
+# target_compile_features(bench PRIVATE cxx_std_20)
+# target_link_libraries(bench PRIVATE benchmark::benchmark)
+
+./bench --benchmark_repetitions=10
+./bench --benchmark_out=results.json \
+        --benchmark_out_format=json
+\end{lstlisting}
+
+W~porównaniach równoległych trzeba ponadto ustalić liczbę wątków,
+rozmiary bloków, warm-up, powtarzalność danych oraz ewentualne
+\emph{false sharing}. Sam najkrótszy pojedynczy czas nie opisuje
+stabilnej wydajności.
+
+\section{Profilowanie CPU i pamięci}
+\label{sec:cpp18-profiling}
+
+\subsection{Profilowanie próbkowe: Linux \texttt{perf}}
+
+Zamiast mierzyć wyłącznie całkowity czas, profiler pomaga wykrywać
+\emph{hot spots}: funkcje zajmujące znaczącą część wykonania.
+Przykładowe polecenia systemu Linux:
+
+\begin{lstlisting}[language=bash,caption={Profilowanie CPU przez perf (Linux).}]
+g++ -std=c++20 -O2 -g -fno-omit-frame-pointer \
+    app.cpp -o app
+perf stat ./app
+perf record -g ./app
+perf report
+\end{lstlisting}
+
+\code{perf stat} podaje liczniki zdarzeń udostępniane przez jądro
+i~sprzęt, np. cykle i~instrukcje. \code{perf record} zbiera próbki
+umożliwiające oglądanie gorących funkcji i~stosu. Dostępne zdarzenia
+i~uprawnienia zależą od komputera i~ustawień systemu.
+
+\subsection{Flame graph}
+
+\emph{Flame graph} to agregat stosów wywołań: szerokość prostokąta
+odpowiada udziałowi próbek, a~wysokość zagnieżdżeniu wywołań.
+Nie jest to dokładna oś czasu. Przykładowy przepływ z~zewnętrznymi
+narzędziami FlameGraph:
+
+\begin{lstlisting}[language=bash,caption={Tworzenie flame graph z probek perf (Linux).}]
+perf record -F 99 -g -- ./app
+perf script | stackcollapse-perf.pl | flamegraph.pl > flame.svg
+\end{lstlisting}
+
+Ostatnie dwa skrypty pochodzą z~osobnego projektu FlameGraph i~muszą
+być zainstalowane. W~projektach o~dużej liczbie wątków pomagają też
+profile opóźnień, I/O i~blokad, a~nie tylko wykorzystania CPU.
+
+\subsection{Alokacje i zużycie pamięci}
+
+Wydajność pamięci to nie tylko liczba bajtów. Ważne są rozkład
+alokacji, fragmentacja, lokalność cache i~czas życia obiektów.
+Na wspieranych systemach można użyć m.in.:
+
+\begin{lstlisting}[language=bash,caption={Przykladowe pomiary alokacji i pamieci.}]
+valgrind --tool=massif ./app
+ms_print massif.out.*
+/usr/bin/time -v ./app
+\end{lstlisting}
+
+\code{massif} służy do profilowania sterty (zgodnie z~możliwościami
+narzędzia); \code{/usr/bin/time -v} raportuje miary procesu, np.
+\emph{maximum resident set size}, ale nie mówi, które alokacje były
+odpowiedzialne. Instrumentacja pamięci również wpływa na czas pracy.
+
+\section{Asembler i związek kodu źródłowego z wydajnością}
+\label{sec:cpp18-asm}
+
+Dwa podobne zapisy C++ mogą dać różny kod maszynowy, szczególnie po
+włączeniu \code{-O2} lub \code{-O3}. Przy analizie trzeba jednak
+uważać, aby nie wyciągać wniosków na podstawie sztucznych przykładów,
+w których kompilator może wyeliminować całą pracę.
+
+\begin{lstlisting}[caption={Niewielka funkcja do analizy wygenerowanego kodu.}]
+#include <cstddef>
+
+double dot(const double* a, const double* b, std::size_t n) {
+    double sum = 0.0;
+    for (std::size_t i = 0; i < n; ++i)
+        sum += a[i] * b[i];
+    return sum;
+}
+\end{lstlisting}
+
+\begin{lstlisting}[language=bash,caption={Asembler i raport wektoryzacji w GCC (Linux).}]
+g++ -std=c++20 -O3 -S -masm=intel dot.cpp -o dot.s
+
+g++ -std=c++20 -O3 -fopt-info-vec-optimized \
+    -c dot.cpp -o dot.o
+objdump -drC dot.o
+\end{lstlisting}
+
+Dla wektoryzacji ważne są: zależności między iteracjami, wyrównanie,
+\emph{aliasing} oraz semantyka arytmetyki zmiennoprzecinkowej.
+Brak instrukcji SIMD nie musi oznaczać błędu kompilatora; dla
+dokładnie zachowanego porządku sumowania kompilator może nie móc
+zmienić kolejności operacji. Flaga \code{-ffast-math} pozwala na
+istotnie inne przekształcenia numeryczne i~nie powinna być
+włączana automatycznie w~programach wymagających ścisłej semantyki.
+
+\subsection{Profile-guided optimization (PGO)}
+
+Kompilator może wykorzystać profile zebrane na reprezentatywnych
+danych, aby lepiej rozłożyć kod i~podjąć decyzje optymalizacyjne.
+Schemat dla GCC:
+
+\begin{lstlisting}[language=bash,caption={Dwa przebiegi budowania z PGO (GCC).}]
+mkdir -p pgo-data
+g++ -std=c++20 -O2 -fprofile-generate=pgo-data \
+    app.cpp -o app
+./app  # Wykonaj reprezentatywny workload.
+g++ -std=c++20 -O2 -fprofile-use=pgo-data \
+    app.cpp -o app
+\end{lstlisting}
+
+PGO nie zastępuje pomiarów: profil z~innego rozkładu danych może
+nawet pogorszyć wyniki. Należy też zachować zgodność źródeł, flag
+i~miejsc profilu pomiędzy dwoma etapami budowania.
+
+\section{Testowanie kodu wielowątkowego}
+\label{sec:cpp18-concurrency-tests}
+
+W~systemach współbieżnych testy wynikowe muszą badać także
+\emph{zakończenie pracy}, własność danych i~synchronizację.
+Powtórzenie testu wiele razy zwiększa szansę wykrycia błędu, ale
+nigdy nie zastępuje rozumowania o~relacjach \emph{happens-before}
+(rozdziały~\ref{chap:concurrency} i~\ref{chap:cpp16-advanced-concurrency}).
+
+\begin{lstlisting}[caption={Poprawny test licznika atomowego z jthread (C++20).}]
+#include <atomic>
+#include <cassert>
+#include <thread>
+#include <vector>
+
+int main() {
+    std::atomic<int> count{0};
+    {
+        std::vector<std::jthread> workers;
+        for (int i = 0; i < 4; ++i) {
+            workers.emplace_back([&] {
+                for (int k = 0; k < 10000; ++k)
+                    count.fetch_add(1, std::memory_order_relaxed);
+            });
+        }
+    } // Destruktory jthread czekaja na wszystkie watki.
+    assert(count.load(std::memory_order_relaxed) == 40000);
+}
+\end{lstlisting}
+
+Do koordynowania momentu rozpoczęcia testu można wykorzystać
+\code{std::latch} lub \code{std::barrier} (C++20). W~testach
+\emph{timeout} zapobiega nieskończonemu oczekiwaniu w~infrastrukturze
+testowej, ale nie może być uznawany za mechanizm anulowania
+wątku. Zwracaj uwagę na wyścigi związane z~destrukcją fixture
+oraz na kolejność zamykania wątków i~obiektów synchronizacyjnych.
+
+\section{Praktyczny workflow: od błędu do poprawki}
+
+Prześledźmy zalecaną kolejność działania:
+\begin{enumerate}
+\item \textbf{Odtwórz błąd}: zanotuj wejście, wersję programu, flagi
+      kompilacji, środowisko i~opcjonalnie seed.
+\item \textbf{Zminimalizuj przypadek}: mały, powtarzalny przykład jest
+      łatwiejszy do analizy niż cały system.
+\item \textbf{Włącz diagnostykę}: ostrzeżenia, ASan/UBSan, a~dla
+      kodu współbieżnego oddzielne uruchomienie TSan.
+\item \textbf{Postaw hipotezę}: zidentyfikuj zmienną lub niezmiennik,
+      który naruszono; sprawdź stos i~stan programu w~debuggerze.
+\item \textbf{Dodaj test regresyjny}: powinien zawodzić przed poprawką
+      i~przechodzić po niej.
+\item \textbf{Popraw przyczynę}: nie tylko usuń widoczny symptom.
+\item \textbf{Zmierz koszt}: jeżeli poprawka ma znaczenie wydajnościowe,
+      porównaj benchmarki i~profile przed oraz po zmianie.
+\item \textbf{Uruchom pełen zestaw testów}: szczególnie z~różnymi
+      konfiguracjami optymalizacji i~kompilatorami.
+\end{enumerate}
+
+\section{Automatyzacja w CI i macierz konfiguracji}
+
+W~projektach utrzymywanych długo testy powinny wykonywać się
+automatycznie po każdej istotnej zmianie. Praktyczna macierz obejmuje
+zwykle konfigurację debugową z~sanitizatorami oraz konfigurację
+optymalizowaną z~testami wynikowymi. TSan uruchamiamy w~osobnej
+konfiguracji i~na wspieranym środowisku.
+
+\begin{center}
+\small
+\begin{tabularx}{\textwidth}{@{}p{0.28\textwidth}X@{}}
+\toprule
+Konfiguracja & Główne zadanie\\
+\midrule
+Debug, \code{-O0 -g} & Debugowanie źródłowe i~lokalizacja błędów.\\
+Debug/san, \code{-O1 -g}, ASan+UBSan & Dostęp do niepoprawnej pamięci i~wybrane UB.\\
+Oddzielny build TSan & Wyścigi danych przy konkurencyjnym wykonaniu.\\
+Release, \code{-O2} lub \code{-O3} & Testy produkcyjnej konfiguracji i~benchmarki.\\
+Clang i GCC & Różne diagnostyki i~różne decyzje optymalizatora.\\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\nota{Benchmarki są wrażliwe na obciążenie współdzielonych runnerów
+CI. W~zwykłym pipeline CI warto przede wszystkim weryfikować
+poprawność i~duże regresje; wiarygodne mikrobenchmarki powinny
+wykonywać się na kontrolowanym sprzęcie.}
+
+\section{Najczęstsze błędy i wybór narzędzia}
+
+\begin{center}
+\small
+\begin{tabularx}{\textwidth}{@{}p{0.40\textwidth}X@{}}
+\toprule
+Problem & Zalecane podejście\\
+\midrule
+Funkcja daje złe wyniki & Test jednostkowy, debugger, test regresyjny.\\
+Awaria tylko dla niektórych danych & Fuzzing, test własnościowy, ASan/UBSan.\\
+Podejrzenie wiszącego wskaźnika & ASan, kontrola czasu życia, debugger.\\
+Podejrzenie data race & TSan, analiza synchronizacji i~\emph{happens-before}.\\
+Program zawiesza się przy wielu wątkach & Stosy wszystkich wątków, graf blokad, timeout testu.\\
+Wysokie zużycie pamięci & Massif, profiler alokacji, pomiar RSS.\\
+Program jest wolny & \code{perf}/profiler, później benchmark gorącej funkcji.\\
+Spadek szybkości po zmianie & Reprodukowalny benchmark, kontrola warunków, profil porównawczy.\\
+Wątpliwości co do wektoryzacji & Raport optymalizacji i~asembler, weryfikacja numeryczna.\\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\section*{Podsumowanie rozdziału}
+\addcontentsline{toc}{section}{Podsumowanie rozdziału}
+
+Testy określają, czy otrzymujemy oczekiwane zachowanie; debugger
+pozwala prześledzić przyczyny problemu; sanitizatory wykrywają
+określone naruszenia reguł wykonywania; profiler i~benchmarki
+pomagają podejmować decyzje dotyczące wydajności. Nie istnieje
+jedno narzędzie, które zastępuje wszystkie pozostałe.
+
+Praktyczna sekwencja brzmi: \emph{najpierw poprawność, potem
+bezpieczeństwo i~reprodukcyjność, następnie pomiary, wreszcie
+optymalizacja}. Każda wykryta usterka powinna prowadzić do testu
+regresyjnego, a~każda deklarowana poprawa wydajności --- do
+porównywalnego pomiaru. Dla systemów wielowątkowych konieczne jest
+ponadto świadome rozumienie synchronizacji, czasu życia obiektów
+oraz gwarancji modelu pamięci C++.
+
+\section*{Literatura i dokumentacja}
+\addcontentsline{toc}{section}{Literatura i dokumentacja}
+\begingroup
+\sloppy
+\begin{itemize}
+\item \url{https://google.github.io/googletest/primer.html} ---
+      GoogleTest: asercje, fixture i organizacja testów.
+\item \url{https://github.com/google/googletest/blob/main/docs/quickstart-cmake.md}
+      --- integracja GoogleTest i CMake.
+\item \url{https://cmake.org/cmake/help/latest/module/GoogleTest.html}
+      --- \code{gtest_discover_tests} i CTest.
+\item \url{https://github.com/google/benchmark/blob/main/docs/user_guide.md}
+      --- Google Benchmark i stabilne pomiary.
+\item \url{https://clang.llvm.org/docs/AddressSanitizer.html} --- ASan.
+\item \url{https://clang.llvm.org/docs/UndefinedBehaviorSanitizer.html}
+      --- UBSan.
+\item \url{https://clang.llvm.org/docs/ThreadSanitizer.html} --- TSan.
+\item \url{https://clang.llvm.org/docs/LibFuzzer.html} --- fuzzing.
+\item \url{https://sourceware.org/gdb/current/onlinedocs/gdb.html} --- GDB.
+\item \url{https://lldb.llvm.org/use/tutorial.html} --- LLDB.
+\item \url{https://valgrind.org/docs/manual/manual.html} --- Memcheck i Massif.
+\item \url{https://perf.wiki.kernel.org/} --- profiler \code{perf}.
+\item Brendan Gregg, \emph{Systems Performance}, wyd. 2,
+      Addison-Wesley, 2020.
+\end{itemize}
+\endgroup

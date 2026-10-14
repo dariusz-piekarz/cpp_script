@@ -1,0 +1,1279 @@
+% Rozdzial 16. Fragment do skryptu Nowoczesny C++ (bez preambuly).
+% C++20. Wymagane pakiety obecne w poprzednich rozdzialach:
+% listings, amsmath, amssymb, booktabs, tabularx, array, hyperref, enumitem.
+% Wymagane makra: \code, \term, \nota (jak w pliku glownym skryptu).
+% Dolaczenie: \input{rozdzial_16_zaawansowana_wspolbieznosc_model_pamieci_cpp.tex}
+% Kazdy listing opisany jako kompletny program jest samodzielny.
+
+\chapter{Zaawansowana współbieżność, model pamięci i algorytmy bez blokad}
+\label{chap:cpp16-advanced-concurrency}
+
+\section{Cel rozdziału i powiązanie z podstawami}
+
+W rozdziale~1 poznaliśmy wątki, mutexy, zmienne warunkowe, operacje
+atomowe, \code{std::async}, pule wątków i~OpenMP. Sama znajomość tych
+interfejsów nie wystarcza jednak do samodzielnego projektowania
+algorytmów współbieżnych. Trzeba odpowiedzieć na trudniejsze pytania:
+\begin{itemize}
+\item Kiedy zapis wykonany przez jeden wątek \emph{musi} być widoczny dla drugiego?
+\item Które wyniki są dozwolone przez model pamięci, nawet gdy wydają się
+      sprzeczne z intuicją opartą na sekwencyjnym wykonywaniu?
+\item Czym różni się atomowość pojedynczej operacji od niepodzielności
+      całego algorytmu?
+\item Jak zaprojektować \emph{postęp} algorytmu i~bezpiecznie zwalniać pamięć,
+      gdy inne wątki mogą jeszcze posiadać wskaźniki do obiektów?
+\item Kiedy rozwiązanie bez mutexa rzeczywiście poprawia wydajność?
+\end{itemize}
+
+Skupimy się na \emph{uzasadnianiu poprawności}, a~nie tylko na składni.
+W~szczególności przedstawimy proste testy modelu pamięci (\emph{litmus tests}),
+algorytm kolejki SPSC, publikację niezmiennych struktur danych, problem ABA,
+techniki odzyskiwania pamięci oraz praktyczne zasady pomiaru i~diagnostyki.
+Nie zakładamy, że każdy \code{std::atomic<T>} jest realizowany bez blokad.
+
+\nota{Wszystkie gwarancje sformułowane w~rozdziale dotyczą abstrakcyjnego
+modelu języka C++. Rzeczywisty procesor może wykonywać instrukcje
+w~innej kolejności i~stosować bufory zapisów, ale program musi być
+poprawny na gruncie standardu, a~nie tylko na jednym komputerze.}
+
+\section{Formalny porządek zdarzeń w~wielowątkowym programie}
+\label{sec:cpp16-formal}
+
+\subsection{Zdarzenia i~relacje \emph{sequenced-before}, \emph{synchronizes-with}}
+
+Rozpatrzmy pewne operacje na pamięci jako \emph{zdarzenia}. Wśród relacji
+używanych do opisu ich uporządkowania najważniejsze są:
+\begin{description}[style=nextline]
+\item[\emph{Sequenced-before} (\(\mathrm{sb}\))]
+  Porządek określony regułami języka pomiędzy wybranymi operacjami
+  w~obrębie jednego wątku. Nie należy go mylić z~dowolną kolejnością
+  pojawiania się instrukcji w~kodzie źródłowym: język zawiera także
+  wyrażenia z~nieokreśloną kolejnością ewaluacji.
+\item[\emph{Synchronizes-with} (\(\mathrm{sw}\))]
+  Synchronizacja pomiędzy odpowiednimi operacjami różnych wątków:
+  na przykład zapis \code{release} i~odczyt \code{acquire}, który czyta
+  wartość z~odpowiedniego zapisu lub jego sekwencji \emph{release}.
+  Podobną synchronizację zapewniają właściwe operacje na mutexach.
+\item[\emph{Happens-before} (\(\mathrm{hb}\))]
+  Relacja porządkująca zdarzenia, budowana w~typowych przykładach
+  przez \(\mathrm{sb}\), \(\mathrm{sw}\) i~ich przechodnie złożenia.
+  Jeśli \(A\;\mathrm{hb}\;B\), skutki \(A\) są uporządkowane przed \(B\)
+  w~sensie formalnego modelu; nie jest to stwierdzenie o~czasie zegarowym.
+\end{description}
+
+Dla przejrzystości będziemy używać następującego schematu:
+\[
+\underbrace{A\;\xrightarrow{\mathrm{sb}}\;R}_{\text{producent}}
+\quad\xrightarrow{\mathrm{sw}}\quad
+\underbrace{Q\;\xrightarrow{\mathrm{sb}}\;B}_{\text{konsument}}
+\quad\Longrightarrow\quad A\;\xrightarrow{\mathrm{hb}}\;B.
+\]
+Operacja \(R\) jest publikacją, \(Q\) odpowiadającym jej odbiorem;
+\(A\) i~\(B\) mogą dotyczyć zwykłej, nieatomowej zmiennej.
+
+\subsection{Atomowość nie zastępuje synchronizacji}
+
+W~przeciwieństwie do zwykłego odczytu lub zapisu operacje na
+\code{std::atomic<T>} nie powodują wyścigu danych pomiędzy sobą.
+Nie oznacza to jednak, że każdy odczyt atomowy widzi ostatni zapis
+według zegara ściennego. Taki globalny \emph{ostatni zapis} zwykle
+w~ogóle nie istnieje jako zdefiniowane pojęcie modelu.
+
+Z~kolei jeśli dwa wątki odczytują i~modyfikują to samo miejsce pamięci
+nieatomowo, a~konfliktowe operacje nie są uporządkowane relacją
+\emph{happens-before}, program ma \emph{data race} i~niezdefiniowane zachowanie.
+Samo oznaczenie obiektu przez \code{volatile} nie rozwiązuje tego problemu.
+
+\subsection{Porządek modyfikacji (\emph{modification order}) i~spójność}
+
+Dla \emph{każdego pojedynczego} obiektu atomowego istnieje całkowity
+porządek jego modyfikacji (\emph{modification order}). Nie wynika z~tego
+jeden wspólny porządek modyfikacji \emph{wszystkich} atomików.
+Ważne konsekwencje to między innymi:
+\begin{itemize}
+\item zapis do \code{x} uporządkowany przed innym zapisem do \code{x}
+      musi być odpowiednio umieszczony przed nim w~porządku modyfikacji;
+\item jeśli odczyt \code{x} jest uporządkowany przed kolejnym odczytem
+      \code{x} w~tym samym wątku, drugi odczyt nie może cofnąć się
+      do wcześniejszej modyfikacji w~porządku tego atomika;
+\item ograniczenia spójności dla jednego atomika nie zapewniają
+      automatycznie spójnego obrazu \emph{dwóch różnych} atomików.
+\end{itemize}
+
+\section{Testy modelu pamięci: wyniki, które zaskakują}
+\label{sec:cpp16-litmus}
+
+\subsection{\emph{Store buffering}: dwa odczyty zera}
+
+Załóżmy, że \code{x} i~\code{y} początkowo są równe zero, a~wątki
+wykonują następujące operacje:
+\[
+\begin{array}{c|c}
+\text{Wątek 1} & \text{Wątek 2}\\ \hline
+x\gets 1 & y\gets 1\\
+r_1\gets y & r_2\gets x
+\end{array}
+\]
+
+\begin{lstlisting}[caption={Store buffering: kompletna, wolna od wyścigu danych próba (C++20).}]
+#include <atomic>
+#include <iostream>
+#include <thread>
+
+int main() {
+    std::atomic<int> x{0}, y{0};
+    int r1 = -1, r2 = -1;
+
+    std::jthread a([&] {
+        x.store(1, std::memory_order_relaxed);
+        r1 = y.load(std::memory_order_relaxed);
+    });
+    std::jthread b([&] {
+        y.store(1, std::memory_order_relaxed);
+        r2 = x.load(std::memory_order_relaxed);
+    });
+    a.join();
+    b.join();
+    std::cout << r1 << ' ' << r2 << '\n';
+}
+\end{lstlisting}
+
+W~tym programie \(r_1=r_2=0\) jest \textbf{dozwolonym} wynikiem
+modelu C++ dla \code{relaxed}; nie ma gwarancji, że zostanie
+zaobserwowany w~praktycznym uruchomieniu. Jeśli \emph{wszystkie cztery}
+operacje atomowe zamienimy na \code{memory_order_seq_cst}, wynik
+\((0,0)\) stanie się niemożliwy: wspólny porządek operacji
+sekwencyjnie spójnych musiałby przeczyć kolejności w~każdym z~wątków.
+
+\nota{Wynik pojedynczego eksperymentu, nawet powtórzony milion razy,
+nie dowodzi niedopuszczalności innego zachowania. Test tego rodzaju
+to materiał do rozumowania nad modelem, a~nie pełny dowód poprawności.}
+
+\subsection{\emph{Message passing}: publikacja zwykłych danych}
+
+\begin{lstlisting}[caption={Publikacja danych przy użyciu release/acquire (C++11).}]
+#include <atomic>
+#include <cassert>
+#include <thread>
+
+int main() {
+    int payload = 0;
+    std::atomic<bool> published{false};
+
+    std::thread producer([&] {
+        payload = 42;
+        published.store(true, std::memory_order_release);
+    });
+    std::thread consumer([&] {
+        while (!published.load(std::memory_order_acquire)) {
+            std::this_thread::yield();
+        }
+        assert(payload == 42);
+    });
+
+    producer.join();
+    consumer.join();
+}
+\end{lstlisting}
+
+Odczyt flagi, który widzi \code{true}, synchronizuje się z~zapisem
+\code{release}. Zapis \code{payload = 42} następuje \emph{happens-before}
+odczytu \code{payload} przez konsumenta. Flaga \emph{publikuje}
+wcześniejszy stan; nie należy po publikacji modyfikować
+\code{payload} bez dalszej synchronizacji.
+
+\section{Porządki atomowe i~ich dokładne zastosowania}
+\label{sec:cpp16-orders}
+
+\begin{center}
+\small
+\begin{tabularx}{\textwidth}{@{}lX@{}}
+\toprule
+\textbf{Porządek} & \textbf{Typowe zastosowanie i~ograniczenie} \\
+\midrule
+\code{relaxed} & Liczniki, statystyki, pola kontrolne, gdy
+sama atomowość wystarcza, a~relacja synchronizacji wynika skądinąd. \\
+\code{release} & Zapis lub operacja RMW publikująca wcześniejsze efekty
+wątku. \\
+\code{acquire} & Odczyt lub operacja RMW odbierająca stan od publikującego wątku. \\
+\code{acq_rel} & Operacja odczyt--modyfikacja--zapis wymagająca obu kierunków. \\
+\code{seq_cst} & Operacje z~dodatkową gwarancją pojedynczego wspólnego
+porządku dla operacji sekwencyjnie spójnych. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\code{memory_order_consume} ma długą i~skomplikowaną historię
+standaryzacji. W~praktycznym kodzie C++20 należy preferować
+\code{acquire} zamiast opierania przenośnej poprawności na
+\code{consume}. Uwaga: porządek \code{release} jest właściwy dla
+zapisu, \code{acquire} dla odczytu, a~\code{acq_rel} dla operacji
+odczyt--modyfikacja--zapis; nie wszystkie porządki są poprawne dla
+każdego przeciążenia funkcji atomowej.
+
+\subsection{Operacje \emph{read--modify--write}}
+
+Metody \code{fetch_add}, \code{fetch_sub}, \code{exchange} i~udany
+\code{compare_exchange_*} wykonują operację RMW. Są one niepodzielne
+w~odniesieniu do danego atomika, ale nie tworzą automatycznie
+transakcji obejmującej inne pola.
+
+\begin{lstlisting}[caption={Przydzielanie kolejnych numerów: wystarcza relaxed (C++11).}]
+#include <atomic>
+#include <cassert>
+#include <thread>
+
+int main() {
+    std::atomic<int> next_id{0};
+    int first = -1, second = -1;
+    std::thread a([&] {
+        first = next_id.fetch_add(1, std::memory_order_relaxed);
+    });
+    std::thread b([&] {
+        second = next_id.fetch_add(1, std::memory_order_relaxed);
+    });
+    a.join();
+    b.join();
+    assert(first != second);
+    assert(first + second == 1);
+}
+\end{lstlisting}
+
+Uzyskujemy unikatowe wartości, bo RMW mają jednoznaczny porządek
+modyfikacji \code{next_id}. Nie uzyskujemy przez to żadnej dodatkowej
+synchronizacji niezwiązanych danych.
+
+\subsection{\emph{Release sequence}: łańcuch operacji RMW}
+
+W~C++20 zapis z~porządkiem \code{release} może rozpoczynać sekwencję
+\emph{release} składającą się z~następujących po nim operacji RMW
+na \emph{tym samym} atomiku, wykonywanych także przez inne wątki.
+Odczyt \code{acquire} wartości pochodzącej z~tej sekwencji może
+synchronizować się z~początkowym zapisem \code{release}.
+
+\begin{lstlisting}[caption={Przekazanie publikacji przez relaxed RMW (C++20).}]
+#include <atomic>
+#include <cassert>
+#include <thread>
+
+int main() {
+    int payload = 7;
+    std::atomic<int> state{0};
+
+    std::thread producer([&] {
+        payload = 42;
+        state.store(1, std::memory_order_release);
+    });
+    std::thread intermediary([&] {
+        int expected = 0;
+        while ((expected = state.load(std::memory_order_acquire))
+               == 0) {
+            std::this_thread::yield();
+        }
+        state.fetch_add(1, std::memory_order_relaxed);
+    });
+    std::thread consumer([&] {
+        while (state.load(std::memory_order_acquire) != 2) {
+            std::this_thread::yield();
+        }
+        assert(payload == 42);
+    });
+
+    producer.join();
+    intermediary.join();
+    consumer.join();
+}
+\end{lstlisting}
+
+Wątek pośredni czeka, aż stan osiągnie 1, i~wykonuje RMW, który
+zapisuje 2. Odczyt wartości 2 z~\code{acquire} synchronizuje się
+z~pierwotnym \code{release} przez sekwencję \emph{release}.
+Nie można w~ogólności zastąpić \code{fetch_add} zwykłym
+\code{store(2, relaxed)} i~utrzymać tej samej argumentacji.
+
+\section{CAS: porównaj i~zamień, pętle ponawiania i~porządek niepowodzenia}
+\label{sec:cpp16-cas}
+
+\code{compare_exchange_weak(expected, desired, success, failure)}
+atomowo porównuje bieżącą wartość z~\code{expected}. Gdy porównanie
+się powiedzie, zapisuje \code{desired}; w~przeciwnym razie aktualizuje
+\code{expected} do wartości zastanej w~atomiku. Wersja \code{weak}
+może ponadto nie powieść się pozornie (\emph{spurious failure}).
+W~pętli jest zwykle dobrym wyborem.
+
+\begin{lstlisting}[caption={Atomowe maksimum z~pętlą CAS (C++11).}]
+#include <atomic>
+#include <cassert>
+
+void atomic_max(std::atomic<int>& target, int candidate) {
+    int old = target.load(std::memory_order_relaxed);
+    while (old < candidate &&
+           !target.compare_exchange_weak(
+               old, candidate,
+               std::memory_order_relaxed,
+               std::memory_order_relaxed)) {
+        // Przy niepowodzeniu old jest aktualizowane.
+    }
+}
+
+int main() {
+    std::atomic<int> maximum{10};
+    atomic_max(maximum, 8);
+    atomic_max(maximum, 17);
+    assert(maximum.load() == 17);
+}
+\end{lstlisting}
+
+Parametr \code{failure} opisuje porządek operacji \emph{odczytu}
+w~przypadku niepowodzenia. Nie może to być \code{release} ani
+\code{acq_rel}; musi też spełniać ograniczenia względem porządku
+sukcesu określone standardem. Typowy wzorzec publikacji nowej
+wartości to sukces z~\code{acq_rel} i~niepowodzenie z~\code{acquire}
+(albo \code{relaxed}, jeśli tak wynika z~dowodu).
+
+\subsection{\code{weak} kontra \code{strong}}
+
+\code{compare_exchange_strong} nie zgłasza pozornego niepowodzenia
+przy poprawnie porównanych wartościach. Może być użyteczne dla
+pojedynczej próby; \code{weak} bywa wygodniejsze w~pętlach CAS.
+Nie ma uniwersalnej gwarancji, że jedna z~tych wersji zawsze działa
+szybciej na danej platformie.
+
+\section{Bariery pamięci i~\texttt{std::atomic\_thread\_fence}}
+\label{sec:cpp16-fences}
+
+Bariera \code{std::atomic_thread_fence(order)} jest operacją
+porządkowania pamięci, która sama nie odczytuje ani nie zapisuje
+konkretnego atomika. Synchronizacja z~innym wątkiem wciąż wymaga
+odpowiednich operacji atomowych łączących obie strony. Samo
+wstawienie \code{fence} obok zwykłej zmiennej nie usuwa wyścigu danych.
+
+\begin{lstlisting}[caption={Publikacja ze zwolnieniową i~przejmującą barierą pamięci (C++11).}]
+#include <atomic>
+#include <cassert>
+#include <thread>
+
+int main() {
+    int payload = 0;
+    std::atomic<bool> flag{false};
+
+    std::thread producer([&] {
+        payload = 42;
+        std::atomic_thread_fence(std::memory_order_release);
+        flag.store(true, std::memory_order_relaxed);
+    });
+    std::thread consumer([&] {
+        while (!flag.load(std::memory_order_relaxed)) {
+            std::this_thread::yield();
+        }
+        std::atomic_thread_fence(std::memory_order_acquire);
+        assert(payload == 42);
+    });
+
+    producer.join();
+    consumer.join();
+}
+\end{lstlisting}
+
+To przykład synchronizacji \emph{fence--fence}: odczyt atomika
+widzi zapis następujący po barierze \code{release}, a~bariera
+\code{acquire} jest wykonywana po tym odczycie. W~nowym kodzie
+zwykle prostsze i~czytelniejsze jest zastosowanie pary operacji
+\code{release}/\code{acquire} bez jawnych barier. Bariery nie są
+substytutem przemyślanego protokołu komunikacji.
+
+\section{Gwarancje postępu: \emph{blocking}, \emph{lock-free} i~\emph{wait-free}}
+\label{sec:cpp16-progress}
+
+Wielowątkowy algorytm można analizować pod względem \emph{bezpieczeństwa}
+(\emph{safety}: nic niedozwolonego się nie dzieje) i~\emph{żywotności}
+(\emph{liveness}: coś pożądanego w~końcu się wydarzy). Są to różne kwestie.
+
+\begin{description}[style=nextline]
+\item[\emph{Blocking}]
+  Wątek może oczekiwać na odblokowanie mutexa przez konkretny inny wątek.
+  Jeśli właściciel przestanie robić postępy, pozostali również mogą utknąć.
+\item[\emph{Lock-free}]
+  W~standardowym ujęciu postępu algorytmowego, mimo rywalizacji wątków,
+  system jako całość może kontynuować wykonywanie operacji:
+  niepowodzenia jednej próby CAS zwykle oznaczają, że inny uczestnik
+  wykonał postęp. Nie gwarantuje to postępu \emph{każdego} wątku.
+\item[\emph{Wait-free}]
+  Każda operacja danego wątku ma ograniczoną liczbę własnych kroków
+  niezależnie od działań innych wątków (przy przyjętym modelu).
+  To silniejszy warunek niż \emph{lock-free}.
+\item[\emph{Obstruction-free}]
+  Operacja postępuje, jeśli wątek może działać dostatecznie długo
+  bez konfliktów ze strony innych wątków. Jest to słabsza gwarancja.
+\end{description}
+
+\emph{Lock-free} nie znaczy ,,zawsze szybciej''. Nie oznacza również
+braku aktywnego oczekiwania ani braku zagłodzenia konkretnego wątku.
+Odróżniajmy też własność implementacji pojedynczego atomika
+(\code{is_lock_free()}) od postępu kompletnego algorytmu.
+
+\subsection{Prosta blokada wirująca (\emph{spinlock})}
+
+\begin{lstlisting}[caption={Poprawna blokada wirująca z flagą atomową; ilustracja (C++20).}]
+#include <atomic>
+#include <cassert>
+#include <mutex>
+#include <thread>
+
+class SpinLock {
+    std::atomic_flag flag = ATOMIC_FLAG_INIT;
+public:
+    void lock() noexcept {
+        while (flag.test_and_set(std::memory_order_acquire)) {
+            // Zamiast stale rywalizowac o cache line, czekamy.
+            flag.wait(true, std::memory_order_relaxed);
+        }
+    }
+    void unlock() noexcept {
+        flag.clear(std::memory_order_release);
+        flag.notify_one();
+    }
+};
+
+int main() {
+    SpinLock lock;
+    int counter = 0;
+    auto work = [&] {
+        for (int i = 0; i < 10000; ++i) {
+            std::lock_guard<SpinLock> guard(lock);
+            ++counter;
+        }
+    };
+    std::jthread a(work), b(work);
+    a.join();
+    b.join();
+    assert(counter == 20000);
+}
+\end{lstlisting}
+
+\code{test_and_set} ma semantykę RMW; odblokowanie jest operacją
+\code{release}. Metoda \code{wait(true)} może blokować, a~zatem
+powyższy \code{SpinLock} \emph{nie} jest algorytmem \emph{lock-free}.
+Ponadto nie gwarantuje sprawiedliwości. W~realnym oprogramowaniu
+\code{std::mutex} zwykle pozostaje lepszym wyborem, zwłaszcza gdy
+sekcja krytyczna może być długa lub obciążenie jest wysokie.
+
+\section{Problem ABA: poprawne CAS nie wystarcza}
+\label{sec:cpp16-aba}
+
+Rozważmy wierzchołek stosu reprezentowany wskaźnikiem atomowym.
+Wątek \(A\) czyta wskaźnik \(p\) i~zamierza wykonać
+\code{compare_exchange} z~wartości \(p\) na \code{p->next}.
+W~tym czasie wątek \(B\) może:
+\begin{enumerate}
+\item zdjąć element \(p\) ze stosu;
+\item zdjąć jeszcze jeden element;
+\item ponownie umieścić \(p\) na wierzchołku stosu.
+\end{enumerate}
+
+Wartość wskaźnika uległa zmianie \(A\to B\to A\) (stąd \emph{ABA}),
+ale CAS wątku \(A\) może zobaczyć ponownie tę samą wartość \(p\).
+W~międzyczasie struktura stosu mogła się całkowicie zmienić.
+
+\begin{center}
+\(\boxed{\text{head}=p}\;\longrightarrow\;
+  \boxed{\text{head}=q}\;\longrightarrow\;
+  \boxed{\text{head}=p}\)
+\end{center}
+
+Dwa problemy trzeba odróżnić:
+\begin{enumerate}
+\item \emph{ABA logiczne}: porównanie tej samej wartości nie wykrywa
+      zmian stanu struktury.
+\item \emph{Bezpieczeństwo pamięci}: wątek \(A\) może próbować odczytać
+      \code{p->next}, gdy inny wątek zniszczył już obiekt \code{*p}.
+      Taki odczyt nie staje się poprawny tylko dlatego, że \code{head}
+      jest atomowy.
+\end{enumerate}
+
+\subsection{Wskaźnik z~licznikiem generacji}
+
+Jedna z~technik polega na porównywaniu pary
+\((\text{wskaźnik},\text{licznik wersji})\) zamiast samego wskaźnika.
+Wtedy ponowne pojawienie się tego samego adresu nie oznacza równości
+całego stanu. Licznik również ma ograniczony zakres i~może się
+przepełnić; trzeba uzasadnić brak niebezpiecznego \emph{wrap-around}.
+
+\nota{Nie zakładaj, że \code{std::atomic<SomeStruct>} będzie bez blokad:
+implementacja może wykorzystać wewnętrzny mutex lub bibliotekę
+atomowych operacji. Możliwość zapisania stanu złożonego w~\code{atomic}
+nie rozwiązuje też samodzielnie problemu czasu życia obiektów.}
+
+\subsection{Hazard pointers, epoch-based reclamation i~RCU}
+
+\term{Hazard pointers} pozwalają wątkom publikować informację:
+,,zamierzam korzystać z~tego obiektu''. Wątek usuwający obiekt
+odkłada go na listę \emph{retired} i~odracza zniszczenie do chwili,
+gdy żaden aktywny hazard pointer go nie wskazuje. Poprawna procedura
+zwykle musi ponownie zweryfikować odczyt wskaźnika po publikacji
+hazardu; samo opublikowanie dowolnego, potencjalnie już nieważnego
+adresu nie wystarcza.
+
+\term{Epoch-based reclamation} grupuje operacje w~epoki. Usunięte
+obiekty mogą zostać odzyskane dopiero wtedy, gdy wszystkie aktywne
+wątki zakończyły okresy korzystania z~danych obejmujące ich usunięcie.
+Dłużej zatrzymany wątek może opóźniać zwolnienie pamięci.
+
+\term{Read-copy-update (RCU)} korzysta z~odczytów starych wersji
+danych i~publikacji nowych wersji; usuwanie poprzednich odbywa się
+po odpowiednim okresie ochronnym (\emph{grace period}). Szczegóły
+różnią się pomiędzy implementacjami.
+
+\begin{center}
+\small
+\begin{tabularx}{\textwidth}{@{}lX@{}}
+\toprule
+\textbf{Metoda} & \textbf{Kiedy rozważyć} \\
+\midrule
+Hazard pointers & Wiele odczytów wskaźników, częste usuwanie
+węzłów; możliwa kosztowna administracja hazardami. \\
+Epoki & Duży ruch, kontrolowane sekcje dostępu; zatrzymany czytelnik
+może opóźnić odzyskanie pamięci. \\
+RCU & Wzorce ,,wielu czytelników, niewielu pisarzy'', publikacja
+niezmiennych wersji danych. \\
+\code{shared_ptr} & Gdy łatwość dowodu poprawności jest ważniejsza
+od kosztu liczenia referencji; nie obiecuje \emph{lock-free}. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+W~C++20 standardowa biblioteka nie udostępnia jeszcze kompletnej,
+przenośnej abstrakcji hazard pointerów. Bezpieczna implementacja
+wymaga precyzyjnego protokołu pamięciowego, dlatego zamiast podawać
+uproszczony, ale błędny stos ze zwalnianiem węzłów, przedstawimy
+algorytm bez dynamicznego odzyskiwania pamięci: kolejkę SPSC.
+
+\section{Kolejka SPSC: praktyczny algorytm bez mutexa}
+\label{sec:cpp16-spsc}
+
+\emph{Single Producer, Single Consumer} (SPSC) oznacza dokładnie
+jednego producenta i~jednego konsumenta. Bufor cykliczny może wtedy
+używać dwóch liczników:
+\begin{itemize}
+\item \code{head} --- numer kolejnego miejsca zapisu, modyfikowany
+      wyłącznie przez producenta;
+\item \code{tail} --- numer kolejnego miejsca odczytu, modyfikowany
+      wyłącznie przez konsumenta.
+\end{itemize}
+
+Producent zapisuje komórkę, a~następnie publikuje nowy \code{head}
+operacją \code{release}. Konsument odczytuje \code{head} przez
+\code{acquire}, a~więc może bezpiecznie zobaczyć zawartość wcześniej
+zapisanej komórki. Analogicznie konsument zwalnia komórkę, publikując
+nowy \code{tail}, a~producent odbiera tę informację operacją
+\code{acquire}. Warunek pełności bufora o~pojemności \(C\) to
+\(\mathrm{head}-\mathrm{tail}=C\), a~pustości:
+\(\mathrm{head}=\mathrm{tail}\).
+
+\begin{lstlisting}[caption={Kompletna kolejka SPSC dla int, ze statyczną pamięcią (C++20).}]
+#include <array>
+#include <atomic>
+#include <cassert>
+#include <cstddef>
+#include <thread>
+
+// Tylko jeden producent i dokladnie jeden konsument.
+template<std::size_t Capacity>
+class SpscQueue {
+    static_assert(Capacity > 0);
+    static_assert((Capacity & (Capacity - 1)) == 0);
+    std::array<int, Capacity> buffer_{};
+    std::atomic<std::size_t> head_{0};
+    std::atomic<std::size_t> tail_{0};
+public:
+    bool try_push(int value) {
+        const auto head = head_.load(std::memory_order_relaxed);
+        const auto tail = tail_.load(std::memory_order_acquire);
+        if (head - tail == Capacity) return false;
+        buffer_[head & (Capacity - 1)] = value;
+        head_.store(head + 1, std::memory_order_release);
+        return true;
+    }
+
+    bool try_pop(int& result) {
+        const auto tail = tail_.load(std::memory_order_relaxed);
+        const auto head = head_.load(std::memory_order_acquire);
+        if (tail == head) return false;
+        result = buffer_[tail & (Capacity - 1)];
+        tail_.store(tail + 1, std::memory_order_release);
+        return true;
+    }
+};
+
+int main() {
+    constexpr int Count = 100000;
+    SpscQueue<1024> queue;
+    long long result = 0;
+
+    std::jthread producer([&] {
+        for (int x = 1; x <= Count; ++x) {
+            while (!queue.try_push(x)) std::this_thread::yield();
+        }
+    });
+    std::jthread consumer([&] {
+        int item = 0;
+        for (int n = 0; n < Count; ++n) {
+            while (!queue.try_pop(item)) std::this_thread::yield();
+            result += item;
+        }
+    });
+    producer.join();
+    consumer.join();
+    assert(result == 1LL * Count * (Count + 1) / 2);
+}
+\end{lstlisting}
+
+\subsection{Dlaczego kod jest poprawny?}
+
+Dla danych w~\code{buffer_} nie stosujemy operacji atomowych.
+Nie ma jednak konfliktowego dostępu bez synchronizacji, ponieważ:
+\begin{enumerate}
+\item przed odczytem komórki konsument otrzymuje informację o~zapisie
+      przez \code{head_.load(acquire)};
+\item przed ponownym nadpisaniem tej komórki producent otrzymuje
+      informację o~jej zwolnieniu przez \code{tail_.load(acquire)};
+\item każdy z~liczników ma jednego piszącego, więc nie potrzeba CAS
+      do aktualizowania \code{head_} ani \code{tail_}.
+\end{enumerate}
+
+Przykład zakłada, że operacji \code{try_push} nie wywołuje kilku
+producentów, a~\code{try_pop} kilku konsumentów, nawet jeśli
+same metody są dostępne publicznie. Złamane założenie SPSC
+powoduje utratę poprawności. Ograniczenia bufora, przepełnienie
+liczników i~kwestie typów niebanalnych wymagają osobnej analizy.
+Użyliśmy potęgi dwójki, żeby indeksowanie przez maskę pozostało
+poprawne także przy modularnym zawijaniu licznika bez znaku.
+
+\nota{Ten przykład jest edukacyjną, \emph{nieblokującą} konstrukcją
+w~sensie, że nie przejmuje mutexa, ale aktywne pętle producenta
+i~konsumenta mogą czekać dowolnie długo. Metody \code{try_push}
+i~\code{try_pop} są krótkie i~nie wykonują pętli CAS. Bez uzasadnienia
+własności użytych atomików na danej platformie nie deklarujemy
+silniejszej gwarancji wydajnościowej.}
+
+\section{Atomowa publikacja niezmiennych wersji danych}
+\label{sec:cpp16-snapshot}
+
+Wiele rzeczywistych aplikacji (konfiguracja serwera, słowniki,
+parametry modeli) posiada licznych czytelników i~rzadkich pisarzy.
+Dobrą architekturą bywa utworzenie nowej, niezmiennej wersji
+struktury i~jednorazowe opublikowanie wskaźnika do niej.
+W~C++20 można do tego wykorzystać specjalizację
+\code{std::atomic<std::shared_ptr<T>>}.
+
+\begin{lstlisting}[caption={Bezpieczny snapshot konfiguracji (C++20).}]
+#include <atomic>
+#include <cassert>
+#include <memory>
+#include <thread>
+
+struct Config {
+    int threshold;
+    double scale;
+};
+
+int main() {
+    using Ptr = std::shared_ptr<const Config>;
+    std::atomic<Ptr> current{
+        std::make_shared<const Config>(Config{10, 1.0})
+    };
+
+    std::jthread writer([&] {
+        Ptr next = std::make_shared<const Config>(Config{20, 2.0});
+        current.store(std::move(next), std::memory_order_release);
+    });
+    std::jthread reader([&] {
+        Ptr snap = current.load(std::memory_order_acquire);
+        assert((snap->threshold == 10 && snap->scale == 1.0) ||
+               (snap->threshold == 20 && snap->scale == 2.0));
+    });
+    writer.join();
+    reader.join();
+}
+\end{lstlisting}
+
+Czytelnik otrzymuje \emph{spójny} snapshot obu pól, a~stara wersja
+jest automatycznie utrzymywana przy życiu, dopóki istnieją do niej
+uchwyty \code{shared_ptr}. Nie oznacza to, że przechowywanie
+\code{shared_ptr} w~atomiku jest \emph{lock-free}. Referencyjne
+liczenie i~alokacje bywają istotnym kosztem przy bardzo częstych
+odczytach. Dla obciążenia z~dużą przewagą czytelników należy
+porównać to podejście z~\code{shared_mutex}, kopiowaniem małych
+struktur i~technikami RCU.
+
+\subsection{\code{std::atomic_ref}: synchronizacja istniejącego obiektu}
+
+\code{std::atomic_ref<T>} (C++20) pozwala wykonywać operacje atomowe
+na istniejącym, odpowiednio wyrównanym obiekcie typu \code{T}.
+Przydatne bywa przy interoperacyjności ze strukturami danych,
+które nie przechowują \code{std::atomic<T>} jako pola.
+
+\begin{lstlisting}[caption={Operacje atomowe na istniejącej zmiennej (C++20).}]
+#include <atomic>
+#include <cassert>
+#include <thread>
+
+int main() {
+    alignas(std::atomic_ref<int>::required_alignment) int counter = 0;
+    {
+        std::atomic_ref<int> shared_counter(counter);
+        auto add = [&] {
+            for (int i = 0; i < 10000; ++i)
+                shared_counter.fetch_add(1, std::memory_order_relaxed);
+        };
+        std::jthread a(add), b(add);
+        a.join();
+        b.join();
+    } // koniec zycia atomic_ref
+    assert(counter == 20000);
+}
+\end{lstlisting}
+
+Dopóki istnieje \code{atomic_ref} odnoszący się do obiektu, dostęp
+do tego obiektu należy realizować przez instancje \code{atomic_ref}
+--- nie tylko w~chwilach równoczesnego dostępu. Dlatego zwykłe
+odczytanie \code{counter} wykonujemy \emph{po} zakończeniu czasu
+życia referencji atomowej. Sam obiekt musi żyć dostatecznie długo,
+a~jego wyrównanie musi spełniać wymagania \code{required_alignment}.
+
+\section{Planowanie zadań: pule wątków, \emph{work stealing} i~\emph{backpressure}}
+\label{sec:cpp16-scheduling}
+
+Poza poprawną synchronizacją potrzebujemy rozsądnej strategii
+przypisywania prac do wątków. Wątek systemowy ma koszt utworzenia,
+przełączenia kontekstu i~utrzymania stosu. Z~tego powodu tysiące
+krótkich zadań nie powinny automatycznie oznaczać tysiąca wątków.
+
+\begin{description}[style=nextline]
+\item[\emph{Thread pool}]
+  Ustalona liczba wątków pobiera zadania z~kolejki. Ogranicza koszt
+  częstego tworzenia wątków i~może ograniczać równoległe obciążenie.
+\item[\emph{Work stealing}]
+  Każdy wątek ma własną kolejkę, a~bezczynny pracownik próbuje
+  przejąć część pracy od innych. Dobrze sprawdza się przy nierównych
+  czasach trwania podzadań. Wymaga ostrożnego protokołu synchronizacji
+  kolejek, szczególnie gdy korzystają z~nich różni producenci.
+\item[\emph{Backpressure}]
+  Mechanizm spowalniania producenta, gdy konsumenci nie nadążają.
+  Bez niego kolejka bez ograniczenia pojemności może zużyć całą pamięć.
+\item[\emph{Structured concurrency}]
+  Sposób organizacji zadań, w~którym ich czas życia, anulowanie i~błędy
+  pozostają związane z~zakresem nadrzędnej operacji. Sam \code{std::async}
+  nie implementuje kompletnego frameworka takiego stylu.
+\end{description}
+
+\subsection{Pula wątków: bezpieczne zamknięcie i~propagacja wyjątków}
+
+Następny przykład rozwija pulę z~rozdziału~1. Używa mutexa
+oraz zmiennej warunkowej. Łatwy dowód poprawności i~przewidywalne
+zachowanie przy zamykaniu są często ważniejsze niż
+niepotwierdzony \emph{lock-free}.
+
+\begin{lstlisting}[caption={Prosta pula wątków odprowadzająca kolejkę przed zamknięciem (C++20).}]
+#include <condition_variable>
+#include <functional>
+#include <future>
+#include <iostream>
+#include <memory>
+#include <mutex>
+#include <queue>
+#include <stdexcept>
+#include <thread>
+#include <type_traits>
+#include <utility>
+#include <vector>
+
+class ThreadPool {
+    std::mutex mutex_;
+    std::condition_variable cv_;
+    std::queue<std::function<void()>> jobs_;
+    bool closed_ = false;
+    std::vector<std::jthread> workers_;
+
+    void worker_loop() {
+        for (;;) {
+            std::function<void()> job;
+            {
+                std::unique_lock lock(mutex_);
+                cv_.wait(lock, [&] {
+                    return closed_ || !jobs_.empty();
+                });
+                if (closed_ && jobs_.empty()) return;
+                job = std::move(jobs_.front());
+                jobs_.pop();
+            }
+            job();  // packaged_task przechwyci wyjatek
+        }
+    }
+
+public:
+    explicit ThreadPool(unsigned count) {
+        if (count == 0) throw std::invalid_argument("count=0");
+        try {
+            for (unsigned i = 0; i < count; ++i)
+                workers_.emplace_back([this] { worker_loop(); });
+        } catch (...) {
+            close();  // zwolnij pracownikow przed rozwijaniem stosu
+            throw;
+        }
+    }
+    ThreadPool(const ThreadPool&) = delete;
+    ThreadPool& operator=(const ThreadPool&) = delete;
+    ~ThreadPool() { close(); }
+
+    void close() {
+        {
+            std::lock_guard lock(mutex_);
+            closed_ = true;
+        }
+        cv_.notify_all();
+    }
+
+    template<class F>
+    auto submit(F&& callable)
+        -> std::future<std::invoke_result_t<std::decay_t<F>&>> {
+        using R = std::invoke_result_t<std::decay_t<F>&>;
+        auto task = std::make_shared<std::packaged_task<R()>>(
+            std::forward<F>(callable)
+        );
+        auto result = task->get_future();
+        {
+            std::lock_guard lock(mutex_);
+            if (closed_) throw std::runtime_error("pool closed");
+            jobs_.emplace([task] { (*task)(); });
+        }
+        cv_.notify_one();
+        return result;
+    }
+};
+
+int main() {
+    ThreadPool pool(2);
+    auto a = pool.submit([] { return 40; });
+    auto b = pool.submit([] { return 2; });
+    std::cout << a.get() + b.get() << '\n'; // 42
+    pool.close(); // od tej chwili bez nowych zadan
+}
+\end{lstlisting}
+
+Ważne własności pokazanej implementacji:
+\begin{itemize}
+\item \code{close()} jest bezpieczne wobec równoległego \code{submit()}:
+      oba działania są serializowane przez ten sam mutex;
+\item po \code{close()} pracownicy \emph{kończą kolejkę}, a~dopiero
+      następnie opuszczają pętlę; destruktory \code{jthread} dołączają
+      pracowników, zanim zniszczone zostaną mutex i~kolejka;
+\item \code{packaged_task} zapisuje wartość lub wyjątek w~stanie
+      asynchronicznym, więc zwykłe wyjątki z~zadań nie wychodzą
+      bezpośrednio przez \code{worker_loop};
+\item ta minimalna pula nie ma ograniczenia długości kolejki,
+      priorytetów, terminów ani anulowania uruchomionych prac.
+\end{itemize}
+
+\nota{Nie wolno niszczyć takiej puli z~zadania wykonywanego w~tej
+samej puli: dołączenie własnego wątku prowadzi do błędu.
+Podobnie zadanie czekające na inne zadanie z~tej samej puli może
+zakleszczyć program, jeśli wszyscy pracownicy pozostają zajęci
+oczekiwaniem. Produkcyjny executor wymaga rozwiązań dla takich sytuacji.}
+
+\subsection{Kiedy potrzebny jest \emph{work stealing}?}
+
+Załóżmy, że przetwarzamy drzewo lub dzielimy dużą macierz na bloki.
+Część bloków kończy się po mikrosekundach, inne zajmują milisekundy.
+Statyczny przydział zadań może zostawić jeden wątek przeciążony,
+gdy inne nie mają już pracy. Przechwytywanie pracy pomiędzy lokalnymi
+kolejkami poprawia \emph{równoważenie obciążenia}.
+
+Typowy projekt stosuje:\begin{enumerate}
+\item właścicielski dostęp pracownika do jednego końca jego kolejki;
+\item kradzież elementów przez inne wątki z~drugiego końca;
+\item atomowe indeksy i~protokół obsługujący konflikt właściciela
+      ze złodziejem o~ostatni element;
+\item kontrolę czasu życia tablicy zadań oraz jej ewentualnej realokacji.
+\end{enumerate}
+
+Takie struktury są znacznie bardziej subtelne niż \code{std::deque}
+z~mutexem. W~praktyce warto użyć sprawdzonego executora/biblioteki,
+a~własną implementację traktować jako osobny, formalnie weryfikowany projekt.
+
+\section{Anulowanie, sygnały stopu i~punkty oczekiwania}
+\label{sec:cpp16-cancel}
+
+Kooperacyjne zatrzymywanie w~C++20 jest oparte na
+\code{std::stop_source}, \code{std::stop_token} i~\code{std::stop_callback}.
+Żądanie zatrzymania nie zabija wątku; umożliwia mu dobrowolne
+zakończenie po zweryfikowaniu stanu i~odpowiednim uporządkowaniu zasobów.
+
+\begin{lstlisting}[caption={Wybudzanie i anulowanie czekania (C++20).}]
+#include <condition_variable>
+#include <iostream>
+#include <mutex>
+#include <thread>
+
+int main() {
+    std::mutex mutex;
+    std::condition_variable_any cv;
+    bool ready = false;
+
+    std::jthread worker([&](std::stop_token stop) {
+        std::unique_lock lock(mutex);
+        bool completed = cv.wait(lock, stop, [&] { return ready; });
+        std::cout << (completed ? "ready\n" : "cancelled\n");
+    });
+
+    worker.request_stop();
+    worker.join();
+}
+\end{lstlisting}
+
+W~tym przeciążeniu \code{wait} zwraca wartość predykatu po zakończeniu
+czekania. Jeśli żądanie zatrzymania nastąpi przed spełnieniem
+predykatu, przykład wypisze \code{cancelled}. Jeśli stan zmieniłby
+się w~międzyczasie, wynik mógłby być inny. Zwykła
+\code{std::condition_variable} nie posiada w~C++20 odpowiednika
+tego przeciążenia z~\code{stop_token}.
+
+\subsection{Anulowanie i~bezpieczeństwo wyjątkowe}
+
+W~dobrym API warto określić, co dzieje się z~wynikiem po anulowaniu:
+\begin{itemize}
+\item czy zwracany jest częściowy wynik;
+\item czy do \code{future} trafia własny wyjątek oznaczający anulowanie;
+\item czy potrzebne jest odwrócenie skutków wcześniej wykonanych operacji;
+\item jak zapewnić, że wszystkie zależne zadania zostaną zakończone
+      przed zniszczeniem współdzielonych danych.
+\end{itemize}
+
+Żadne z~tych pytań nie ma jednej odpowiedzi dla wszystkich bibliotek.
+Sama metoda \code{future.wait_for()} nie anuluje zadań, a~korutyna
+z~rozdziału~15 wymaga mechanizmu propagacji żądania anulowania
+przez awaitery i~executor.
+
+\section{Fałszywe współdzielenie (\emph{false sharing}) i~cache coherence}
+\label{sec:cpp16-false-sharing}
+
+Dwa niezależne atomiki mogą być zapisane blisko siebie w~pamięci,
+tak że mieszczą się w~tej samej jednostce przenoszenia danych
+pomiędzy pamięciami podręcznymi. Wtedy zapis przez różne rdzenie
+może wymagać kosztownych transferów linii cache, choć z~punktu
+widzenia C++ nie ma wyścigu danych.
+
+\begin{lstlisting}[caption={Rozdzielenie intensywnie zapisywanych liczników (C++17).}]
+#include <atomic>
+#include <cstdint>
+#include <iostream>
+#include <new>
+#include <thread>
+
+struct alignas(std::hardware_destructive_interference_size) Counter {
+    std::atomic<std::uint64_t> value{0};
+};
+
+int main() {
+    Counter a, b;
+    auto increment = [](Counter& c) {
+        for (int i = 0; i < 100000; ++i)
+            c.value.fetch_add(1, std::memory_order_relaxed);
+    };
+    std::jthread first([&] { increment(a); });
+    std::jthread second([&] { increment(b); });
+    first.join();
+    second.join();
+    std::cout << a.value << ' ' << b.value << '\n';
+}
+\end{lstlisting}
+
+\code{std::hardware_destructive_interference_size} jest wskazówką
+implementacji dotyczącą rozdzielania obiektów często modyfikowanych
+przez różne wątki; w~praktyce jej obsługa zależy od kompilatora
+i~biblioteki standardowej. \code{alignas} może zwiększać zużycie
+pamięci, zatem nie należy bez pomiarów wyrównywać w~ten sposób
+każdego pola. Rozdział~10 omawia szerzej cache locality i~organizację
+danych AoS/SoA.
+
+\subsection{Co mierzyć przy ocenie skalowalności?}
+
+Pojedynczy czas wykonania jest mało informacyjny. Przy porównywaniu
+wersji jednowątkowej i~wielowątkowej warto mierzyć:
+\begin{itemize}
+\item przepustowość (operacje/sekundę), a~nie tylko opóźnienie
+      pojedynczego zadania;
+\item \emph{speedup} \(S(p)=T(1)/T(p)\), dla \(p\) wątków;
+\item rozkład opóźnień, np. medianę i~wysokie percentyle;
+\item liczbę alokacji, przełączeń kontekstu, braków w~cache i~konfliktów CAS;
+\item oddzielnie okres rozgrzewki oraz właściwy okres pomiarowy.
+\end{itemize}
+
+Według prawa Amdahla, jeśli część \(s\) programu musi pozostać
+sekwencyjna, to w~idealizacji
+\[
+S(p)\leq\frac{1}{s+\frac{1-s}{p}}.
+\]
+Wzór ten nie obejmuje kosztów synchronizacji, a~więc rzeczywiste
+przyspieszenie może być jeszcze niższe. Jednocześnie program
+z~dominującym kosztem dostępu do pamięci może nie skalować się
+nawet przy bardzo małej części sekwencyjnej.
+
+\section{Linearizowalność i~niezmienniki współdzielonych struktur}
+\label{sec:cpp16-linearizability}
+
+Dla współbieżnych kolekcji często potrzebujemy mocniejszej własności
+niż brak wyścigów danych: \emph{linearizowalności}.
+Operacja jest linearizowalna, jeśli można przypisać jej jeden
+umowny moment pomiędzy wywołaniem i~zakończeniem, w~którym
+wywołanie ma taki sam skutek jak operacja wykonana sekwencyjnie.
+
+Dla prostej atomowej inkrementacji punktem linearyzacji jest
+sam RMW. Dla kolejki algorytm jest bardziej subtelny:
+\begin{itemize}
+\item producent najpierw zapisuje komórkę, a~następnie publikuje
+      nowy \code{head};
+\item konsument najpierw odczytuje i~przetwarza komórkę, a~następnie
+      publikuje nowy \code{tail};
+\item sama komórka nie musi być atomowa, o~ile zachowana jest
+      właściwa synchronizacja i~protokół własności miejsca w~buforze.
+\end{itemize}
+
+W~algorytmach złożonych, np. z~dwoma atomikami \code{size} i~\code{head},
+każde z~pól może być wolne od wyścigu danych, ale ich jednoczesny
+odczyt nie musi stanowić spójnego snapshotu. Osobny \emph{niezmiennik}
+struktury wymaga własnego uzasadnienia.
+
+\subsection{Dlaczego prosty \emph{seqlock} nie wystarczy dla zwykłych danych?}
+
+Popularny pomysł polega na tym, że pisarz zwiększa licznik wersji
+przed i~po aktualizacji obiektu, a~czytelnik ponawia odczyt, jeżeli
+wersja zmieniła się podczas odczytu. Jeżeli pola obiektu są zwykłymi
+zmiennymi C++, czytelnik nadal może czytać je jednocześnie z~zapisem,
+co oznacza \emph{data race}. Ponowienie odczytu \emph{po fakcie}
+nie naprawia niezdefiniowanego zachowania, które już nastąpiło.
+
+Poprawny wariant dla przenośnego C++ musi zastosować odpowiednią
+synchronizację lub atomowe pola danych, a~nie tylko atomowy licznik
+wersji. Alternatywą jest pokazana wcześniej publikacja niezmiennych
+snapshotów.
+
+\section{Współbieżność a~parallel STL, Ranges i~OpenMP}
+\label{sec:cpp16-interop}
+
+Nie każda równoległa praca wymaga własnej kolejki czy atomowych
+liczników. Gdy zadanie polega na niezależnym przetwarzaniu elementów,
+lepszą abstrakcją może być algorytm równoległy lub dyrektywa OpenMP.
+
+\subsection{Polityki wykonania standardowych algorytmów}
+
+Nagłówek \code{<execution>} udostępnia od C++17 między innymi:
+\begin{description}[style=nextline]
+\item[\code{std::execution::seq}] Wykonanie sekwencyjne.
+\item[\code{std::execution::par}] Implementacja może wykonywać pracę
+      równolegle; nie daje gwarancji, że rzeczywiście użyje wielu wątków.
+\item[\code{std::execution::par_unseq}] Zezwala dodatkowo na
+      niesekwencyjne wykonywanie, w~tym wektoryzację; nakłada ważne
+      ograniczenia na wykonywane funkcje i~synchronizację.
+\end{description}
+
+\begin{lstlisting}[caption={Równoległa transformacja bez współdzielonych zapisów (C++17).}]
+#include <algorithm>
+#include <execution>
+#include <numeric>
+#include <vector>
+
+int main() {
+    std::vector<double> a(10000), b(a.size());
+    std::iota(a.begin(), a.end(), 0.0);
+    std::transform(std::execution::par,
+                   a.begin(), a.end(), b.begin(),
+                   [](double x) { return x * x; });
+}
+\end{lstlisting}
+
+Kod nie zakłada kolejności przetwarzania elementów. Wyjściowy zakres
+\code{b} nie nakłada się z~\code{a}, a~każde wywołanie funkcji
+zapisuje inny element. Rzeczywiste zrównoleglenie zależy od
+implementacji biblioteki standardowej i~konfiguracji środowiska;
+niektóre kompilacje wymagają dodatkowej biblioteki wykonawczej.
+
+\subsection{C++ i~OpenMP: dwa poziomy abstrakcji}
+
+OpenMP, omawiany szczegółowo w~rozdziale~1, umożliwia między innymi
+równoległe pętle, redukcje i~zależności pomiędzy zadaniami.
+W~obliczeniach numerycznych typowe rozwiązanie wygląda tak:
+
+\begin{lstlisting}[caption={Wektorowa redukcja z OpenMP; wymagane -fopenmp.}]
+#include <iostream>
+#include <vector>
+
+int main() {
+    const std::vector<double> x(100000, 1.0);
+    double sum = 0.0;
+
+    #pragma omp parallel for reduction(+:sum) schedule(static)
+    for (int i = 0; i < static_cast<int>(x.size()); ++i) {
+        sum += x[static_cast<std::size_t>(i)];
+    }
+    std::cout << sum << '\n';
+}
+\end{lstlisting}
+
+Kodowanie redukcji przez \code{reduction} pozwala uniknąć współdzielenia
+jednego licznika zapisywanego przez wszystkie wątki. Kolejność
+sumowania liczb zmiennoprzecinkowych może być odmienna niż przy
+obliczeniu sekwencyjnym, a~zatem wynik może różnić się przez
+zaokrąglenia. Liczba wątków i~harmonogram OpenMP mogą być
+kontrolowane m.in. przez \code{OMP_NUM_THREADS}, \code{OMP_SCHEDULE}
+i~funkcje biblioteczne OpenMP.
+
+\nota{Mieszanie pul wątków, OpenMP, równoległych algorytmów STL
+oraz zadań asynchronicznych może prowadzić do \emph{oversubscription}:
+liczba aktywnych wątków znacząco przewyższa dostępne zasoby CPU.
+Przy nakładaniu kilku warstw równoległości trzeba świadomie
+kontrolować budżet wątków i~mierzyć efekt końcowy.}
+
+\section{Diagnostyka: kompilatory, sanitizatory, testy przeciążeniowe}
+\label{sec:cpp16-testing}
+
+\subsection{Kompilacja i~uruchamianie przykładów}
+
+Dla przykładów wykorzystujących \code{std::jthread}, \code{atomic::wait}
+i~\code{atomic<shared_ptr<T>>} wybieramy tryb C++20:
+
+\begin{lstlisting}[language=bash,caption={Kompilacja wielowątkowego programu C++20.}]
+g++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -pthread file.cpp -o app
+./app
+\end{lstlisting}
+
+Dla przykładów OpenMP w~GCC lub odpowiednio skonfigurowanym Clangu:
+\begin{lstlisting}[language=bash,caption={Włączenie OpenMP.}]
+g++ -std=c++20 -O2 -Wall -Wextra -fopenmp file.cpp -o app
+./app
+\end{lstlisting}
+
+\subsection{ThreadSanitizer i~inne narzędzia}
+
+\emph{ThreadSanitizer} (TSan) potrafi wykrywać wiele wyścigów danych
+i~wybrane błędy synchronizacji w~uruchamianym programie:
+
+\begin{lstlisting}[language=bash,caption={Budowanie i uruchamianie z ThreadSanitizer.}]
+g++ -std=c++20 -O1 -g -pthread -fsanitize=thread file.cpp -o app_tsan
+./app_tsan
+\end{lstlisting}
+
+Nie wszystkie środowiska poprawnie wspierają TSan; szczególnie
+przy nietypowych bibliotekach wykonawczych, OpenMP i~własnych
+mechanizmach synchronizacji należy weryfikować zakres instrumentacji.
+AddressSanitizer i~UndefinedBehaviorSanitizer mogą dodatkowo wykrywać
+część błędów czasu życia oraz naruszeń zasad języka, lecz nie są
+zamiennikami TSan ani formalnego dowodu synchronizacji.
+
+\subsection{Jak testować algorytm współbieżny?}
+
+Dla poważniejszej struktury danych zaleca się następującą procedurę:
+\begin{enumerate}
+\item \textbf{Zdefiniuj kontrakt}: ilu producentów i~konsumentów,
+      dozwolone operacje oraz zasady zamknięcia i~niszczenia struktury.
+\item \textbf{Zidentyfikuj własność danych}: kto może zapisywać dane
+      w~każdej chwili; kiedy przechodzi własność konkretnej komórki.
+\item \textbf{Narysuj relacje}: wskaż atomik, który publikuje zapis
+      i~odczyt, który tę publikację odbiera.
+\item \textbf{Wskaż punkt linearyzacji}: jeśli API ma być linearizowalne,
+      określ, kiedy operacja staje się widoczna logicznie.
+\item \textbf{Przeanalizuj zakończenie}: co dzieje się przy anulowaniu,
+      wyjątku, opóźnieniu konsumenta i~niszczeniu obiektu.
+\item \textbf{Testuj wielokrotnie}: zmieniaj liczbę wątków, rozmiary
+      danych i~częstotliwość przełączeń; uruchamiaj TSan tam,
+      gdzie jest dostępny.
+\item \textbf{Benchmarkuj osobno}: włącz optymalizacje i~mierz
+      przy realistycznym obciążeniu, ale nie myl szybkiego testu
+      z~dowodem poprawności.
+\end{enumerate}
+
+\section{Typowe błędy i~zalecenia projektowe}
+\label{sec:cpp16-guidelines}
+
+\begin{center}
+\small
+\begin{tabularx}{\textwidth}{@{}lX@{}}
+\toprule
+\textbf{Błąd} & \textbf{Dlaczego jest groźny / co wybrać} \\
+\midrule
+\code{volatile} jako synchronizacja & Nie eliminuje \emph{data race};
+użyj mutexa lub atomików z~właściwym porządkiem. \\
+\code{relaxed} do publikacji zwykłych danych & Nie wytwarza
+relacji synchronizacji; zazwyczaj potrzebne \code{release/acquire}. \\
+Bezrefleksyjne \code{seq_cst} & Zwykle poprawniejsze niż źle
+dobrane słabsze porządki, ale nie zastąpi logicznego kontraktu obiektu. \\
+Kasowanie węzła po udanym CAS & Inny wątek może nadal używać
+wskaźnika; zaprojektuj odzyskiwanie pamięci. \\
+Dwa atomiki jako ,,jedna transakcja'' & Brak automatycznego
+atomowego snapshotu pary; użyj blokady lub niezmiennej wersji. \\
+\emph{Spinlock} dla długiej pracy & Prowadzi do rywalizacji
+o~CPU; zwykle użyj \code{std::mutex}. \\
+Nieograniczona kolejka zadań & Może zużyć pamięć; dodaj limit
+i~mechanizm \emph{backpressure}. \\
+Nadmierna liczba wątków & Konkurencja o~rdzenie i~cache;
+kontroluj równoległość i~profiluj. \\
+Mieszanie OpenMP i~własnej puli bez planu & Może prowadzić
+do \emph{oversubscription} i~spadku wydajności. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\subsection{Praktyczne reguły wyboru}
+
+\begin{itemize}
+\item \textbf{Mutex} wybieraj jako punkt wyjścia, jeśli współdzielisz
+      kilka powiązanych pól i~potrzebujesz łatwo sprawdzalnych niezmienników.
+\item \textbf{Atomik \code{relaxed}} jest właściwy dla prostego licznika
+      niezależnego od publikacji innych danych.
+\item \textbf{\code{release/acquire}} stosuj, gdy istnieje wyraźny
+      punkt przekazania danych lub własności pomiędzy wątkami.
+\item \textbf{Lock-free} rozważaj dopiero wtedy, gdy pomiary pokażą
+      realny koszt blokad, a~projekt ma przejrzysty dowód poprawności
+      oraz plan odzyskiwania pamięci.
+\item \textbf{OpenMP / parallel STL} wybieraj do operacji na niezależnych
+      elementach, redukcji i~równoległości danych.
+\item \textbf{Thread pool} wybieraj do dużej liczby krótkich zadań,
+      gdy potrzebujesz ograniczać liczbę wątków, priorytety lub
+      przepustowość; osobno zdefiniuj zasady zamykania.
+\end{itemize}
+
+\section*{Podsumowanie rozdziału}
+\addcontentsline{toc}{section}{Podsumowanie rozdziału}
+
+Zaawansowana współbieżność nie polega na mechanicznym zastępowaniu
+mutexów przez \code{std::atomic}. Najpierw trzeba określić
+\emph{własność danych i~kontrakt algorytmu}, następnie uzasadnić
+relacje \emph{happens-before} i~wyznaczyć punkty widoczności
+poszczególnych operacji. Dopiero wtedy warto wybierać porządki
+pamięciowe, typy kolejek, planistę i~sposób odzyskiwania pamięci.
+
+W~szczególności brak wyścigu danych nie oznacza jeszcze poprawności
+logicznej, a~nieblokujący dostęp do atomika nie gwarantuje
+nieblokującego ani szybkiego zachowania całego programu. Bezpieczna
+współbieżność to połączenie \emph{modelu formalnego}, \emph{kontroli
+czasu życia} i~\emph{rzetelnego pomiaru}.
+
+\section*{Literatura i dokumentacja}
+\addcontentsline{toc}{section}{Literatura i dokumentacja}
+\begin{itemize}
+\item Anthony Williams, \emph{C++ Concurrency in Action}, wyd.~2,
+      Manning, 2019.
+\item ISO/IEC 14882:2020, rozdziały o~modelu pamięci, wątkach,
+      atomikach i~synchronizacji.
+\item \url{https://en.cppreference.com/w/cpp/atomic/memory_order}
+      --- porządki pamięci i~relacje synchronizacji.
+\item \url{https://en.cppreference.com/w/cpp/atomic/atomic}
+      --- typy atomowe i~operacje RMW.
+\item \url{https://en.cppreference.com/w/cpp/atomic/atomic_ref}
+      --- atomowe odwołania do istniejących obiektów.
+\item \url{https://en.cppreference.com/w/cpp/thread/jthread}
+      --- \code{jthread}, czas życia i~kooperacyjne zatrzymywanie.
+\item OpenMP Architecture Review Board,
+      \emph{OpenMP Application Programming Interface};
+      \url{https://www.openmp.org/specifications/}.
+\end{itemize}

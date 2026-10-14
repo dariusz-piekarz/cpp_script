@@ -1,0 +1,850 @@
+% ROZDZIAŁ 2 -- fragment do dołączenia do głównego skryptu.
+% W preambule dokumentu umieść:
+% \usepackage{listings}
+% \lstset{
+%   language=C++,
+%   basicstyle=\ttfamily\small,
+%   columns=fullflexible,
+%   keepspaces=true,
+%   breaklines=true,
+%   showstringspaces=false,
+%   frame=single,
+%   tabsize=4
+% }
+% Przykładowe programy zakładają C++20, o ile nie podano inaczej.
+
+\chapter{Specyfikatory i kwalifikatory deklaracji w C++}
+\label{chap:specyfikatory-cpp}
+
+\section{Wprowadzenie: czym właściwie są \texttt{static}, \texttt{const} i \texttt{inline}?}
+
+Słowa kluczowe \texttt{static}, \texttt{extern}, \texttt{inline}, \texttt{const},
+\texttt{constexpr} i podobne nie są jednym rodzajem ``modyfikatorów''.
+Mogą określać różne, w znacznej mierze niezależne własności deklaracji:
+\begin{itemize}
+    \item \emph{czas przechowywania} obiektu (\emph{storage duration}), czyli
+    jak długo istnieje jego pamięć;
+    \item \emph{łączność} nazwy (\emph{linkage}), czyli czy ta sama nazwa
+    może oznaczać ten sam byt w różnych jednostkach translacji;
+    \item \emph{modyfikowalność} obiektu lub dostępu przez dany typ;
+    \item \emph{możliwość obliczenia wyrażenia podczas kompilacji};
+    \item \emph{reguły wielokrotnego definiowania} funkcji lub zmiennej;
+    \item \emph{własności funkcji i metod}, np. zakaz niejawnej konwersji
+    albo gwarancje dotyczące wyjątków.
+\end{itemize}
+
+\paragraph{Jednostka translacji.}
+W uproszczeniu plik \texttt{.cpp} po rozwinięciu dyrektyw
+\texttt{\#include} tworzy jednostkę translacji
+(\emph{translation unit}, TU). Plik nagłówkowy bywa włączany do wielu
+jednostek translacji, dlatego umieszczanie w nim definicji wymaga uwagi.
+
+\paragraph{Czas przechowywania.}
+Rozróżniamy w szczególności:
+\begin{itemize}
+    \item \emph{automatyczny} --- zwykle zmienne lokalne, tworzone przy
+    wejściu w odpowiedni zakres i niszczone przy jego opuszczaniu;
+    \item \emph{statyczny} --- obiekt istnieje przez czas działania programu;
+    \item \emph{wątkowy} --- oddzielny obiekt istnieje dla każdego wątku;
+    \item \emph{dynamiczny} --- czas życia kontrolowany jawnie lub przez
+    obiekty zarządzające zasobem (np. \texttt{std::unique\_ptr}).
+\end{itemize}
+
+\paragraph{Łączność.}
+Nazwa może nie mieć łączności (typowo zmienna lokalna), mieć
+\emph{łączność wewnętrzną} (\emph{internal linkage}: dostępna jako ten
+sam byt tylko w obrębie TU) albo \emph{łączność zewnętrzną}
+(\emph{external linkage}: może odnosić się do jednego bytu w wielu TU).
+C++20 wprowadza również łączność modułową; w tym rozdziale zajmujemy się
+głównie klasycznym modelem plików nagłówkowych i źródłowych.
+
+\section{\texttt{const}: zakaz modyfikacji przez dany dostęp}
+
+Deklaracja \texttt{const} kwalifikuje typ. Dla obiektu oznacza, że
+nie wolno zmieniać jego wartości przez dostęp, w którym typ jest
+\texttt{const} (z uwzględnieniem szczególnych zasad np. \texttt{mutable}).
+Samo \texttt{const} \emph{nie gwarantuje} obliczenia wartości w czasie kompilacji.
+
+\begin{lstlisting}
+int read_value();
+
+void example() {
+    const int a = 10;
+    // a = 11;              // error: a is const
+
+    const int b = read_value();  // OK: runtime initialization
+    int c = read_value();
+    c += b;                      // OK: c is mutable
+}
+\end{lstlisting}
+
+\subsection{Wskaźniki, referencje i pozycja \texttt{const}}
+
+Różnica między kwalifikacją wskaźnika i wskazywanego obiektu jest
+fundamentalna:
+
+\begin{lstlisting}
+int a = 1;
+int b = 2;
+
+const int* p = &a;  // pointer to const int
+p = &b;             // OK: pointer can change
+// *p = 3;          // error: pointee is const through p
+
+int* const q = &a;  // const pointer to int
+*q = 3;             // OK: a can change
+// q = &b;          // error: pointer is const
+
+const int* const r = &a;  // both are const through r
+const int& ref = a;      // read-only access through ref
+\end{lstlisting}
+
+\paragraph{Argumenty i metody.}
+Dla dużych obiektów często używamy \texttt{const T\&}, aby uniknąć
+kopiowania i zadeklarować brak modyfikacji przez referencję.
+Kwalifikator \texttt{const} za listą parametrów metody odnosi się
+do obiektu \texttt{*this}:
+
+\begin{lstlisting}
+#include <string>
+
+class Person {
+    std::string name_;
+public:
+    explicit Person(std::string name) : name_(name) {}
+
+    const std::string& name() const { return name_; }
+    void rename(std::string s) { name_ = s; }
+};
+\end{lstlisting}
+
+\paragraph{Kiedy stosować?}
+Używaj \texttt{const} dla wartości, wskaźników, referencji i metod,
+jeśli modyfikacja przez dany interfejs nie powinna być dozwolona.
+Nie używaj go jako zamiennika \texttt{constexpr}: zwykła stała
+zainicjalizowana wynikiem funkcji może być wyznaczona dopiero podczas
+wykonywania programu.
+
+\section{\texttt{constexpr}: stałe i funkcje dostępne dla obliczeń stałych}
+
+\texttt{constexpr} dla zmiennej wymaga inicjalizacji nadającej się
+do obliczenia jako wyrażenie stałe; taka zmienna jest kwalifikowana
+\texttt{const}. Dla funkcji \texttt{constexpr} oznacza \emph{możliwość}
+wywołania w kontekście wymagającym wyniku obliczanego w czasie kompilacji,
+a nie obowiązek obliczenia każdego wywołania podczas kompilacji.
+
+\begin{lstlisting}
+#include <array>
+
+constexpr int square(int x) {
+    return x * x;
+}
+
+int read_value();
+
+void example() {
+    constexpr int n = square(5);    // constant expression
+    std::array<int, n> data{};     // valid array extent
+
+    int x = read_value();
+    int y = square(x);             // runtime call is valid
+
+    // constexpr int z = square(x);  // error: x not constant
+    (void)data;
+    (void)y;
+}
+\end{lstlisting}
+
+\paragraph{Ważne rozróżnienie.}
+Zwykle \texttt{const int n = 5;} także może uczestniczyć w wyrażeniach
+stałych, bo spełnia odpowiednie reguły języka; nie oznacza to jednak,
+że \emph{każda} zmienna \texttt{const} jest stała czasu kompilacji.
+\texttt{constexpr} wyraża ten zamiar jednoznacznie i jest sprawdzany
+przez kompilator.
+
+\paragraph{Kiedy stosować?}
+Używaj \texttt{constexpr}, gdy wartość ma być wykorzystywana jako stała
+czasu kompilacji, np. do rozmiarów tablic \texttt{std::array} i argumentów
+szablonów. Nadaje się także do \texttt{static\_assert}. Oznaczaj nim również
+funkcje, które naturalnie nadają się zarówno do obliczeń stałych,
+jak i zwykłych wywołań.
+
+\subsection{\texttt{if constexpr} (od C++17)}
+
+To osobna konstrukcja sterująca, typowo stosowana w szablonach.
+W odróżnieniu od zwykłego \texttt{if} może odrzucić gałąź podczas
+instancjacji szablonu:
+
+\begin{lstlisting}
+#include <type_traits>
+
+template<class T>
+const char* category() {
+    if constexpr (std::is_integral_v<T>) {
+        return "integral";
+    } else {
+        return "non-integral";
+    }
+}
+\end{lstlisting}
+
+\section{\texttt{consteval} i \texttt{constinit} (od C++20)}
+
+\subsection{\texttt{consteval}: wywołanie wymagające stałej ewaluacji}
+
+Funkcja \texttt{consteval} jest funkcją \emph{natychmiastową}
+(\emph{immediate function}). Wywołanie, które nie należy do szczególnego
+kontekstu natychmiastowego, musi być wyrażeniem stałym.
+W typowym kodzie oznacza to, że nie można przekazać jej danych znanych
+dopiero podczas działania programu.
+
+\begin{lstlisting}
+consteval int cube(int x) {
+    return x * x * x;
+}
+
+int read_value();
+
+void example() {
+    constexpr int a = cube(3);  // OK
+    int b = cube(4);            // OK: call evaluated as constant
+    int x = read_value();
+    // int c = cube(x);         // error: x not constant
+    (void)b;
+    (void)x;
+}
+\end{lstlisting}
+
+\texttt{consteval} wybieraj wtedy, kiedy wywołanie \emph{musi}
+być obliczone w kontekście stałym; nie jest to ogólny przepis
+na szybsze wykonywanie programu.
+
+\subsection{\texttt{constinit}: gwarancja inicjalizacji statycznej}
+
+\texttt{constinit} dotyczy zmiennych o statycznym lub wątkowym czasie
+przechowywania. Wymusza inicjalizację statyczną, a więc wyklucza
+inicjalizację dynamiczną. \emph{Nie czyni zmiennej stałą}:
+
+\begin{lstlisting}
+constexpr int twice(int x) { return 2 * x; }
+
+constinit int global_count = twice(10);
+
+void update() {
+    global_count += 1;        // OK: mutable variable
+}
+
+int read_value();
+// constinit int bad = read_value();  // error: dynamic init
+\end{lstlisting}
+
+Nie wolno łączyć \texttt{constinit} i \texttt{constexpr} w tej samej
+deklaracji. \texttt{constinit} ma sens np. dla mutowalnego stanu
+globalnego, który musi być inicjalizowany bez inicjalizacji dynamicznej.
+Nie rozwiązuje natomiast problemów synchronizacji dostępu wielu wątków.
+
+\section{\texttt{static}: trzy różne zastosowania}
+
+Znaczenie \texttt{static} zależy od miejsca deklaracji. Jest to jedno
+z najczęstszych źródeł nieporozumień.
+
+\subsection{Nazwa w przestrzeni nazw: łączność wewnętrzna}
+
+W przestrzeni nazw (w tym globalnej) \texttt{static} nadaje nazwie
+łączność wewnętrzną. Definicja umieszczona w dwóch plikach
+\texttt{.cpp} opisuje wtedy dwa różne byty.
+
+\begin{lstlisting}
+// file: first.cpp
+static int cache_size = 100;
+static int helper(int x) { return x + 1; }
+
+// file: second.cpp
+static int cache_size = 200;  // a different variable
+\end{lstlisting}
+
+We współczesnym C++ często preferuje się \emph{anonimową przestrzeń nazw}
+dla lokalnych szczegółów implementacji:
+
+\begin{lstlisting}
+// implementation.cpp
+namespace {
+    int cache_size = 100;
+    int helper(int x) { return x + 1; }
+}
+\end{lstlisting}
+
+\paragraph{Czego unikać?}
+Nie definiuj \texttt{static} zmiennej w nagłówku z zamiarem stworzenia
+\emph{jednego} wspólnego obiektu. Każda TU otrzyma swoją instancję.
+Jeżeli celem jest wspólny obiekt w nagłówku, rozważ \texttt{inline}
+(od C++17), opisane dalej.
+
+\subsection{Zmienna lokalna: czas przechowywania statyczny}
+
+Wewnątrz funkcji \texttt{static} nie nadaje nazwie łączności zewnętrznej
+ani wewnętrznej: lokalna nazwa nadal nie ma łączności. Zmienia natomiast
+czas przechowywania obiektu. Inicjalizacja lokalnej zmiennej statycznej,
+jeśli nie została wykonana wcześniej, następuje przy pierwszym przejściu
+sterowania przez jej deklarację.
+
+\begin{lstlisting}
+int next_id() {
+    static int counter = 0;
+    return ++counter;
+}
+
+// next_id() returns 1, then 2, then 3, ...
+\end{lstlisting}
+
+Od C++11 jednorazowa inicjalizacja lokalnej zmiennej statycznej jest
+bezpieczna wobec współbieżności: tylko jeden wątek przeprowadza
+inicjalizację, a pozostałe odpowiednio czekają. \emph{Nie wynika z tego},
+że późniejsze modyfikacje są bezpieczne. Przy wywołaniach równoległych
+powyższe \texttt{++counter} może powodować wyścig danych.
+
+\begin{lstlisting}
+#include <atomic>
+
+int next_id_thread_safe() {
+    static std::atomic<int> counter{0};
+    return counter.fetch_add(1, std::memory_order_relaxed) + 1;
+}
+\end{lstlisting}
+
+\paragraph{Kiedy stosować?}
+Lokalna \texttt{static} jest dobra dla stanu należącego do funkcji
+lub obiektu tworzonego leniwie przy pierwszym użyciu. Unikaj jej,
+jeśli miałaby ukrywać zależności, utrudniać testy lub tworzyć
+współdzielony mutowalny stan bez synchronizacji.
+
+\subsection{Składowa klasy: wspólna dla wszystkich obiektów}
+
+Statyczne pola klasy należą do klasy, a nie do każdej instancji
+oddzielnie. Statyczna metoda nie ma wskaźnika \texttt{this}; dlatego
+nie może bezpośrednio odwoływać się do niestatycznych pól.
+
+\begin{lstlisting}
+#include <cstddef>
+
+struct Config {
+    inline static int attempts = 0;          // C++17
+    static constexpr std::size_t limit = 256; // inline since C++17
+
+    static void record_attempt() {
+        ++attempts;
+    }
+};
+
+void example() {
+    Config::record_attempt();
+    auto n = Config::limit;
+    (void)n;
+}
+\end{lstlisting}
+
+Przed C++17 zwykłe statyczne pole niestałe deklarowano w klasie,
+a definiowano raz poza nią:
+
+\begin{lstlisting}
+// counter.hpp
+struct Counter {
+    static int value;
+};
+
+// counter.cpp
+#include "counter.hpp"
+int Counter::value = 0;
+\end{lstlisting}
+
+Od C++17 \texttt{inline static} pozwala na definicję z inicjalizacją
+bezpośrednio w klasie. Pole \texttt{static constexpr} jest od C++17
+niejawnie \texttt{inline} i nie wymaga osobnej definicji poza klasą.
+W starszych standardach dodatkowa definicja bywała potrzebna przy
+\emph{odr-use}, np. przy pobieraniu adresu.
+
+\section{\texttt{extern}: deklaracja bytu zdefiniowanego gdzie indziej}
+
+Typowy wzorzec to deklaracja w pliku nagłówkowym oraz \emph{jedna}
+definicja w pliku źródłowym. \texttt{extern} w takiej deklaracji
+wskazuje, że nazwa może odnosić się do bytu z łącznością zewnętrzną;
+nie alokuje nowego obiektu.
+
+\begin{lstlisting}
+// config.hpp
+#pragma once
+extern int connection_count;
+extern const int max_connections;
+
+// config.cpp
+#include "config.hpp"
+int connection_count = 0;
+const int max_connections = 64;
+
+// main.cpp
+#include "config.hpp"
+void connect() {
+    if (connection_count < max_connections)
+        ++connection_count;
+}
+\end{lstlisting}
+
+Ponieważ deklaracja w \texttt{config.cpp} zawiera wcześniejsze
+\texttt{extern}, definicja tej zmiennej ma łączność zewnętrzną.
+Natomiast samodzielna definicja zmiennej typu \texttt{const int}
+na poziomie przestrzeni nazw ma domyślnie łączność wewnętrzną
+(w klasycznym kodzie bez modułów).
+
+\paragraph{Uwaga na definicje.}
+Zapis \texttt{extern int x = 5;} \emph{jest definicją}, gdy występuje
+na poziomie przestrzeni nazw: inicjalizator zmienia znaczenie deklaracji.
+Dlatego nie umieszczamy takiego zapisu w zwykłym nagłówku dołączanym
+do wielu TU.
+
+\subsection{Dlaczego \texttt{extern const} nie zastąpi \texttt{constexpr}?}
+
+\begin{lstlisting}
+// constants.hpp
+extern const int array_size;
+
+// constants.cpp
+#include "constants.hpp"
+const int array_size = 16;
+
+// client.cpp
+#include "constants.hpp"
+// std::array<int, array_size> a;  // invalid: not constant here
+\end{lstlisting}
+
+Inna TU nie widzi inicjalizatora, więc nie może wykorzystywać tej
+zmiennej jako znanej stałej szablonowej. Jeśli wartość musi być
+stała czasu kompilacji i wspólna w wielu TU, od C++17 zwykle
+wybieramy \texttt{inline constexpr} w nagłówku.
+
+\subsection{\texttt{extern "C"}: łączność językowa}
+
+Jest to inne zastosowanie słowa \texttt{extern}: określa
+\emph{łączność językową}, np. przy współpracy z biblioteką C.
+
+\begin{lstlisting}
+extern "C" int c_library_function(int);
+\end{lstlisting}
+
+Nie oznacza ono, że wywołanie funkcji ma semantykę języka C;
+przede wszystkim dotyczy zgodności łączenia i typu funkcji.
+
+\section{\texttt{inline}: dozwolone definicje w wielu TU}
+
+Historycznie \texttt{inline} sugerowało wstawienie ciała funkcji
+w miejsce wywołania, ale \emph{nie wymusza} takiej optymalizacji.
+Najważniejsza współczesna rola polega na odpowiednich regułach
+jednej definicji (\emph{One Definition Rule}, ODR).
+
+\subsection{Funkcje \texttt{inline}}
+
+Definicja funkcji \texttt{inline} może znaleźć się w wielu TU,
+np. przez dołączenie nagłówka, jeśli spełnione są wymagania ODR,
+w szczególności zgodność definicji. Dla funkcji \texttt{inline}
+o łączności zewnętrznej wszystkie takie definicje odnoszą się
+do jednej funkcji (w tym do tego samego adresu).
+
+\begin{lstlisting}
+// math.hpp
+#pragma once
+inline int add(int a, int b) {
+    return a + b;
+}
+\end{lstlisting}
+
+Gdybyśmy usunęli \texttt{inline} i dołączyli nagłówek do dwóch
+\texttt{.cpp}, mielibyśmy niedozwolone wielokrotne definicje zwykłej
+funkcji o łączności zewnętrznej.
+
+Funkcje zdefiniowane w obrębie definicji klasy są zazwyczaj niejawnie
+\texttt{inline} (z zastrzeżeniem szczególnych reguł modułów C++20).
+Funkcje \texttt{constexpr} i \texttt{consteval} też są niejawnie
+\texttt{inline} przy pierwszej deklaracji.
+
+\subsection{Zmienne \texttt{inline} (od C++17)}
+
+Zmienna \texttt{inline} zdefiniowana w nagłówku może oznaczać
+\emph{jeden wspólny obiekt} w wielu TU:
+
+\begin{lstlisting}
+// state.hpp
+#pragma once
+#include <atomic>
+
+inline std::atomic<int> requests{0};
+inline constexpr int buffer_size = 4096;
+
+inline int register_request() {
+    return requests.fetch_add(1, std::memory_order_relaxed) + 1;
+}
+\end{lstlisting}
+
+To praktyczna podstawa bibliotek \emph{header-only}. Na poziomie
+przestrzeni nazw zmienna \texttt{inline constexpr} ma zazwyczaj
+łączność zewnętrzną. Sama zmienna \texttt{constexpr} ma zaś
+domyślnie łączność wewnętrzną.
+
+\paragraph{Ważne: \texttt{static inline} to nie to samo.}
+Na poziomie przestrzeni nazw \texttt{static inline} \texttt{int x = 0;}
+ma łączność wewnętrzną: każda TU posiada własne \texttt{x}.
+Dodanie \texttt{inline} nie zmienia tego w jeden globalny obiekt.
+
+\subsection{Reguła ODR w praktyce}
+
+\begin{itemize}
+    \item Zwykła funkcja lub zmienna o łączności zewnętrznej:
+    zasadniczo jedna definicja w całym programie.
+    \item Funkcja \texttt{inline}, zmienna \texttt{inline}, a także
+    odpowiednio zdefiniowane szablony: dozwolone definicje w wielu TU,
+    z dodatkowymi wymaganiami co do ich identyczności.
+    \item Sama deklaracja w nagłówku jest zwykle bezpieczna;
+    problem dotyczy definicji.
+\end{itemize}
+
+\section{Łączenie specyfikatorów: najważniejsze przypadki}
+
+Poniższe zapisy nie są wzajemnie zamienne:
+
+\begin{lstlisting}
+const int a = 7;                // const; namespace: internal linkage
+constexpr int b = 7;            // compile-time const; internal linkage
+inline constexpr int c = 7;     // C++17: shared across TUs
+static int d = 7;               // namespace: internal linkage
+static constexpr int e = 7;     // compile-time; internal linkage
+inline int f = 7;               // C++17: one shared object
+extern int g;                   // declaration, definition elsewhere
+extern const int h;             // declaration, definition elsewhere
+constinit int i = 7;            // C++20: static init, mutable
+static constinit int j = 7;     // C++20: internal linkage
+\end{lstlisting}
+
+\noindent W powyższym przykładzie zakładamy, że wszystkie deklaracje
+znajdują się na poziomie przestrzeni nazw, poza modułami nazwanymi.
+W rzeczywistym projekcie \texttt{g} i \texttt{h} muszą mieć definicje,
+jeśli są odpowiednio używane; nie należy też kopiować wielu definicji
+\texttt{i} do nagłówków.
+
+\begin{center}
+\small
+\renewcommand{\arraystretch}{1.22}
+\begin{tabular}{|p{0.24\textwidth}|p{0.31\textwidth}|p{0.34\textwidth}|}
+\hline
+\textbf{Konstrukcja} & \textbf{Najważniejsza cecha} & \textbf{Typowe zastosowanie} \\
+\hline
+\texttt{const} & Brak modyfikacji przez dany dostęp & Parametry, referencje, stałe wartości \\
+\hline
+\texttt{constexpr} & Możliwość użycia wyniku jako wyrażenia stałego & Parametry szablonów, rozmiary, funkcje obliczeniowe \\
+\hline
+\texttt{consteval} & Wymagana stała ewaluacja wywołania & Walidacja i generowanie stałych przy kompilacji \\
+\hline
+\texttt{constinit} & Zakaz inicjalizacji dynamicznej & Mutowalny stan o inicjalizacji statycznej \\
+\hline
+\texttt{static} lokalne & Jeden obiekt o statycznym czasie przechowywania & Leniwy stan funkcji \\
+\hline
+\texttt{static} globalne & Łączność wewnętrzna & Szczegóły implementacji w \texttt{.cpp} \\
+\hline
+\texttt{static} w klasie & Składowa wspólna dla instancji & Liczniki, konfiguracja klasy \\
+\hline
+\texttt{extern} & Deklaracja nazwy odnoszącej się do innej definicji & Podział \texttt{.hpp}/\texttt{.cpp} \\
+\hline
+\texttt{inline} & Szczególne reguły wielokrotnych definicji & Funkcje i zmienne w nagłówkach \\
+\hline
+\end{tabular}
+\end{center}
+
+\section{\texttt{thread\_local}: osobny obiekt dla każdego wątku}
+
+\texttt{thread\_local} oznacza wątkowy czas przechowywania. Każdy
+wątek posiada własną instancję obiektu, więc modyfikacje tej instancji
+nie są współdzielone z innymi wątkami.
+
+\begin{lstlisting}
+int next_local_id() {
+    thread_local int id = 0;
+    return ++id;
+}
+\end{lstlisting}
+
+Różnica względem \texttt{static int id = 0;} jest istotna:
+\texttt{static} daje jedną instancję współdzieloną przez wątki,
+\texttt{thread\_local} --- po jednej na wątek.
+
+Na poziomie przestrzeni nazw można użyć \texttt{static thread\_local}
+(dla łączności wewnętrznej) albo \texttt{extern thread\_local}
+(w deklaracji obiektu zdefiniowanego w innym TU).
+
+\paragraph{Kiedy stosować?}
+Dla stanu rzeczywiście związanego z wątkiem, np. lokalnego generatora
+lub bufora roboczego. Nie jest to ogólny zamiennik blokad i nie nadaje
+się do danych, które muszą być wspólne między wątkami.
+
+\section{\texttt{mutable} i \texttt{volatile}: dwa inne rodzaje kwalifikacji}
+
+\subsection{\texttt{mutable}: kontrolowana modyfikacja wewnątrz obiektu stałego}
+
+\texttt{mutable} dotyczy niestatycznych pól klasy. Pozwala modyfikować
+takie pole nawet w metodzie \texttt{const}. Typowy przypadek to blokada,
+która jest szczegółem technicznym i nie stanowi logicznego stanu obiektu:
+
+\begin{lstlisting}
+#include <mutex>
+
+class SafeCounter {
+    mutable std::mutex mutex_;
+    int value_ = 0;
+
+public:
+    void increment() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        ++value_;
+    }
+
+    int value() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return value_;
+    }
+};
+\end{lstlisting}
+
+Nie stosuj \texttt{mutable} tylko po to, aby obchodzić prawidłowo
+zaprojektowany interfejs \texttt{const}. Sam \texttt{mutable}
+nie zapewnia bezpieczeństwa wątkowego.
+
+\subsection{\texttt{volatile}: nie jest mechanizmem synchronizacji}
+
+\texttt{volatile} służy do określonych sytuacji, w których dostępy
+do obiektu mają być obserwowalnymi operacjami (np. w pewnych
+zastosowaniach niskopoziomowych). Nie zapewnia atomowości,
+porządkowania pamięci ani braku wyścigów danych w C++.
+
+\begin{lstlisting}
+// Not a thread-safe counter:
+volatile int wrong_counter = 0;
+
+// For concurrent increments, use e.g.:
+#include <atomic>
+std::atomic<int> correct_counter{0};
+\end{lstlisting}
+
+Dla synchronizacji wątków stosuj \texttt{std::atomic}, muteksy i inne
+narzędzia współbieżności, a nie \texttt{volatile}.
+
+\section{\texttt{auto} i \texttt{decltype(auto)}: dedukcja typu}
+
+We współczesnym C++ \texttt{auto} w deklaracji zmiennej z inicjalizatorem
+włącza dedukcję typu. Dedukcja przez wartość odrzuca
+najwyższy poziom \texttt{const} oraz referencyjność wyrażenia.
+
+Natomiast \texttt{decltype(auto)} zachowuje semantykę \texttt{decltype}.
+
+\begin{lstlisting}
+int& shared_value() {
+    static int n = 10;
+    return n;
+}
+
+void example() {
+    const int k = 4;
+    auto a = k;             // int (copy)
+    const auto b = k;       // const int
+
+    auto x = shared_value();           // int: copy
+    decltype(auto) y = shared_value(); // int&: reference
+    y = 20;                            // updates shared state
+    (void)a;
+    (void)b;
+    (void)x;
+}
+\end{lstlisting}
+
+Dedukcja typu z \texttt{auto} poprawia czytelność, zwłaszcza
+przy iteratorach i rozbudowanych typach. Nie należy jednak
+niezauważenie tracić referencji, gdy kod wymaga operowania
+na oryginalnym obiekcie. Wtedy używaj np. \texttt{auto\&} lub
+\texttt{const auto\&}.
+
+\section{Powiązane specyfikatory metod i funkcji}
+
+Nie są to specyfikatory czasu przechowywania, lecz często występują
+obok poprzednich słów kluczowych:
+
+\begin{lstlisting}
+#include <cstddef>
+
+struct Base {
+    virtual ~Base() = default;
+    virtual int evaluate() const noexcept { return 1; }
+};
+
+struct Derived final : Base {
+    int evaluate() const noexcept override { return 2; }
+};
+
+struct Index {
+    explicit Index(std::size_t x) : value(x) {}
+    std::size_t value;
+};
+
+[[nodiscard]] int compute_result() { return 42; }
+\end{lstlisting}
+
+\begin{itemize}
+    \item \texttt{explicit} blokuje wybrane niejawne konwersje
+    przez konstruktory i operatory konwersji;
+    \item \texttt{virtual} umożliwia dynamiczny polimorfizm,
+    \texttt{override} pozwala sprawdzić, czy metoda rzeczywiście
+    nadpisuje metodę bazową, a \texttt{final} zabrania dalszego
+    nadpisania metody lub dziedziczenia po klasie;
+    \item \texttt{noexcept} deklaruje funkcję nierzucającą wyjątków
+    (naruszenie tej gwarancji prowadzi do \texttt{std::terminate});
+    \item \texttt{[[nodiscard]]} pozwala kompilatorowi ostrzegać,
+    gdy wynik został zignorowany.
+
+    Atrybut \texttt{[[maybe\_unused]]} pozwala ograniczyć
+    ostrzeżenia o nieużywanych bytach.
+\end{itemize}
+
+\section{Praktyczna organizacja plików: przykład całościowy}
+
+Rozważmy licznik wspólny dla programu, stała kompilacyjna
+oraz funkcję dostępną z kilku TU:
+
+\begin{lstlisting}
+// statistics.hpp
+#pragma once
+#include <atomic>
+#include <cstddef>
+
+inline constexpr std::size_t block_size = 1024;
+extern std::atomic<unsigned> total_jobs;
+
+inline unsigned completed_jobs() {
+    return total_jobs.load(std::memory_order_relaxed);
+}
+\end{lstlisting}
+
+\begin{lstlisting}
+// statistics.cpp
+#include "statistics.hpp"
+
+std::atomic<unsigned> total_jobs{0};
+\end{lstlisting}
+
+\begin{lstlisting}
+// worker.cpp
+#include "statistics.hpp"
+
+void do_one_job() {
+    total_jobs.fetch_add(1, std::memory_order_relaxed);
+}
+\end{lstlisting}
+
+\begin{lstlisting}
+// main.cpp
+#include "statistics.hpp"
+#include <iostream>
+
+void do_one_job();
+
+int main() {
+    do_one_job();
+    std::cout << block_size << " " << completed_jobs() << '\n';
+}
+\end{lstlisting}
+
+Kompilacja przykładowa:
+\begin{lstlisting}
+g++ -std=c++20 -Wall -Wextra -pedantic \
+    main.cpp worker.cpp statistics.cpp -o program
+\end{lstlisting}
+
+Mamy tu jedną definicję \texttt{total\_jobs} w \texttt{statistics.cpp},
+jedną stałą \texttt{block\_size} udostępnioną przez
+\texttt{inline constexpr}, a także legalną definicję funkcji
+\texttt{completed\_jobs} w nagłówku. Użycie atomików sprawia,
+że sam licznik może być bezpiecznie aktualizowany przez wiele wątków;
+\texttt{memory\_order\_relaxed} wystarcza tutaj wyłącznie do
+atomowego zliczania, bez dodatkowej synchronizacji innych danych.
+
+\section{Najczęstsze błędy i reguły wyboru}
+
+\subsection{Błędy}
+
+\begin{enumerate}
+    \item \textbf{Definicja zwykłej zmiennej w nagłówku:}
+    zapis \texttt{int counter = 0;} powoduje wielokrotne definicje,
+    jeśli nagłówek włączymy do kilku TU. Użyj \texttt{extern}
+    i jednej definicji w \texttt{.cpp} albo \texttt{inline} (C++17).
+    \item \textbf{\texttt{static} w nagłówku jako wspólny stan:}
+    w rzeczywistości tworzy osobny stan w każdej TU.
+    \item \textbf{Utożsamianie \texttt{const} z \texttt{constexpr}:}
+    obiekt \texttt{const} może być inicjalizowany w runtime.
+    \item \textbf{Utożsamianie \texttt{constexpr} z \texttt{consteval}:}
+    zwykłą funkcję \texttt{constexpr} wolno wywoływać w runtime.
+    \item \textbf{Utożsamianie \texttt{inline} z optymalizacją:}
+    kompilator może wstawić lub nie wstawić ciała dowolnej funkcji,
+    zgodnie z dozwolonymi optymalizacjami.
+    \item \textbf{Utożsamianie \texttt{static} z synchronizacją:}
+    bezpieczna inicjalizacja lokalnego statyka nie zabezpiecza
+    późniejszych zapisów.
+    \item \textbf{Używanie \texttt{volatile} zamiast \texttt{atomic}:}
+    \texttt{volatile} nie eliminuje wyścigów danych.
+    \item \textbf{Nadmierne korzystanie z globalnego mutowalnego stanu:}
+    nawet poprawny pod względem ODR program może być trudny
+    do testowania oraz podatny na problemy kolejności inicjalizacji.
+\end{enumerate}
+
+\subsection{Kolejność inicjalizacji obiektów globalnych}
+
+Inicjalizacja dynamiczna obiektów o statycznym czasie przechowywania
+w różnych TU może mieć nieoczywistą kolejność. Jest to źródło
+\emph{static initialization order fiasco}. Jedną z praktycznych
+technik jest przeniesienie zależności do lokalnego obiektu
+statycznego, inicjalizowanego przy pierwszym wywołaniu:
+
+\begin{lstlisting}
+#include <string>
+
+const std::string& application_name() {
+    static const std::string name = "MyApplication";
+    return name;
+}
+\end{lstlisting}
+
+Gdy możliwe jest \emph{stałe inicjalizowanie}, preferuj proste
+\texttt{constexpr} lub \texttt{constinit}. Pamiętaj jednak, że
+\texttt{constinit} wyklucza inicjalizację dynamiczną, lecz
+nie narzuca niemutowalności obiektu.
+
+\subsection{Zalecenia w skrócie}
+
+\begin{itemize}
+    \item Potrzebujesz niemutowalnego dostępu? Użyj \texttt{const}.
+    \item Potrzebujesz wyrażenia stałego? Użyj \texttt{constexpr}.
+    \item Wywołanie musi być stałe? Rozważ \texttt{consteval}.
+    \item Mutowalny obiekt ma wymagać inicjalizacji statycznej?
+    Rozważ \texttt{constinit}.
+    \item Chcesz ukryć szczegół implementacji w \texttt{.cpp}?
+    Rozważ anonimową przestrzeń nazw.
+    \item Potrzebujesz stanu zachowywanego między wywołaniami?
+    Rozważ lokalną \texttt{static}, pamiętając o wątkach.
+    \item Potrzebujesz jednego symbolu zdefiniowanego w \texttt{.cpp}?
+    Deklaruj go w nagłówku przez \texttt{extern}.
+    \item Potrzebujesz definicji w nagłówku współdzielonej przez TU?
+    Użyj \texttt{inline}, jeśli jest odpowiednie; dla stałych
+    kompilacyjnych \texttt{inline constexpr}.
+    \item Potrzebujesz oddzielnego stanu wątku? Użyj \texttt{thread\_local}.
+    \item Potrzebujesz komunikacji i synchronizacji między wątkami?
+    Użyj atomików lub blokad, a nie \texttt{volatile}.
+\end{itemize}
+
+\paragraph{Konkluzja.}
+Najważniejsze pytanie nie brzmi ``które słowo kluczowe jest szybsze?'',
+lecz: czy deklaracja ma określać \emph{czas życia}, \emph{łączność},
+\emph{niemutowalność}, \emph{stałą ewaluację}, czy
+\emph{dopuszczalność wielu definicji}? Dopiero wtedy wybór
+specyfikatora jest jednoznaczny.

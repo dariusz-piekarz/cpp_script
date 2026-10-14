@@ -1,0 +1,914 @@
+% ROZDZIAL 8 — Iteratory, ranges i views (C++20)
+% Fragment do włączenia po rozdziale 7.
+% Wymagane pakiety: listings, array, amsmath (opcjonalnie), hyperref.
+% Użycie: \input{rozdzial_8_iteratory_ranges_views_cpp.tex}
+
+\chapter[Iteratory, Ranges i Views]{Iteratory, zakresy i widoki: \textit{Ranges} oraz \textit{Views} w C++20}
+\label{chap:ranges-views-cpp}
+
+\section{Dlaczego wprowadzono Ranges?}
+
+Klasyczne algorytmy STL operują na \emph{parze iteratorów}: pierwszym
+wskazującym początek danych i drugim wyznaczającym koniec. Dzięki temu
+\texttt{std::sort} lub \texttt{std::find} mogą współpracować z wieloma
+kontenerami. Wymaga to jednak przekazywania obu granic i dodatkowej
+ostrożności, aby pochodziły z tego samego zakresu.
+
+\begin{lstlisting}
+#include <algorithm>
+#include <vector>
+
+std::vector<int> xs{4, 1, 3, 2};
+std::sort(xs.begin(), xs.end()); // STL before C++20
+std::ranges::sort(xs);          // C++20
+\end{lstlisting}
+
+Nowy model pozwala przekazać \emph{zakres} (\textit{range}) jako jeden
+obiekt oraz formułować wymagania wobec niego poprzez \emph{koncepcje}
+(\textit{concepts}, rozdział~5). Oddzielną innowacją są \emph{widoki}
+(\textit{views}): lekkie reprezentacje danych, często przekształcane
+\textbf{leniwe}, to znaczy dopiero podczas ich przeglądania.
+
+\begin{lstlisting}
+#include <ranges>
+
+std::vector<int> xs{1, 2, 3, 4, 5, 6};
+auto pipeline = xs
+    | std::views::filter([](int x) { return x % 2 == 0; })
+    | std::views::transform([](int x) { return x * x; });
+
+// No vector of squares has been created.
+// Iteration produces 4, 16, 36.
+for (int x : pipeline) { /* use x */ }
+\end{lstlisting}
+
+\paragraph{Założenia.}
+W całym rozdziale przyjmujemy standard \textbf{C++20} oraz nagłówki
+\texttt{<algorithm>}, \texttt{<iterator>}, \texttt{<ranges>},
+\texttt{<concepts>}, \texttt{<vector>} i pozostałe nagłówki wymienione
+w przykładach. W dalszych sekcjach posłużymy się semantyką przenoszenia
+(rozdział~6) i lambdami (rozdział~7).
+
+\section{Iteratory: uogólnienie wskaźników}
+\label{sec:cpp8-iterators}
+
+\subsection{Operacje \texttt{begin}, \texttt{end}, \texttt{*} i \texttt{++}}
+
+Iterator jest obiektem umożliwiającym poruszanie się po elementach
+zakresu. Wskaźnik \texttt{int*} jest przykładem iteratora, ale iterator
+może także przechowywać indeks, wskaźnik do węzła listy lub stan
+wewnętrzny generatora. Podstawowe operacje przedstawia program:
+
+\begin{lstlisting}
+#include <vector>
+
+std::vector<int> v{10, 20, 30};
+auto it = v.begin();     // points to 10
+int a = *it;            // 10
+++it;                   // points to 20
+int b = *it;            // 20
+bool ok = it != v.end();
+\end{lstlisting}
+
+Iterator \texttt{end()} zwykle oznacza pozycję \emph{za ostatnim}
+elementem; nie wolno go dereferencjonować. Dzięki temu pusty zakres
+spełnia \texttt{begin()==end()}, a przechodzenie po elementach ma
+jednolity schemat:
+
+\begin{lstlisting}
+for (auto it = v.begin(); it != v.end(); ++it) {
+    // *it is a valid element
+}
+\end{lstlisting}
+
+\paragraph{Pętla zakresowa.}
+Zapis \texttt{for (auto\& x : v)} jest wygodniejszą postacią iteracji,
+ale w dalszym ciągu wykorzystuje operacje początku, końca,
+porównania, zwiększania i dereferencji. Aby \emph{modyfikować} elementy,
+stosujemy \texttt{auto\&}; aby uniknąć kopiowania bez modyfikowania,
+\texttt{const auto\&}; dla niewielkich wartości liczbowych często
+wystarczy \texttt{auto}.
+
+\subsection{Iteratory stałe i nieważność iteratorów}
+
+\begin{lstlisting}
+std::vector<int> v{1, 2, 3};
+auto m = v.begin();   // can modify *m
+auto c = v.cbegin();  // cannot modify *c
+*m = 10;
+// *c = 20;         // compilation error
+\end{lstlisting}
+
+\texttt{const\_iterator} chroni elementy przed modyfikacją poprzez
+ten iterator; nie oznacza, że cały kontener jest niezmienny. Równie
+ważna jest \emph{nieważność iteratorów} (\textit{iterator invalidation}).
+Na przykład ponowna alokacja pamięci przez \texttt{std::vector::push\_back}
+może unieważnić \textbf{wszystkie} iteratory, wskaźniki i referencje do
+jego elementów.
+
+\begin{lstlisting}
+std::vector<int> v{1, 2, 3};
+auto it = v.begin();
+v.push_back(4);       // may reallocate storage
+// *it;              // unsafe if reallocation happened
+it = v.begin();      // obtain a fresh iterator
+\end{lstlisting}
+
+Reguły zależą od kontenera i operacji. W \texttt{std::list} wstawienie
+elementu nie unieważnia iteratorów do pozostałych elementów, ale nie
+oznacza to, że można dalej używać iteratora do elementu usuniętego.
+
+\section{Kategorie iteratorów i ich wymagania}
+\label{sec:cpp8-iterator-categories}
+
+Zestaw koncepcji C++20 opisuje operacje i własności iteratorów, a nie
+jedynie nazwy klas. Najważniejsze kategorie zestawia tabela.
+
+\begin{center}
+\small
+\begin{tabular}{|p{5.2cm}|p{7.3cm}|}
+\hline
+\textbf{Koncepcja} & \textbf{Możliwości i przykłady} \\
+\hline
+\texttt{input\_iterator} & Odczytywanie kolejnych wartości; przeglądanie może być jednokrotne (np. strumień wejściowy). \\
+\hline
+\texttt{output\_iterator} & Zapisywanie kolejnych wartości do celu (np. \texttt{back\_insert\_iterator}). \\
+\hline
+\texttt{forward\_iterator} & Wielokrotne przejścia, porównywanie iteratorów, krok do przodu. \\
+\hline
+\texttt{bidirectional\_iterator} & Dodatkowo krok wstecz, czyli \texttt{--it}; np. \texttt{list}. \\
+\hline
+\texttt{random\_access\_iterator} & Indeksowanie i skoki \texttt{it+n} w stałym czasie; np. \texttt{deque}. \\
+\hline
+\texttt{contiguous\_iterator} & Elementy leżą kolejno w pamięci; np. iterator \texttt{vector<int>} i surowy wskaźnik. \\
+\hline
+\end{tabular}
+\end{center}
+
+Hierarchia wymagań dla iteratorów odczytujących jest w przybliżeniu
+następująca (każda kolejna koncepcja jest silniejsza):
+
+\begin{center}
+\texttt{input $\Rightarrow$ forward $\Rightarrow$ bidirectional}
+\\[2pt]
+\texttt{$\Rightarrow$ random\_access $\Rightarrow$ contiguous}.
+\end{center}
+
+Koncepcja \texttt{output\_iterator} dotyczy osobnej rodziny wymagań.
+Nowe koncepcje nie są w każdym szczególe identyczne ze starymi
+kategoriami \emph{LegacyIterator}. Na przykład model
+\texttt{forward\_iterator} nie wymaga zwracania referencji
+przy dereferencji.
+
+\begin{lstlisting}
+#include <concepts>
+#include <iterator>
+#include <list>
+#include <vector>
+
+static_assert(std::contiguous_iterator<int*>);
+static_assert(std::random_access_iterator<
+    std::vector<int>::iterator>);
+static_assert(std::bidirectional_iterator<
+    std::list<int>::iterator>);
+static_assert(!std::random_access_iterator<
+    std::list<int>::iterator>);
+\end{lstlisting}
+
+\paragraph{Dlaczego to ważne?}
+\texttt{std::ranges::sort} wymaga iteratorów o dostępie swobodnym,
+więc można użyć go do \texttt{std::vector}, ale \textbf{nie} do
+\texttt{std::list}. Listę sortuje się metodą \texttt{list::sort()}.
+Wybór algorytmu jest zatem ograniczony kategorią iteratora.
+
+\section{Własny iterator i własny zakres}
+\label{sec:cpp8-own-iterator}
+
+Zbudujemy iterator generujący kolejne liczby całkowite. Nie będzie on
+przechowywać ani wskaźnika, ani kontenera: całą potrzebną informacją
+jest bieżąca wartość. Zdefiniujemy \emph{iterator do przodu}
+(\texttt{forward\_iterator}).
+
+\begin{lstlisting}
+#include <concepts>
+#include <cstddef>
+#include <iterator>
+#include <ranges>
+
+struct CountingIterator {
+    using value_type = int;
+    using difference_type = std::ptrdiff_t;
+    using iterator_concept = std::forward_iterator_tag;
+
+    int current = 0;
+
+    int operator*() const { return current; }
+
+    CountingIterator& operator++() {
+        ++current;
+        return *this;
+    }
+    CountingIterator operator++(int) {
+        auto old = *this;
+        ++*this;
+        return old;
+    }
+    bool operator==(const CountingIterator&) const = default;
+};
+
+struct CountingRange {
+    int first = 0;
+    int last = 0;
+
+    CountingIterator begin() const { return {first}; }
+    CountingIterator end() const { return {last}; }
+};
+
+static_assert(std::forward_iterator<CountingIterator>);
+static_assert(std::ranges::forward_range<CountingRange>);
+\end{lstlisting}
+
+Teraz kod \texttt{for (int i : CountingRange\{3, 7\})} wypisze
+\texttt{3, 4, 5, 6}. Funkcje \texttt{begin()} i \texttt{end()}
+wyznaczają \emph{półotwarty} zakres \([3,7)\). Prawidłowe użycie
+zakłada \texttt{first <= last}; dla \texttt{first > last} nasz
+minimalny iterator nie zbiegnie do wartości końcowej.
+
+\paragraph{Co trzeba zagwarantować?}
+Samo przejście \texttt{static\_assert} nie dowodzi wszystkich
+semantycznych własności iteratora. Dla \texttt{forward\_iterator}
+ważna jest m.in. własność \emph{multi-pass}: kopiowanie iteratora
+i przejście jedną kopią nie powinno zmieniać wartości zwracanych
+przez drugą. Nasz iterator ją spełnia, ponieważ każda kopia ma własne
+pole \texttt{current}.
+
+\section{Zwykłe \textit{range} i \textit{sentinel}}
+\label{sec:cpp8-range-sentinel}
+
+\emph{Zakres} jest obiektem, dla którego można otrzymać początek
+\texttt{std::ranges::begin(r)} i koniec \texttt{std::ranges::end(r)}.
+Typ wyniku obu wywołań \textbf{nie musi być identyczny}. Obiekt
+wyznaczający koniec to \emph{sentinel}; musi dać się porównać z
+iteratorem, ale sam nie musi obsługiwać jego pozostałych operacji.
+
+\begin{lstlisting}
+#include <ranges>
+#include <vector>
+
+std::vector<int> xs{1, 2, 3};
+auto first = std::ranges::begin(xs);
+auto last = std::ranges::end(xs);
+while (first != last) { ++first; }
+\end{lstlisting}
+
+W tym przypadku obie granice mają ten sam typ: zakres spełnia
+koncepcję \texttt{common\_range}. W innych zakresach koniec może
+wyznaczać osobny obiekt sentinela. Odpowiednia koncepcja
+\texttt{std::sentinel\_for} określa warunki porównywania granic:
+
+\begin{lstlisting}
+static_assert(std::ranges::common_range<decltype(xs)>);
+static_assert(std::sentinel_for<
+    decltype(last), decltype(first)>);
+\end{lstlisting}
+
+Przykładem osobnego typu końca jest \texttt{std::default\_sentinel\_t}.
+
+\paragraph{Rozmiar a liczba kroków.}
+Operacja \texttt{std::ranges::size(r)} jest dostępna dla zakresów
+spełniających \texttt{sized\_range}. Nie każdy zakres ma tanią operację
+wyznaczenia rozmiaru. Funkcja \texttt{distance(r)} z przestrzeni
+\texttt{std::ranges} może wymagać
+\emph{przejścia przez wszystkie elementy}. Dla niektórych
+jednokrotnych źródeł danych przejście oznacza również ich zużycie.
+
+\section{Koncepcje zakresów w praktyce}
+
+Własności zakresów sprawdzamy za pomocą koncepcji z rozdziału~5.
+Najważniejsze z nich to:
+\begin{itemize}
+\item \texttt{input\_range} i \texttt{forward\_range},
+\item \texttt{bidirectional\_range} i \texttt{random\_access\_range},
+\item \texttt{contiguous\_range}, \texttt{common\_range} i \texttt{sized\_range}.
+\end{itemize}
+
+\begin{lstlisting}
+#include <ranges>
+#include <vector>
+
+template <std::ranges::input_range R>
+long long sum_integers(R&& range) {
+    long long result = 0;
+    for (auto value : range) result += value;
+    return result;
+}
+
+std::vector<int> v{1, 2, 3};
+long long s = sum_integers(v); // 6
+\end{lstlisting}
+
+Parametr \texttt{R\&\&} jest tutaj \emph{referencją przekazującą}
+(\textit{forwarding reference}), a nie żądaniem przejęcia własności.
+Funkcja obsługuje także źródła jednokrotne, gdyż przechodzi zakres tylko
+raz. Dla naprawdę uniwersalnej funkcji trzeba osobno wyrazić warunki
+na typ elementu i wykonywaną na nim operację dodawania.
+
+\section{Algorytmy \texttt{std::ranges} i projekcje}
+\label{sec:cpp8-algorithms}
+
+Funkcje z rodziny \texttt{std::ranges}, np. \texttt{sort},
+\texttt{find}, \texttt{copy} i \texttt{transform}, przyjmują
+bezpośrednio zakres albo parę iterator--sentinel.
+Ich wykonanie jest na ogół \emph{natychmiastowe} (w odróżnieniu od
+samych widoków \texttt{views::transform}).
+
+\begin{lstlisting}
+#include <algorithm>
+#include <iterator>
+#include <vector>
+
+std::vector<int> v{4, 2, 3, 1};
+std::ranges::sort(v);  // modifies v immediately
+
+auto pos = std::ranges::find(v, 3);
+if (pos != v.end()) { *pos = 30; }
+
+std::vector<int> out;
+std::ranges::copy(v, std::back_inserter(out));
+\end{lstlisting}
+
+\subsection{Projekcja: sortowanie po wskazanym polu}
+
+Algorytmy Ranges często posiadają argument \emph{projekcji}: funkcję
+wywoływaną na elemencie przed porównaniem albo wyszukiwaniem. Dzięki
+temu zamiast pisać własny komparator, można wskazać pole struktury.
+
+\begin{lstlisting}
+#include <string>
+#include <vector>
+
+struct Person {
+    std::string name;
+    int age;
+};
+
+std::vector<Person> people{
+    {"Ada", 40}, {"Ewa", 25}, {"Jan", 32}
+};
+
+std::ranges::sort(people, {}, &Person::age);
+// ascending ages: 25, 32, 40
+
+auto it = std::ranges::find(people, 32, &Person::age);
+// it->name == "Jan"
+\end{lstlisting}
+
+W wywołaniu \texttt{sort(people, \{\}, \&Person::age)} puste
+nawiasy oznaczają domyślny komparator \texttt{std::ranges::less},
+a wskaźnik do składowej to projekcja. Standard używa mechanizmu
+\texttt{std::invoke}, omówionego w rozdziale~7.
+
+\section{Widoki: \textit{view} nie jest synonimem kontenera}
+\label{sec:cpp8-views}
+
+\emph{Widok} jest zakresem przystosowanym do taniego tworzenia i
+kopiowania lub przenoszenia \emph{samego obiektu widoku}. Nie musi mieć
+własnych danych: może przechowywać referencję do kontenera, mały zestaw
+iteratorów albo parametry generowania wartości.
+
+\begin{lstlisting}
+#include <ranges>
+#include <vector>
+
+std::vector<int> xs{10, 20, 30, 40};
+auto first_two = xs | std::views::take(2);
+// first_two refers to the original xs
+\end{lstlisting}
+
+Stworzenie widoku nie jest równoznaczne ze skopiowaniem elementów do
+nowego kontenera. Odwołanie do danych źródłowych wymaga, by pozostawały
+one ważne przez cały czas korzystania z widoku. Szczegółowe reguły
+własności omówimy dalej.
+
+\paragraph{Dwa znaczenia nazwy \texttt{views}.}
+\texttt{std::views} jest aliasem przestrzeni nazw z obiektami
+adaptującymi zakresy. \texttt{std::ranges::view} to natomiast
+\emph{koncepcja} spełniana przez dany typ. Nie należy mylić ich
+z pojęciem \texttt{std::ranges::range}.
+
+\section{Leniwe potoki \texttt{filter}, \texttt{transform}, \texttt{take}}
+\label{sec:cpp8-pipelines}
+
+Najczęściej stosowane widoki łączymy za pomocą operatora \texttt{|}.
+Adaptory przekazują sobie zakresy bez potrzeby budowania pośrednich
+wektorów:
+
+\begin{lstlisting}
+std::vector<int> xs{1,2,3,4,5,6,7,8,9,10};
+
+auto pipeline = xs
+    | std::views::filter([](int x) {
+          return x % 2 == 0;
+      })
+    | std::views::transform([](int x) {
+          return x * x;
+      })
+    | std::views::take(3);
+
+// Iteration produces 4, 16, 36.
+\end{lstlisting}
+
+\texttt{filter} pomija elementy niespełniające predykatu,
+\texttt{transform} wyznacza nową wartość przy dereferencji,
+a \texttt{take(3)} ogranicza liczbę wyników. Algorytm
+\texttt{std::ranges::transform} działa od razu; natomiast
+utworzenie widoku \texttt{views::transform} nie przelicza
+wszystkich wyników.
+
+\subsection{Kiedy następują obliczenia?}
+
+\begin{lstlisting}
+int calls = 0;
+auto squares = xs | std::views::transform([&](int x) {
+    ++calls;
+    return x * x;
+});
+// calls == 0 here
+int first = *squares.begin();
+// calls has increased (transform was evaluated)
+\end{lstlisting}
+
+W tym przykładzie pokazujemy moment obliczenia, a nie zalecany styl
+projektowania: \textbf{predykaty i transformacje powinny zasadniczo
+unikać efektów ubocznych}. Ponowne przejście widoku, ponowna
+dereferencja lub implementacyjnie dopuszczone buforowanie może
+powodować inne liczby wywołań, niż sugerowałaby pojedyncza pętla.
+Nie należy projektować logiki programu na podstawie rzekomej liczby
+wywołań funkcji przez widok.
+
+\paragraph{Ważny szczegół \texttt{filter\_view}.}
+Dla pewnych kategorii zakresu \texttt{filter\_view} może zapamiętywać
+pierwszy znaleziony element. Ponadto modyfikowanie elementu tak,
+aby przestał spełniać predykat filtrowania, narusza wymagania
+\texttt{filter\_view} i może prowadzić do niezdefiniowanego
+zachowania. Predykat powinien być stabilny wobec przebiegu iteracji.
+
+\section{Pozostałe przydatne adaptory C++20}
+\label{sec:cpp8-adaptors}
+
+\subsection{\texttt{iota}: wartości wyznaczane bez tablicy}
+
+\begin{lstlisting}
+auto ids = std::views::iota(1, 5);
+// Iteration produces 1, 2, 3, 4.
+
+// This is an unbounded range, limited by take(5):
+auto first_five = std::views::iota(1)
+                | std::views::take(5);
+// Produces 1, 2, 3, 4, 5.
+\end{lstlisting}
+
+\texttt{iota} przydaje się do indeksowania lub generowania sekwencji.
+Dla nieograniczonego widoku trzeba pamiętać o warunku zakończenia;
+ponadto operacje arytmetyczne nie mogą przepełniać typu całkowitego
+ze znakiem.
+
+\subsection{\texttt{drop}, \texttt{take} i \texttt{reverse}}
+
+\begin{lstlisting}
+std::vector<int> data{1, 2, 3, 4, 5};
+auto middle = data | std::views::drop(1)
+                   | std::views::take(3);
+// 2, 3, 4
+
+auto backwards = data | std::views::reverse;
+// 5, 4, 3, 2, 1
+\end{lstlisting}
+
+\texttt{reverse} wymaga co najmniej zakresu dwukierunkowego;
+\texttt{take} i \texttt{drop} są przydatne także dla sekwencji
+generowanych leniwie. Dla niektórych widoków koszt \texttt{begin()}
+lub dojścia do pierwszego wyniku może być większy niż stały.
+
+\subsection{\texttt{keys}, \texttt{values} i \texttt{split}}
+
+\begin{lstlisting}
+std::vector<std::pair<int, std::string>> pairs{
+    {1, "one"}, {2, "two"}
+};
+for (int key : pairs | std::views::keys) { /* 1, 2 */ }
+for (const auto& value : pairs | std::views::values) {
+    /* "one", "two" */
+}
+
+std::string csv = "aa,b,cc";
+for (auto part : csv | std::views::split(',')) {
+    std::string piece(part.begin(), part.end());
+    // Copy each part into an owning string if needed.
+}
+\end{lstlisting}
+
+\texttt{split} nie tworzy automatycznie \texttt{std::string} dla
+każdego fragmentu; otrzymujemy zakresy wskazujące fragmenty źródła.
+Zachowując wynik na później, trzeba zapewnić odpowiedni czas życia
+źródła. Nie należy też zakładać, że splitowanie tekstu CSV obsługuje
+cudzysłowy i escapowanie pól zgodnie z pełnym formatem CSV.
+
+\paragraph{Uwaga na wersję standardu.}
+\texttt{std::views::zip} i \texttt{std::views::enumerate} są
+konstrukcjami \textbf{C++23}, podobnie jak \texttt{std::ranges::to}.
+Nie są dostępne w czystym C++20. W standardzie C++20 wynik można zebrać do kontenera np.
+algorytmem \texttt{ranges::copy} z iteratorem wstawiającym
+\texttt{std::back\_inserter}.
+
+\section{Materializacja wyniku i koszt przetwarzania}
+\label{sec:cpp8-materialize}
+
+Jeśli wynik ma być niezależny od źródła i przechowywany na później,
+możemy zamienić potok w kontener. W C++20 nie ma standardowego
+\texttt{std::ranges::to<std::vector>()}.
+
+\begin{lstlisting}
+#include <algorithm>
+#include <iterator>
+#include <vector>
+
+std::vector<int> data{1,2,3,4,5,6};
+auto even = data | std::views::filter([](int x) {
+    return x % 2 == 0;
+});
+
+std::vector<int> result;
+std::ranges::copy(even, std::back_inserter(result));
+// result == {2, 4, 6}
+\end{lstlisting}
+
+Taka materializacja wymaga pamięci proporcjonalnej do wielkości wyniku.
+Zaletą potoku jest unikanie pośrednich alokacji i często możliwość
+\emph{łączenia} transformacji w jednym przebiegu. Nie jest to jednak
+gwarancja, że widoki zawsze będą szybsze: koszty iteracji, predykatów,
+przepływu sterowania i optymalizacji zależą od konkretnego kodu i
+kompilatora. W zadaniach krytycznych wykonuj pomiary.
+
+\section{Własność danych, czas życia i \texttt{borrowed\_range}}
+\label{sec:cpp8-lifetime}
+
+To najważniejsza część praktycznego korzystania z Ranges. Widoki
+\textbf{nie zawsze posiadają} bazowe dane. W przypadku
+\texttt{std::views::all} przeprowadzamy istotne rozróżnienie:
+
+\begin{lstlisting}
+std::vector<int> source{2, 4, 6};
+auto borrowed = std::views::all(source);
+// Refers to source: source must stay alive.
+
+auto owned = std::views::all(std::vector<int>{3, 5, 7});
+// In C++20, this can be an owning_view.
+// The temporary vector is moved into the view.
+\end{lstlisting}
+
+Nie oznacza to, że \emph{każdy} widok utworzony z wartości tymczasowej
+przejmuje własność, ani że wszystkie widoki zachowują się tak samo.
+Różne adaptory przechowują różne rodzaje obiektów bazowych.
+
+\subsection{Wskaźniki wiszące wewnątrz potoku}
+
+\begin{lstlisting}
+auto make_bad_view() {
+    std::vector<int> local{1, 2, 3};
+    return local | std::views::filter([](int x) {
+        return x > 1;
+    });
+}
+// Using the returned view would access destroyed local.
+\end{lstlisting}
+
+Ponieważ \texttt{local} jest \emph{lvalue}, adapter przechowuje
+nieposiadający danych widok do lokalnego kontenera. Po wyjściu z
+funkcji \texttt{local} zostaje zniszczony, a zwrócony widok zawiera
+nieaktualne odwołanie. Bezpieczne wyjścia to utworzenie widoku z
+przekazanego na własność kontenera (np. obiektu tymczasowego lub
+\texttt{std::move(local)}) albo zwrócenie zwykłego kontenera wynikowego.
+
+\begin{lstlisting}
+auto make_owning_view() {
+    std::vector<int> local{1, 2, 3};
+    return std::views::all(std::move(local))
+         | std::views::filter([](int x) { return x > 1; });
+}
+// The returned view owns its vector through owning_view.
+\end{lstlisting}
+
+\subsection{Co naprawdę mówi \texttt{borrowed\_range}?}
+
+Koncepcja \texttt{borrowed\_range<R>} oznacza w uproszczeniu, że
+iteratory otrzymane z zakresu typu \texttt{R} mogą pozostać ważne
+po zniszczeniu \emph{samego obiektu zakresu} (o ile dane, do których
+odsyłają, nadal istnieją). Nie jest to synonim ``widok nie posiada
+danych'' ani ``wszystkie wskaźniki są zawsze bezpieczne''.
+
+\begin{lstlisting}
+#include <concepts>
+#include <ranges>
+#include <vector>
+
+static_assert(std::ranges::borrowed_range<
+    std::ranges::ref_view<std::vector<int>>>);
+static_assert(!std::ranges::borrowed_range<
+    std::vector<int>>);
+\end{lstlisting}
+
+\subsection{\texttt{std::ranges::dangling} jako zabezpieczenie}
+
+Algorytm zwracający iterator do \emph{tymczasowego} kontenera nie może
+bezpiecznie zwrócić rzeczywistego iteratora do zniszczonych danych.
+Dlatego pewne algorytmy Ranges zwracają specjalny typ
+\texttt{std::ranges::dangling}.
+
+\begin{lstlisting}
+#include <type_traits>
+
+using Result = decltype(std::ranges::find(
+    std::vector<int>{1, 2, 3}, 2));
+static_assert(std::same_as<Result, std::ranges::dangling>);
+\end{lstlisting}
+
+Nie należy jednak oczekiwać, że mechanizm ten wykryje wszystkie
+problemy z czasem życia. Jeżeli zapisujemy nieposiadający danych
+widok do lokalnej zmiennej, kompilator może nie zauważyć, że docelowy
+kontener umrze wcześniej niż widok.
+
+\section{\texttt{std::span}, \texttt{std::string\_view} i \texttt{subrange}}
+\label{sec:cpp8-span}
+
+\texttt{std::span<T>} opisuje ciągły fragment pamięci jako wskaźnik
+i rozmiar (lub rozmiar znany w czasie kompilacji). Jest to lekka,
+\textbf{nieposiadająca danych} alternatywa dla pary
+\texttt{(T*, size)}.
+
+\begin{lstlisting}
+#include <span>
+
+void normalize(std::span<double> xs) {
+    for (double& x : xs) x /= 100.0;
+}
+
+std::vector<double> v{100, 200, 300};
+normalize(v);  // v becomes {1, 2, 3}
+\end{lstlisting}
+
+\texttt{std::span<const T>} umożliwia odczyt bez modyfikowania
+elementów, a \texttt{std::span<T>} pozwala modyfikować elementy, mimo
+że sam widok nie posiada pamięci.
+
+\begin{lstlisting}
+int a[]{1, 2, 3, 4};
+std::span<int> all{a};
+auto head = all.first(2);
+head[1] = 20; // a[1] == 20
+\end{lstlisting}
+
+\texttt{std::string\_view} spełnia podobną rolę dla tekstu; nie
+alokuje pamięci na znaki (oraz nie musi kończyć się bajtem zero).
+Trzeba uważać, aby nie zapisać go po zniszczeniu źródłowego
+\texttt{std::string}.
+
+\begin{lstlisting}
+#include <string_view>
+
+std::string text = "abcdef";
+std::string_view view{text};
+std::string_view prefix = view.substr(0, 3); // "abc"
+// Do not use view after text is destroyed or invalidated.
+\end{lstlisting}
+
+\texttt{std::ranges::subrange<I, S>} grupuje iterator \texttt{I}
+i sentinel \texttt{S} w zakres bez kopiowania elementów. Także tutaj
+obowiązuje odpowiedzialność za czas życia wskazywanych danych.
+
+\begin{lstlisting}
+auto sub = std::ranges::subrange(v.begin(), v.end());
+// sub refers to elements of v; it does not own v.
+\end{lstlisting}
+
+\paragraph{Ostrożnie z realokacją.}
+\texttt{std::span} do elementów wektora, \texttt{string\_view} do
+znaków łańcucha oraz \texttt{subrange} z iteratorów do kontenera mogą
+stać się niepoprawne po operacji zmieniającej miejsce przechowywania
+danych. Przenoszenie lub realokacja nie są automatycznie śledzone.
+
+\section{Własny widok za pomocą \texttt{view\_interface}}
+\label{sec:cpp8-custom-view}
+
+Na końcu zbudujemy \emph{własny widok} generujący kwadraty liczb
+całkowitych od zera do \(n-1\). Użyjemy
+\texttt{std::ranges::view\_interface}, które dostarcza wygodnych
+operacji opartych na \texttt{begin()} i \texttt{end()}. W klasie
+pozostają wyłącznie parametry generatora, więc nie ma alokacji pamięci
+na elementy sekwencji.
+
+\begin{lstlisting}
+#include <concepts>
+#include <cstddef>
+#include <iterator>
+#include <ranges>
+
+struct SquaresView : std::ranges::view_interface<SquaresView> {
+    struct iterator {
+        using value_type = int;
+        using difference_type = std::ptrdiff_t;
+        using iterator_concept = std::forward_iterator_tag;
+
+        int index = 0;
+        int operator*() const { return index * index; }
+        iterator& operator++() {
+            ++index;
+            return *this;
+        }
+        iterator operator++(int) {
+            auto old = *this;
+            ++*this;
+            return old;
+        }
+        bool operator==(const iterator&) const = default;
+    };
+
+    int n = 0;
+    SquaresView() = default;
+    explicit SquaresView(int count) : n(count) {}
+
+    iterator begin() const { return {0}; }
+    iterator end() const { return {n}; }
+};
+
+static_assert(std::ranges::view<SquaresView>);
+static_assert(std::ranges::forward_range<SquaresView>);
+\end{lstlisting}
+
+\begin{lstlisting}
+SquaresView squares{6};
+for (int x : squares) { /* 0, 1, 4, 9, 16, 25 */ }
+
+// Our view works with standard adapters:
+auto even_squares = squares | std::views::filter(
+    [](int x) { return x % 2 == 0; });
+// Iteration yields 0, 4, 16.
+\end{lstlisting}
+
+Konstruktor z argumentem \texttt{count} powinien otrzymać wartość
+nieujemną. Ponieważ liczymy \texttt{index * index} w typie
+\texttt{int}, należy ponadto ograniczyć rozmiar zakresu, aby uniknąć
+przepełnienia. W rozwiązaniu produkcyjnym należałoby te warunki
+weryfikować oraz dopracować obsługę szerszych typów całkowitych.
+
+\paragraph{Widok a adapter.}
+\texttt{SquaresView} jest własnym \emph{widokiem}, który można
+przekazać do standardowych adapterów. Nie jest jeszcze własnym
+\emph{range adaptor closure}, czyli obiektem pozwalającym zapisać
+\texttt{some\_range | squares\_adaptor}. Implementacja takiego
+adaptera stanowi osobny poziom abstrakcji i nie jest konieczna do
+budowania własnych widoków.
+
+\section{Różnica między \texttt{transform} i \texttt{views::transform}}
+
+Poniższe operacje mogą prowadzić do takich samych liczb, ale różnią
+się \emph{czasem wykonania} i \emph{sposobem przechowywania wyniku}:
+
+\begin{lstlisting}
+std::vector<int> source{1, 2, 3};
+std::vector<int> eager;
+std::ranges::transform(source,
+    std::back_inserter(eager),
+    [](int x) { return x * x; });
+// eager owns {1, 4, 9} right now
+
+auto lazy = source | std::views::transform(
+    [](int x) { return x * x; });
+// lazy does not own a vector of squared values
+\end{lstlisting}
+
+Wariant pierwszy wymaga pamięci na trzy elementy i kończy obliczenia
+przed kolejną instrukcją. Wariant drugi może obliczać wartości dopiero
+przy dereferencji iteratorów. Po zmianie \texttt{source} kolejne
+odczyty widoku \texttt{lazy} mogą odzwierciedlać nowe dane.
+
+\section{Projektowanie API z wykorzystaniem Ranges}
+\label{sec:cpp8-api}
+
+Jeżeli funkcja tylko przegląda elementy dowolnego źródła, preferuj
+parametr ograniczony koncepcją \texttt{input\_range}. Dla wielokrotnych
+przejść korzystaj z \texttt{forward\_range}. Jeśli potrzebujesz
+ciągłego bloku pamięci i znasz typ elementów, wygodnym wyborem jest
+\texttt{std::span<T>}.
+
+\begin{lstlisting}
+template <std::ranges::input_range R>
+void print_each(R&& r) {
+    for (auto&& x : r) {
+        // Print or consume x.
+    }
+}
+
+void process_buffer(std::span<const double> values) {
+    for (double value : values) {
+        // Read numeric values.
+    }
+}
+\end{lstlisting}
+
+Zależnie od celu można zwracać widok albo kontener. Widok jest
+wygodny, gdy chcemy dalej budować potok i mamy kontrolę nad czasem
+życia źródła. Kontener jest często bezpieczniejszy, gdy zwracany
+wynik ma istnieć niezależnie od wszystkich argumentów.
+
+\section{Najczęstsze błędy i praktyczne reguły}
+\label{sec:cpp8-pitfalls}
+
+\begin{enumerate}
+\item \textbf{Dereferencja \texttt{end()}.} Iterator końcowy jest
+granicą, a nie elementem. Przed \texttt{*it} trzeba mieć
+\texttt{it != end}.
+
+\item \textbf{Mylenie kategorii iteratorów.} Lista nie obsługuje
+skoków w stałym czasie. Nie można użyć dla niej algorytmu
+\texttt{ranges::sort}; należy wywołać metodę \texttt{list::sort}.
+
+\item \textbf{Traktowanie widoku jak kontenera.} \texttt{views::filter}
+nie tworzy kopii wybranych elementów. Zmiany i zniszczenie źródła
+mogą wpływać na wynik.
+
+\item \textbf{Wiszące referencje w lambdach.} Zwrócony widok
+z predykatem przechwytującym lokalny obiekt przez referencję może
+być niebezpieczny nawet wtedy, gdy sam kontener ma odpowiednio długi
+czas życia.
+
+\item \textbf{Efekty uboczne w predykacie.} Liczba i kolejność
+wywołań w leniwym potoku nie są odpowiednią podstawą działania
+programu; predykaty filtrowania powinny zachować stabilną semantykę.
+
+\item \textbf{Zakładanie stałego kosztu operacji.} Obliczenie
+\texttt{distance} lub pierwszego pasującego elementu może wymagać
+przejrzenia dużej części źródła.
+
+\item \textbf{Mieszanie standardów.} \texttt{ranges::to},
+\texttt{views::zip} i \texttt{views::enumerate} nie należą do C++20.
+
+\item \textbf{Używanie nieważnych iteratorów.} Realokacja wektora
+lub usuwanie elementu może unieważnić iteratory także wtedy, gdy
+znajdują się wewnątrz wcześniej utworzonego widoku.
+\end{enumerate}
+
+\section{Której konstrukcji użyć?}
+
+\begin{center}
+\small
+\begin{tabular}{|p{6.0cm}|p{6.5cm}|}
+\hline
+\textbf{Potrzeba} & \textbf{Zalecany wybór} \\
+\hline
+Przejście po zwykłym kontenerze & Pętla \texttt{for (auto\& x : v)} \\
+\hline
+Jednorazowe sortowanie albo wyszukiwanie & \texttt{std::ranges::sort}, \texttt{std::ranges::find} \\
+\hline
+Leniwe filtrowanie i przekształcanie & \texttt{std::views::filter}, \texttt{std::views::transform} \\
+\hline
+Generowanie sekwencji indeksów & \texttt{std::views::iota} \\
+\hline
+Odczyt lub modyfikacja ciągłego bufora & \texttt{std::span<T>} (bez własności) \\
+\hline
+Lekki odczyt fragmentu tekstu & \texttt{std::string\_view} (bez własności) \\
+\hline
+Zakres wyznaczony iteratorami & \texttt{std::ranges::subrange} \\
+\hline
+Wynik niezależny od źródła & Kontener, np. \texttt{std::vector} \\
+\hline
+Własny generator wartości & Typ modelujący \texttt{std::ranges::view} \\
+\hline
+Wydajny ogólny algorytm generyczny & Szablon z \texttt{std::ranges::input\_range} lub silniejszą koncepcją \\
+\hline
+\end{tabular}
+\end{center}
+
+\paragraph{Pytania kontrolne.}
+\begin{enumerate}
+\item Dlaczego iterator \texttt{end()} nie jest elementem kolekcji?
+\item Co odróżnia \texttt{forward\_iterator} od \texttt{input\_iterator}?
+\item Czy \texttt{std::ranges::sort} działa dla \texttt{std::list}? Dlaczego?
+\item Po co \texttt{std::ranges} dopuszcza sentinel innego typu niż iterator?
+\item W którym momencie \texttt{views::transform} wykonuje funkcję?
+\item Dlaczego \texttt{views::filter} nie powinien zmieniać elementów, od których zależy jego predykat?
+\item Czym różni się \texttt{views::all(lvalue)} od \texttt{views::all(rvalue)} dla \texttt{std::vector}?
+\item Co gwarantuje, a czego nie gwarantuje \texttt{borrowed\_range}?
+\item Dlaczego \texttt{ranges::find(std::vector\{\dots\}, x)} może zwrócić \texttt{dangling}?
+\item Jak zebrać elementy \texttt{filter\_view} do wektora w czystym C++20?
+\item Czym różni się \texttt{std::span<const T>} od \texttt{std::vector<T>}?
+\item Co należy zaimplementować, aby własny obiekt był \texttt{forward\_range}?
+\end{enumerate}
+
+\paragraph{Dalsza lektura.}
+Dobrym punktem odniesienia jest dokumentacja \emph{cppreference}:
+\emph{Ranges library}, \emph{Iterator library}, \emph{Range adaptors},
+\emph{std::ranges::borrowed\_range}, \emph{std::ranges::dangling}
+oraz \emph{std::ranges::view\_interface}. Warto testować kod z opcjami kompilatora
+\texttt{-std=c++20} i \texttt{-Wall -Wextra -Wpedantic},
+a także korzystać z AddressSanitizer przy badaniu czasu życia danych.

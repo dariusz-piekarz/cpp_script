@@ -1,0 +1,61 @@
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[polish]{babel}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage{amsmath,amssymb}
+\usepackage[a4paper,margin=2.3cm]{geometry}
+\usepackage{booktabs,tabularx,array}
+\usepackage[dvipsnames]{xcolor}
+\usepackage{listings}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{fancyhdr}
+
+\hypersetup{colorlinks=true,linkcolor=blue!45!black, citecolor=blue!45!black,urlcolor=MidnightBlue,
+            pdftitle={C++: Wspolbieznosc i asynchronicznosc},
+            pdfauthor={Material dydaktyczny}}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{5pt}
+\setlist{itemsep=2pt,topsep=3pt}
+\setcounter{tocdepth}{1}
+\setcounter{secnumdepth}{3}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small Programowanie współbieżne w C++}
+\fancyhead[R]{\small Rozdział 1}
+\fancyfoot[C]{\thepage}
+\renewcommand{\headrulewidth}{0.35pt}
+\setlength{\headheight}{14pt}
+\definecolor{codemid}{RGB}{245,247,250}
+\definecolor{codecomment}{RGB}{67,111,82}
+\definecolor{codekeyword}{RGB}{25,69,139}
+\lstdefinestyle{cpp}{
+    language=C++,
+    basicstyle=\ttfamily\footnotesize,
+    keywordstyle=\color{codekeyword}\bfseries,
+    commentstyle=\color{codecomment},
+    stringstyle=\color{BrickRed},
+    backgroundcolor=\color{codemid},
+    frame=single,
+    rulecolor=\color{gray!30},
+    numbers=left,
+    numberstyle=\tiny\color{gray},
+    numbersep=9pt,
+    tabsize=4,
+    breaklines=true,
+    breakatwhitespace=true,
+    showstringspaces=false,
+    columns=fullflexible,
+    keepspaces=true,
+    upquote=true,
+    xleftmargin=1.3em,
+    framexleftmargin=1.3em,
+    aboveskip=8pt,
+    belowskip=7pt,
+    captionpos=b
+}
+\lstset{style=cpp}
+\newcommand{\term}[1]{\textbf{#1}}
+\newcommand{\code}[1]{\lstinline[columns=fixed]!#1!}
+\newcommand{\nota}[1]{\par\smallskip\noindent\textbf{Uwaga. }#1\par}

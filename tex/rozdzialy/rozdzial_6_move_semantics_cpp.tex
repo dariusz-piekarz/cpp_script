@@ -1,0 +1,1168 @@
+% ROZDZIAL 6 -- Semantyka przenoszenia, kategorie wartosci, perfect forwarding (C++20)
+% Fragment do wstawienia za rozdzialem 5.
+% Wymagana preambula: pakiet listings i konfiguracja lstlisting.
+% Uzycie: \input{rozdzial_6_move_semantics_cpp.tex}
+
+\chapter[Semantyka przenoszenia w C++]{Semantyka przenoszenia, kategorie wartości i przekazywanie doskonałe}
+\label{chap:move-semantics-cpp}
+
+\section{Dlaczego wprowadzono semantykę przenoszenia?}
+
+Rozważmy kontener przechowujący milion liczb. Skopiowanie go oznacza
+zwykle przydzielenie nowej pamięci i skopiowanie każdego elementu.
+Jeżeli dotychczasowy obiekt nie będzie już potrzebny, bardziej naturalna
+jest operacja \emph{przekazania własności} jego zasobu zamiast kopiowania.
+Od C++11 język udostępnia \emph{semantykę przenoszenia} (\textit{move
+semantics}): programista może rozróżnić sytuację, w której obiekt źródłowy
+ma pozostać niezmieniony, od sytuacji, w której jego zasoby wolno wykorzystać
+ponownie.
+
+\begin{lstlisting}
+#include <string>
+#include <utility>
+#include <vector>
+
+std::vector<std::string> a(100'000, "data");
+auto b = a;                // copy: a remains intact
+
+auto c = std::move(a);     // move may transfer a's allocation
+// c now owns its elements; a is still valid, but its state
+// after this move should not be assumed without a guarantee.
+\end{lstlisting}
+
+Nie oznacza to, że każde przeniesienie jest szybsze niż kopiowanie.
+Dla typu \texttt{int} oba działania są w praktyce tożsame, a niektóre typy
+kopiują część małych danych również podczas przenoszenia.
+Kluczowa idea jest semantyczna: \emph{przeniesienie pozwala zmienić stan
+źródła, a kopiowanie nie powinno go zmieniać}.
+
+\paragraph{Zakres rozdziału.}
+Zakładamy \textbf{C++20}. Kategorie wartości istnieją od początku języka,
+referencje do r-wartości i \texttt{std::move} wprowadzono w C++11,
+\emph{guaranteed copy elision} w C++17, a wiele przykładów poniżej
+wykorzystuje koncepcje omówione w rozdziale~5.
+Wszystkie przykłady zawierają komentarze angielskie, aby łatwo
+przenosić je do projektów.
+
+\section{Typ wyrażenia a kategoria wartości}
+\label{sec:move-categories}
+
+\textbf{Typ} i \textbf{kategoria wartości} są dwiema różnymi własnościami
+wyrażenia. Typ mówi, jaki rodzaj danych otrzymujemy; kategoria mówi
+m.in., czy wyrażenie identyfikuje istniejący obiekt i jak można
+wiązać je z referencjami. Dokładnie trzy podstawowe kategorie to:
+\emph{lvalue}, \emph{xvalue} i \emph{prvalue}.
+
+\begin{center}
+\begin{tabular}{|l|p{10.5cm}|}
+\hline
+\textbf{Kategoria} & \textbf{Intuicja i przykłady} \\
+\hline
+\texttt{lvalue} & Wyrażenie identyfikujące obiekt lub funkcję; np. \texttt{x}, \texttt{*ptr}, \texttt{++x} dla wbudowanego \texttt{int}. \\
+\hline
+\texttt{xvalue} & \emph{Expiring value}: wyrażenie identyfikujące obiekt, którego zasoby mogą być ponownie wykorzystane; np. \texttt{std::move(x)}. \\
+\hline
+\texttt{prvalue} & \emph{Pure rvalue}: wyrażenie obliczające wartość lub inicjalizujące obiekt; np. \texttt{42}, \texttt{x + 1}, \texttt{std::string("hi")}. \\
+\hline
+\end{tabular}
+\end{center}
+
+Pozostałe dwie nazwy oznaczają sumy kategorii:
+\[
+\underbrace{\mathrm{glvalue}}_{\mathrm{lvalue}\,\cup\,\mathrm{xvalue}},
+\qquad
+\underbrace{\mathrm{rvalue}}_{\mathrm{prvalue}\,\cup\,\mathrm{xvalue}}.
+\]
+Nie należy utożsamiać \texttt{rvalue} z tymczasowym obiektem ani
+\texttt{lvalue} z wyrażeniem znajdującym się po lewej stronie przypisania.
+Są to techniczne kategorie zdefiniowane przez język.
+
+\subsection{Kilka wyrażeń o zaskakujących kategoriach}
+
+\begin{lstlisting}
+#include <string>
+#include <utility>
+
+int x = 7;
+int* p = &x;
+
+// x                 : lvalue
+// *p                : lvalue
+// (x)               : lvalue
+// 7                 : prvalue
+// x + 1             : prvalue
+// std::move(x)      : xvalue
+// std::string{"abc"}: prvalue
+
+int& lref = x;
+int&& rref = 9;
+
+// lref              : lvalue
+// rref              : lvalue (!) - it has a name
+// std::move(rref)   : xvalue
+\end{lstlisting}
+
+To fundamentalna zasada: \textbf{nazwa zmiennej jest wyrażeniem lvalue,
+nawet jeśli typ tej zmiennej to referencja rvalue \texttt{T\&\&}}.
+Samo zadeklarowanie \texttt{T\&\&} nie oznacza, że każde użycie takiej
+zmiennej będzie r-wartością.
+
+\subsection{Badanie kategorii za pomocą \texttt{decltype((expr))}}
+
+Dla prostego, nieujętego w nawiasy identyfikatora składnia
+\texttt{decltype(x)} zwraca deklarowany typ. Dla ogólnego wyrażenia
+\texttt{decltype((expr))} oddaje jego kategorię poprzez typ:
+\[
+\mathrm{decltype}((e))=
+\left\{
+\begin{array}{ll}
+T\&, & \mbox{gdy } e \mbox{ jest lvalue typu } T,\\
+T\&\&, & \mbox{gdy } e \mbox{ jest xvalue typu } T,\\
+T, & \mbox{gdy } e \mbox{ jest prvalue typu } T.
+\end{array}
+\right.
+\]
+
+\begin{lstlisting}
+#include <type_traits>
+#include <utility>
+
+int x = 10;
+static_assert(std::is_same_v<decltype(x), int>);
+static_assert(std::is_same_v<decltype((x)), int&>);
+static_assert(std::is_same_v<decltype((std::move(x))), int&&>);
+static_assert(std::is_same_v<decltype((x + 1)), int>);
+\end{lstlisting}
+
+\paragraph{Uwaga.} \texttt{decltype} stosuje szczególne reguły dla
+nieujętych w nawiasy nazw i dostępu do składowych. Dlatego
+\texttt{decltype(x)} oraz \texttt{decltype((x))} mogą zwrócić
+różne typy. Nie jest to sprzeczność, lecz zamierzona cecha języka.
+
+\subsection{Różnica między \texttt{auto} i \texttt{decltype(auto)}}
+
+Zwykłe \texttt{auto} w deklaracji zmiennej najczęściej dedukuje typ
+przez wartość i pomija referencję wynikającą z inicjalizatora.
+Natomiast \texttt{decltype(auto)} stosuje reguły \texttt{decltype}
+i może zachować kategorię wartości wyrażenia.
+
+\begin{lstlisting}
+#include <type_traits>
+
+int n = 5;
+auto copy = (n);           // int: independent value
+decltype(auto) alias = (n); // int&: refers to n
+
+static_assert(std::is_same_v<decltype(copy), int>);
+static_assert(std::is_same_v<decltype(alias), int&>);
+
+auto&& first = n;          // deduces int&
+auto&& second = 5;         // deduces int&&
+static_assert(std::is_same_v<decltype(first), int&>);
+static_assert(std::is_same_v<decltype(second), int&&>);
+\end{lstlisting}
+
+W typie wyniku funkcji zapis \texttt{decltype(auto)} wymaga
+ostrożności. Instrukcja \texttt{return (x);} może zwrócić
+referencję do zmiennej lokalnej, która przestanie istnieć.
+Zwykłe \texttt{auto} jest często bezpieczniejszym wyborem,
+gdy funkcja ma zwrócić własny obiekt przez wartość.
+
+\section{Referencje lvalue i rvalue}
+\label{sec:move-references}
+
+\begin{lstlisting}
+#include <string>
+
+std::string name = "Ada";
+std::string& a = name;            // binds to mutable lvalue
+const std::string& b = name;      // binds to lvalue
+const std::string& c = "temporary"; // can bind to temporary
+std::string&& d = std::string{"x"}; // binds to rvalue
+
+// std::string& e = std::string{"x"}; // error
+// std::string&& f = name;           // error
+\end{lstlisting}
+
+Referencja \texttt{T\&} umożliwia pracę z istniejącym, zwykle
+nazwanym obiektem; \texttt{T\&\&} może wiązać się z r-wartością.
+\texttt{const T\&} wiąże się zarówno z lvalue, jak i z rvalue,
+nie dając prawa do modyfikowania obiektu poprzez tę referencję.
+
+\subsection{Wybór przeciążenia}
+
+\begin{lstlisting}
+#include <iostream>
+#include <string>
+#include <utility>
+
+void inspect(const std::string&) {
+    std::cout << "const lvalue reference\n";
+}
+void inspect(std::string&&) {
+    std::cout << "rvalue reference\n";
+}
+
+int main() {
+    std::string text = "hello";
+    inspect(text);             // const lvalue reference
+    inspect(std::string{"x"}); // rvalue reference
+    inspect(std::move(text));  // rvalue reference
+}
+\end{lstlisting}
+
+Istnienie przeciążenia \texttt{f(T\&\&)} samo w sobie nie przesądza
+o rzeczywistym przeniesieniu czegokolwiek. Funkcja może tylko
+odczytać argument; \emph{move} jest operacją wykonywaną przez
+konstruktor lub przypisanie, a nie przez mechanizm wiązania referencji.
+
+\subsection{Wydłużenie życia obiektu tymczasowego}
+
+W typowych deklaracjach lokalnych związanie obiektu tymczasowego
+bezpośrednio z referencją może wydłużyć jego życie do końca życia
+tej referencji:
+\begin{lstlisting}
+#include <string>
+
+const std::string& a = std::string{"safe until a ends"};
+std::string&& b = std::string{"safe until b ends"};
+\end{lstlisting}
+Nie wolno jednak uogólniać tej reguły na zwracanie referencji ani
+na dowolne przekazywanie referencji dalej. Przykładowo:
+\begin{lstlisting}
+#include <string>
+
+const std::string& broken() {
+    return std::string{"dangling"}; // dangling reference
+}
+\end{lstlisting}
+Zwrócona referencja nie utrzymuje tego obiektu przy życiu.
+Jeżeli funkcja ma \emph{wytworzyć} wynik, zwykle powinna zwracać go
+przez wartość.
+
+\section{Co naprawdę robi \texttt{std::move}?}
+\label{sec:move-std-move}
+
+Nazwa jest nieco myląca: \texttt{std::move(x)} \textbf{nie przenosi
+zasobów samodzielnie}. W przybliżeniu wykonuje rzutowanie do
+referencji rvalue odpowiedniego typu. Dopiero dalszy konstruktor,
+operator przypisania lub inna funkcja może potraktować wynik
+jako obiekt nadający się do przeniesienia.
+
+\begin{lstlisting}
+#include <type_traits>
+#include <utility>
+
+template<class T>
+constexpr std::remove_reference_t<T>&&
+my_move(T&& value) noexcept {
+    return static_cast<std::remove_reference_t<T>&&>(value);
+}
+\end{lstlisting}
+
+Powyższa implementacja ilustruje istotę działania
+\texttt{std::move}. W rzeczywistym kodzie korzystamy z funkcji
+standardowej z nagłówka \texttt{<utility>}.
+
+\begin{lstlisting}
+#include <string>
+#include <utility>
+
+std::string first = "long text";
+std::string second = std::move(first);
+// A move constructor is selected for second.
+// first is valid; do not assume its exact contents.
+
+first = "reused";             // valid: assignment
+first.clear();                // valid: clear()
+\end{lstlisting}
+
+\paragraph{Stan obiektu po przeniesieniu.}
+Typy biblioteczne zwykle gwarantują stan \emph{poprawny, lecz
+nieokreślony co do zawartości} (\textit{valid but unspecified}), o ile
+kontrakt konkretnego typu nie obiecuje więcej. Takiego obiektu
+można bezpiecznie zniszczyć, przypisać mu nową wartość albo
+wykonać operację, której wymagania wstępne na to pozwalają.
+Nie należy jednak \emph{zakładać}, że każdy przeniesiony
+\texttt{std::string} jest pusty. Dla niektórych typów, np.
+\texttt{std::unique\_ptr}, stan po przeniesieniu określono dokładniej.
+
+\subsection{Problem obiektu \texttt{const}}
+
+\begin{lstlisting}
+#include <string>
+#include <utility>
+
+const std::string original = "cannot be emptied here";
+std::string other = std::move(original);
+// Typically: copy, not move (const string&& cannot bind to
+// string's non-const move constructor).
+\end{lstlisting}
+
+\texttt{std::move(original)} ma w tym przypadku typ
+\texttt{const std::string\&\&}. Typowy konstruktor przenoszący
+przyjmuje \texttt{std::string\&\&}, więc nie może otrzymać
+argumentu \texttt{const}. Kompilator wybiera konstruktor kopiujący
+przyjmujący \texttt{const std::string\&}. \textbf{Samo wystąpienie
+\texttt{std::move} w kodzie nie gwarantuje przeniesienia}.\footnote{Dla
+typów niekopiowalnych ten sam zapis może skończyć się błędem
+kompilacji.}
+
+\section{Konstruktor przenoszący i przenoszący operator przypisania}
+\label{sec:move-special-members}
+
+W klasie \texttt{T} konstruktor przenoszący ma zwykle sygnaturę
+\texttt{T(T\&\&)}, natomiast przenoszący operator przypisania:
+\texttt{T\& operator=(T\&\&)}. Nie należy mylić ich z kopiowaniem:
+\begin{lstlisting}
+struct Item {
+    Item() = default;
+    Item(const Item&);            // copy constructor
+    Item& operator=(const Item&); // copy assignment
+    Item(Item&&) noexcept;        // move constructor
+    Item& operator=(Item&&) noexcept; // move assignment
+    ~Item();                      // destructor
+};
+\end{lstlisting}
+
+\subsection{Przykład z obserwacją operacji}
+\label{sec:move-trace}
+
+\begin{lstlisting}
+#include <iostream>
+#include <utility>
+
+struct Trace {
+    Trace() { std::cout << "default\n"; }
+    Trace(const Trace&) { std::cout << "copy ctor\n"; }
+    Trace(Trace&&) noexcept { std::cout << "move ctor\n"; }
+    Trace& operator=(const Trace&) {
+        std::cout << "copy assign\n";
+        return *this;
+    }
+    Trace& operator=(Trace&&) noexcept {
+        std::cout << "move assign\n";
+        return *this;
+    }
+};
+
+int main() {
+    Trace a;                    // default
+    Trace b = a;                // copy ctor
+    Trace c = std::move(a);     // move ctor
+    b = c;                      // copy assign
+    b = std::move(c);           // move assign
+}
+\end{lstlisting}
+
+Konstruktor tworzy \emph{nowy} obiekt, a operator przypisania
+zmienia już istniejący. W tym przykładzie \texttt{Trace} jedynie
+wypisuje komunikaty. W klasie zarządzającej zasobem konstruktor
+przenoszący powinien przekazać własność zasobu, a operator
+przypisania musi dodatkowo poprawnie pozbyć się zasobu
+posiadanego wcześniej przez cel.
+
+\subsection{Pełny przykład: klasa samodzielnie zarządzająca tablicą}
+\label{sec:move-raw-buffer}
+
+To przykład \emph{edukacyjny}. W rzeczywistym projekcie zwykle
+lepiej użyć standardowego kontenera, np. \texttt{std::vector<int>}.
+
+\begin{lstlisting}
+#include <algorithm>
+#include <cstddef>
+#include <utility>
+
+class RawBuffer {
+    std::size_t size_ = 0;
+    int* data_ = nullptr;
+
+public:
+    explicit RawBuffer(std::size_t n)
+        : size_(n), data_(n ? new int[n]{} : nullptr) {}
+
+    ~RawBuffer() { delete[] data_; }
+
+    RawBuffer(const RawBuffer& other)
+        : RawBuffer(other.size_) {
+        if (size_ != 0)
+            std::copy_n(other.data_, size_, data_);
+    }
+
+    RawBuffer& operator=(const RawBuffer& other) {
+        if (this != &other) {
+            RawBuffer copy(other); // may throw; *this unchanged
+            swap(copy);
+        }
+        return *this;
+    }
+
+    RawBuffer(RawBuffer&& other) noexcept
+        : size_(std::exchange(other.size_, 0)),
+          data_(std::exchange(other.data_, nullptr)) {}
+
+    RawBuffer& operator=(RawBuffer&& other) noexcept {
+        if (this != &other) {
+            delete[] data_;
+            size_ = std::exchange(other.size_, 0);
+            data_ = std::exchange(other.data_, nullptr);
+        }
+        return *this;
+    }
+
+    void swap(RawBuffer& other) noexcept {
+        using std::swap;
+        swap(size_, other.size_);
+        swap(data_, other.data_);
+    }
+
+    std::size_t size() const noexcept { return size_; }
+    int& operator[](std::size_t i) { return data_[i]; }
+    const int& operator[](std::size_t i) const { return data_[i]; }
+};
+\end{lstlisting}
+
+\texttt{std::exchange(obj, value)} zwraca starą wartość \texttt{obj}
+i zastępuje ją wartością \texttt{value}. Konstruktor przenoszący
+przejmuje więc wskaźnik i rozmiar, a źródło ustawia w jawnie
+określony stan pusty. Operator przenoszącego przypisania
+usuwa dotychczasową tablicę celu, przejmuje nową i zabezpiecza
+przypadek \texttt{b = std::move(b)}. W implementacji kopiowania
+widać z kolei \emph{silną gwarancję wyjątkową}: jeśli utworzenie
+kopii nie powiedzie się, pierwotny obiekt pozostaje bez zmian.
+
+\section{Reguła pięciu, reguła trzech i reguła zera}
+\label{sec:move-rule-of-five}
+
+Klasy zarządzające zasobem często muszą kontrolować pięć operacji:
+(1) destruktor, (2) konstruktor kopiujący, (3) kopiujący operator
+przypisania, (4) konstruktor przenoszący oraz (5) przenoszący
+operator przypisania. To \emph{reguła pięciu}.
+
+Historyczna \emph{reguła trzech} odnosiła się do destruktora,
+konstruktora kopiującego i kopiującego operatora przypisania,
+zanim język udostępnił move semantics.
+
+\paragraph{Ważne: deklarowanie destruktora może blokować generowanie
+konstruktora przenoszącego.}
+
+\begin{lstlisting}
+#include <memory>
+#include <type_traits>
+
+struct WithDestructor {
+    std::unique_ptr<int> p;
+    ~WithDestructor() = default;
+};
+
+static_assert(!std::is_move_constructible_v<WithDestructor>);
+
+struct WithMove {
+    std::unique_ptr<int> p;
+    ~WithMove() = default;
+    WithMove() = default;
+    WithMove(WithMove&&) noexcept = default;
+    WithMove& operator=(WithMove&&) noexcept = default;
+};
+static_assert(std::is_move_constructible_v<WithMove>);
+\end{lstlisting}
+
+W \texttt{WithDestructor} użytkownik zadeklarował destruktor,
+więc kompilator nie deklaruje automatycznie operacji przenoszących.
+Kopiowanie jest niedostępne z powodu \texttt{unique\_ptr}.
+Samo \texttt{= default} przy destruktorze nie usuwa tej reguły.
+
+\subsection{Najlepsza praktyka: reguła zera}
+
+\emph{Reguła zera} mówi, że klasy, które nie są bezpośrednio
+odpowiedzialne za posiadanie surowych zasobów, zwykle nie powinny
+same definiować żadnej z pięciu operacji.
+
+\begin{lstlisting}
+#include <string>
+#include <vector>
+
+struct Dataset {
+    std::string title;
+    std::vector<double> values;
+};
+
+Dataset original{"results", {1.0, 2.0, 3.0}};
+Dataset copy = original;           // deep copy of vector data
+Dataset moved = std::move(original); // member-wise move
+\end{lstlisting}
+
+To kontenery standardowe odpowiadają za przydział i zwalnianie
+pamięci. Automatycznie generowane operacje \texttt{Dataset}
+wykonują odpowiednie operacje na jego składowych. \textbf{Zalecenie:}
+zacznij od reguły zera; własny konstruktor przenoszący pisz
+jedynie wtedy, gdy zachowanie domyślne nie jest właściwe.
+
+\section{Przenoszenie a wyjątki: \texttt{noexcept}}
+\label{sec:move-noexcept}
+
+Kontenery takie jak \texttt{std::vector<T>} przy realokacji muszą
+przenieść lub skopiować dotychczasowe elementy do nowego obszaru.
+Jeśli przenoszenie \texttt{T} może rzucać wyjątki, a \texttt{T}
+można kopiować, biblioteka może wybrać kopiowanie, by zachować
+silniejsze gwarancje wyjątkowe. Właśnie dlatego poprawne operacje
+przenoszące, które nie mogą rzucać wyjątków, warto deklarować
+\texttt{noexcept}.
+
+\begin{lstlisting}
+#include <type_traits>
+#include <utility>
+
+struct Resource {
+    Resource() = default;
+    Resource(const Resource&) = default;
+    Resource(Resource&&) noexcept = default;
+};
+
+static_assert(std::is_nothrow_move_constructible_v<Resource>);
+
+// move_if_noexcept can provide an lvalue reference if
+// moving might throw and a copy is available.
+\end{lstlisting}
+
+\texttt{std::move\_if\_noexcept(x)} zwraca odpowiednio
+\texttt{T\&\&} albo \texttt{const T\&}, zależnie od własności
+konstruktorów danego typu. To narzędzie używane przy implementowaniu
+kontenerów, a nie uniwersalny zamiennik \texttt{std::move}.
+
+\paragraph{Ostrożnie z \texttt{noexcept}.}
+Wyjście wyjątku poza funkcję zadeklarowaną jako
+\texttt{noexcept} wywołuje \texttt{std::terminate}.
+Dlatego bezwyjątkowość musi wynikać z rzeczywistych operacji składowych.
+
+\section{Zwijanie referencji (\textit{reference collapsing})}
+\label{sec:move-ref-collapse}
+
+Gdy referencje występują pośrednio poprzez aliasy lub
+podstawienie argumentów szablonu, stosuje się \emph{zwijanie
+referencji}. Wszystkie przypadki przedstawia tabela:
+
+\begin{center}
+\begin{tabular}{|c|c|c|}
+\hline
+\textbf{Typ pośredni} & \textbf{Zapis} & \textbf{Wynik} \\
+\hline
+\texttt{T\&} i \texttt{\&} & \texttt{T\& \&} & \texttt{T\&} \\
+\texttt{T\&} i \texttt{\&\&} & \texttt{T\& \&\&} & \texttt{T\&} \\
+\texttt{T\&\&} i \texttt{\&} & \texttt{T\&\& \&} & \texttt{T\&} \\
+\texttt{T\&\&} i \texttt{\&\&} & \texttt{T\&\& \&\&} & \texttt{T\&\&} \\
+\hline
+\end{tabular}
+\end{center}
+
+Krótko: jeżeli \emph{choć jeden} składnik jest \texttt{\&},
+wynik jest \texttt{\&}; tylko \texttt{\&\&} połączone
+z \texttt{\&\&} daje \texttt{\&\&}.
+
+\begin{lstlisting}
+#include <type_traits>
+
+using L = int&;
+using R = int&&;
+
+static_assert(std::is_same_v<L&, int&>);
+static_assert(std::is_same_v<L&&, int&>);
+static_assert(std::is_same_v<R&, int&>);
+static_assert(std::is_same_v<R&&, int&&>);
+\end{lstlisting}
+
+Zwijanie referencji jest podstawą \emph{perfect forwarding}:
+dzięki niemu jeden szablon może przyjmować zarówno lvalue,
+jak i rvalue i przekazywać tę różnicę dalej.
+
+\section{Referencje przekazujące i dedukcja \texttt{T\&\&}}
+\label{sec:move-forwarding-ref}
+
+Zapis \texttt{T\&\&} ma dwa znaczenia w zależności od kontekstu.
+Jeśli \texttt{T} jest dedukowanym, niekwalifikowanym parametrem
+typu \emph{tego samego} szablonu funkcji, \texttt{T\&\&}
+to \emph{referencja przekazująca} (\textit{forwarding reference}).
+W pozostałych typowych kontekstach jest to po prostu
+referencja rvalue.
+
+\begin{lstlisting}
+#include <string>
+
+template<class T>
+void forwarding(T&& x);         // forwarding reference
+
+template<class T>
+void not_forwarding(const T&& x); // rvalue reference
+
+void fixed(std::string&& x);    // rvalue reference
+
+template<class T>
+struct Holder {
+    void receive(T&& x);        // NOT forwarding: T comes
+                               // from the class template
+
+    template<class U>
+    void relay(U&& x);          // forwarding: U is deduced
+};
+\end{lstlisting}
+
+Dla wywołania \texttt{forwarding(x)} z lvalue typu \texttt{int}
+kompilator dedukuje \texttt{T = int\&}, zatem parametr ma po
+zwinięciu typ \texttt{int\&}. Dla \texttt{forwarding(5)}
+dedukuje \texttt{T = int}, a parametr ma typ \texttt{int\&\&}.
+
+\begin{lstlisting}
+#include <type_traits>
+
+template<class T>
+void check(T&& x) {
+    if constexpr (std::is_lvalue_reference_v<T>) {
+        // Called with an lvalue.
+    } else {
+        // Called with an rvalue.
+    }
+}
+\end{lstlisting}
+
+\paragraph{Drobne wyjątki.} \texttt{auto\&\&} zwykle również
+pozwala na przekazywanie kategorii, lecz dedukcja \texttt{auto}
+ma szczególne reguły dla list inicjalizacyjnych.
+\texttt{const T\&\&} nie jest referencją przekazującą.
+
+\section{Perfect forwarding i \texttt{std::forward}}
+\label{sec:move-perfect-forwarding}
+
+Przez \emph{perfect forwarding} rozumiemy przekazanie argumentu
+do następnej funkcji przy zachowaniu kategorii wartości,
+a także odpowiednich kwalifikatorów typu.
+
+\begin{lstlisting}
+#include <iostream>
+#include <utility>
+
+void target(int&)  { std::cout << "lvalue\n"; }
+void target(int&&) { std::cout << "rvalue\n"; }
+
+template<class T>
+void incorrect(T&& value) {
+    target(value); // value is a named variable: always lvalue
+}
+
+template<class T>
+void correct(T&& value) {
+    target(std::forward<T>(value));
+}
+
+int main() {
+    int x = 1;
+    incorrect(2); // lvalue (!)
+    correct(x);   // lvalue
+    correct(2);   // rvalue
+}
+\end{lstlisting}
+
+W przybliżeniu \texttt{std::forward<T>(value)} zwraca
+lvalue, jeżeli \texttt{T} wydedukowano jako referencję lvalue,
+i xvalue w przeciwnym razie. \texttt{std::move(value)} zawsze
+wymusza kategorię xvalue: w funkcji przekazującej byłoby to
+błędem, ponieważ niepotrzebnie pozwalałoby na przeniesienie
+zasobu z argumentu przekazanego jako lvalue.
+
+\subsection{Przykład: fabryka obiektów}
+
+\begin{lstlisting}
+#include <memory>
+#include <string>
+#include <utility>
+
+struct Person {
+    std::string name;
+    int age;
+
+    Person(std::string n, int a)
+        : name(std::move(n)), age(a) {}
+};
+
+template<class T, class... Args>
+std::unique_ptr<T> make_object(Args&&... args) {
+    return std::unique_ptr<T>(
+        new T(std::forward<Args>(args)...)
+    );
+}
+
+int main() {
+    std::string first = "Ada";
+    auto p = make_object<Person>(first, 37); // first copied
+    auto q = make_object<Person>(std::move(first), 38);
+}
+\end{lstlisting}
+
+To edukacyjna wersja fabryki. W produkcyjnym kodzie
+\texttt{std::make\_unique<T>(...)} robi to samo w prostszy
+sposób. W drugim wywołaniu użytkownik świadomie pozwolił na
+przeniesienie \texttt{first}; w pierwszym pozostaje on
+nienaruszony. \texttt{std::forward<Args>(args)...} rozwija pakiet
+argumentów omówiony w rozdziale~4.
+
+\subsection{Nie przekazuj tego samego zasobu dwa razy bez zastanowienia}
+
+\begin{lstlisting}
+#include <utility>
+
+template<class T>
+void bad_double_forward(T&& x) {
+    consume(std::forward<T>(x));
+    consume(std::forward<T>(x)); // may use moved-from object
+}
+\end{lstlisting}
+
+Ten fragment jest \emph{schematem błędu}: zakładamy, że istnieje
+funkcja \texttt{consume}. Jeśli pierwsze wywołanie wykorzysta
+argument rvalue przez przeniesienie, drugie otrzyma już obiekt
+po przeniesieniu. Referencję przekazującą traktuj zatem jako
+przeznaczoną zwykle do \emph{jednego} przekazania dalej.
+
+\section{Perfect forwarding a przeciążenia i szablony klas}
+
+Konstruktor z referencją przekazującą potrafi być bardzo zachłanny
+podczas rozstrzygania przeciążeń. Może np. wygrać z konstruktorem
+kopiującym przy argumentach nie-\texttt{const}.
+
+\begin{lstlisting}
+#include <string>
+#include <utility>
+
+struct Named {
+    std::string name;
+
+    Named(const Named&) = default;
+
+    template<class U>
+    explicit Named(U&& u)
+        : name(std::forward<U>(u)) {}
+};
+
+// Named a{"text"};
+// Named b(a);  // may select the constructor template,
+//              // then fail to initialize std::string from Named&
+\end{lstlisting}
+
+Zwykle lepiej zacząć od zwykłych przeciążeń albo konstruktora
+przyjmującego konkretny typ. Jeżeli szablon jest potrzebny,
+można ograniczyć go koncepcją:
+
+\begin{lstlisting}
+#include <concepts>
+#include <string>
+#include <type_traits>
+#include <utility>
+
+struct SafeNamed {
+    std::string name;
+
+    SafeNamed(const SafeNamed&) = default;
+    SafeNamed(SafeNamed&&) = default;
+
+    template<class U>
+      requires (!std::same_as<std::remove_cvref_t<U>, SafeNamed>
+                && std::constructible_from<std::string, U&&>)
+    explicit SafeNamed(U&& u)
+        : name(std::forward<U>(u)) {}
+};
+\end{lstlisting}
+
+Takie powiązanie rozdziału o perfect forwarding z koncepcjami
+z rozdziału~5 jest bardzo przydatne
+w bibliotekach generycznych.
+
+\section{Copy elision: kiedy nie ma ani kopii, ani przeniesienia?}
+\label{sec:move-elision}
+
+Prosty model \emph{zwrócenie przez wartość = kopia lub move}
+jest niepoprawny w nowoczesnym C++. Od C++17 pewne wyrażenia
+\texttt{prvalue} inicjalizują wynik \emph{bezpośrednio w miejscu
+docelowym}. Nie istnieje dodatkowy obiekt, który trzeba by
+skopiować lub przenieść.
+
+\begin{lstlisting}
+struct NonMovable {
+    NonMovable() = default;
+    NonMovable(const NonMovable&) = delete;
+    NonMovable(NonMovable&&) = delete;
+};
+
+NonMovable create() {
+    return NonMovable{}; // guaranteed elision, C++17+
+}
+
+int main() {
+    NonMovable x = create(); // OK in C++17+
+}
+\end{lstlisting}
+
+Nie jest to zwykła optymalizacja, którą kompilator \emph{może}
+wyłączyć: w pokazanym przypadku wynika to z semantyki języka.
+
+\subsection{NRVO a gwarantowana elizja}
+
+\begin{lstlisting}
+#include <string>
+
+std::string first() {
+    return std::string{"hello"}; // mandatory direct construction
+}
+
+std::string second() {
+    std::string s = "hello";
+    return s;                    // NRVO may occur
+}
+\end{lstlisting}
+
+\textit{Named Return Value Optimization} (NRVO) dotyczy
+zwracania nazwanej lokalnej zmiennej. W C++20 kompilator \emph{może}
+pominąć utworzenie dodatkowego obiektu. Jeśli NRVO nie nastąpi,
+wyrażenie \texttt{s} w instrukcji \texttt{return} może
+uczestniczyć w niejawnej próbie przeniesienia.
+
+\paragraph{Nie pisz automatycznie \texttt{return std::move(s);}.}
+
+\begin{lstlisting}
+std::string make_text() {
+    std::string s = "result";
+    return s;             // allows NRVO
+}
+
+std::string less_good() {
+    std::string s = "result";
+    return std::move(s);  // inhibits NRVO; move may be required
+}
+\end{lstlisting}
+
+\texttt{std::move(s)} zmienia wynik w xvalue i tym samym
+nie spełnia warunków NRVO dotyczących nazwy obiektu.
+Jeśli funkcja zwraca własną lokalną zmienną przez wartość,
+zazwyczaj najlepsze jest \texttt{return s;}.
+
+\section{Argumenty funkcji: kiedy kopiować, kiedy przenosić?}
+\label{sec:move-api}
+
+Wybór sposobu przyjmowania argumentu jest częścią kontraktu API.
+Nie chodzi jedynie o wydajność, ale przede wszystkim o własność
+i intencję.
+
+\begin{center}
+\begin{tabular}{|p{3.4cm}|p{4.3cm}|p{4.7cm}|}
+\hline
+\textbf{Parametr} & \textbf{Znaczenie} & \textbf{Kiedy używać} \\
+\hline
+\texttt{const T\&} & Odczyt bez przejmowania własności. & Duże obiekty, gdy wystarczy tylko odczyt. \\
+\hline
+\texttt{T\&} & Modyfikacja obiektu należącego do wywołującego. & Parametry wyjściowe i operacje in-place. \\
+\hline
+\texttt{T} & Własna wartość; może być skopiowana albo przeniesiona. & Małe typy i funkcje mające zachować wartość. \\
+\hline
+\texttt{T\&\&} & Dostęp do argumentu będącego r-wartością. & Przeciążenia zależne od kategorii oraz operacje konsumujące. \\
+\hline
+\texttt{T\&\&} z dedukcją \texttt{T} & Referencja przekazująca. & Opakowania i fabryki zachowujące kategorię argumentów. \\
+\hline
+\end{tabular}
+\end{center}
+
+\subsection{Idiom \emph{pass by value, then move}}
+
+\begin{lstlisting}
+#include <string>
+#include <utility>
+
+class User {
+    std::string name_;
+public:
+    explicit User(std::string name)
+        : name_(std::move(name)) {}
+};
+
+std::string a = "Alice";
+User first(a);                    // copy into parameter, then move
+User second(std::string{"Bob"});  // parameter from prvalue, then move
+\end{lstlisting}
+
+To dobre rozwiązanie, gdy funkcja \emph{zawsze} potrzebuje własnej
+kopii/przeniesienia argumentu. Nie jest jednak magicznie
+najszybsze w każdym przypadku: dla lvalue może wymagać kopiowania
+i jeszcze jednego przeniesienia, a duże obiekty niemożliwe do
+przeniesienia mogą wymagać osobnego projektu API.
+
+\subsection{Przekazywanie własności \texttt{unique\_ptr}}
+
+\begin{lstlisting}
+#include <memory>
+#include <utility>
+
+void adopt(std::unique_ptr<int> p) {
+    // Ownership transferred into this function.
+}
+
+int main() {
+    auto p = std::make_unique<int>(42);
+    adopt(std::move(p));
+    // p == nullptr after moving this unique_ptr
+}
+\end{lstlisting}
+
+Przekazanie \texttt{unique\_ptr} przez wartość oznacza przejęcie
+własności. Jeżeli funkcja ma jedynie korzystać z obiektu,
+zwykle lepiej przyjąć \texttt{T\&} lub \texttt{const T\&}.
+Temat własności zasobów omówiono w rozdziale~3.
+
+\section{Rvalue-qualified methods i świadome udostępnianie zasobów}
+\label{sec:move-ref-qualified}
+
+C++ pozwala ograniczać metodę do lvalue albo rvalue odbiorcy,
+dopisując \texttt{\&} lub \texttt{\&\&} po liście parametrów.
+Można to wykorzystać np. do udostępnienia zawartości obiektu
+bez kopiowania, gdy całe opakowanie jest tymczasowe.
+
+\begin{lstlisting}
+#include <string>
+#include <utility>
+
+class Message {
+    std::string data_;
+public:
+    explicit Message(std::string s) : data_(std::move(s)) {}
+
+    const std::string& text() const & noexcept {
+        return data_;              // lvalue owner: borrow
+    }
+    std::string text() && noexcept {
+        return std::move(data_);   // rvalue owner: consume
+    }
+};
+
+Message m{"hello"};
+const std::string& borrowed = m.text();
+std::string owned = Message{"world"}.text();
+\end{lstlisting}
+
+Wariant \texttt{\&\&} może bezpiecznie oddać wartość przez
+przeniesienie. Gdybyśmy zwracali w nim referencję do składowej
+tymczasowego obiektu, powstałaby referencja wisząca.
+Projektując takie API, warto rozważyć również wywołania na
+\texttt{const} r-wartościach i ich wymagane zachowanie.
+
+\section{Kontenery, iteratory przenoszące i wzorce użytkowe}
+
+\subsection{Dodawanie elementów do \texttt{std::vector}}
+
+\begin{lstlisting}
+#include <string>
+#include <utility>
+#include <vector>
+
+std::vector<std::string> words;
+std::string word = "one";
+
+words.push_back(word);             // copy from lvalue
+words.push_back(std::move(word));  // move from lvalue cast to xvalue
+words.emplace_back(3, 'x');       // construct "xxx" in place
+\end{lstlisting}
+
+Metoda \texttt{emplace\_back} konstruuje nowy element z podanych
+argumentów. Nie musi być szybsza od \texttt{push\_back}.
+Gotowy obiekt można przekazać z pomocą \texttt{std::move}.
+Podczas realokacji kontener nadal może kopiować lub przenosić
+wcześniej dodane elementy.
+
+\subsection{Przenoszenie całego zakresu}
+
+\begin{lstlisting}
+#include <algorithm>
+#include <iterator>
+#include <string>
+#include <vector>
+
+std::vector<std::string> source{"a", "b"};
+std::vector<std::string> dest;
+
+std::move(source.begin(), source.end(),
+          std::back_inserter(dest)); // algorithm std::move
+
+// source still contains two valid strings, but their
+// contents are not assumed.
+\end{lstlisting}
+
+Nazwa \texttt{std::move} występuje również dla algorytmu z nagłówka
+\texttt{<algorithm>}. W przeciwieństwie do pojedynczego
+\texttt{std::move(x)} z nagłówka \texttt{<utility>}, algorytm
+przypisuje kolejno elementy z zakresu docelowego, korzystając
+z możliwości ich przenoszenia.
+
+\section{Typowe błędy i pułapki}
+\label{sec:move-errors}
+
+\subsection{Błąd 1: przekonanie, że \texttt{std::move} niszczy obiekt}
+
+\texttt{std::move} jest rzutowaniem, a nie destruktorem. Obiekt
+źródłowy nadal istnieje aż do końca własnego czasu życia.
+Może zmienić stan, jeśli na jego podstawie wykonano
+rzeczywistą operację przeniesienia.
+
+\subsection{Błąd 2: \texttt{std::move} z argumentu przekazanego jako \texttt{const T\&}}
+
+\begin{lstlisting}
+#include <string>
+#include <utility>
+
+std::string ineffective(const std::string& x) {
+    return std::move(x); // copies for std::string
+}
+\end{lstlisting}
+
+Jeżeli funkcja potrzebuje zwrócić niezależną kopię, czytelniej
+napisać \texttt{return x;}. Jeśli ma konsumować argument,
+powinna otrzymać wartość lub odpowiednią modyfikowalną
+referencję. Nie wolno usuwać \texttt{const} przez rzutowanie,
+by wymusić przeniesienie z oryginalnie stałego obiektu.
+
+\subsection{Błąd 3: użycie nazwanego \texttt{T\&\&} bez \texttt{std::move}}
+
+\begin{lstlisting}
+#include <memory>
+#include <utility>
+
+void take(std::unique_ptr<int>&& p) {
+    // auto q = p;            // error: p is an lvalue
+    auto q = std::move(p);    // explicit ownership transfer
+}
+\end{lstlisting}
+
+\subsection{Błąd 4: przechowywanie referencji do argumentu tymczasowego}
+
+\begin{lstlisting}
+#include <string>
+#include <string_view>
+
+std::string_view dangerous() {
+    return std::string{"temporary"}; // dangling view
+}
+\end{lstlisting}
+
+\texttt{std::string\_view} jest widokiem, a nie właścicielem
+pamięci. Semantyka przenoszenia nie rozwiązuje problemów
+związanych z czasem życia. Gdy wynik funkcji ma być własnością
+wywołującego, zwracaj \texttt{std::string} przez wartość.
+
+\subsection{Błąd 5: przenoszenie nie gwarantuje zachowania wskaźników}
+
+Przeniesienie kontenera może spowodować unieważnienie wcześniej
+zachowanych iteratorów, referencji lub wskaźników zależnie od
+typu kontenera, operacji i alokatora. Nie zakładaj ogólnej
+zasady, że po \texttt{std::move} adresy danych zawsze pozostają
+takie same. Sprawdź dokumentację odpowiedniego typu.
+
+\subsection{Błąd 6: nadmierne stosowanie \texttt{std::forward}}
+
+\texttt{std::forward<T>} ma sens głównie tam, gdzie \texttt{T}
+pochodzi z dedukcji dla referencji przekazującej. Przy zwykłej
+lokalnej zmiennej przeznaczonej do przekazania własności
+należy używać \texttt{std::move}; przy zwracaniu lokalnej
+zmiennej przez wartość zazwyczaj żadnego z nich.
+
+\section{Przykład przekrojowy: kolejka zadań}
+\label{sec:move-project}
+
+Rozważmy prosty bufor zadań przechowujący funkcje do
+późniejszego wykonania. Użyjemy \texttt{std::unique\_ptr},
+aby zadanie jednoznacznie posiadało zasób. Poniższy przykład
+jest niezależny od wielowątkowości; \emph{kolejka zadań}
+nie uruchamia niczego w osobnym wątku.
+
+\begin{lstlisting}
+#include <functional>
+#include <iostream>
+#include <memory>
+#include <utility>
+#include <vector>
+
+class Tasks {
+    std::vector<std::function<void()>> items_;
+public:
+    template<class F>
+    void add(F&& f) {
+        items_.emplace_back(std::forward<F>(f));
+    }
+
+    void run() {
+        for (auto& f : items_) f();
+        items_.clear();
+    }
+};
+
+int main() {
+    Tasks tasks;
+    auto value = std::make_shared<int>(10);
+    tasks.add([value] { std::cout << *value << '\n'; });
+    tasks.run();
+}
+\end{lstlisting}
+
+\texttt{std::function<void()>} w C++20 wymaga, aby przechowywany
+obiekt wywoływalny był kopiowalny. Dlatego w przykładzie lambda
+przechowuje \texttt{shared\_ptr}. Gdybyśmy zamiast niego
+przechwycili przez przeniesienie \texttt{unique\_ptr}, lambda
+stałaby się niekopiowalna i taki obiekt nie spełniłby
+wymagań \texttt{std::function} w C++20. C++23 wprowadza
+\texttt{std::move\_only\_function}, która rozwiązuje ten problem.
+To pokazuje, że prawidłowy wybór sposobu przenoszenia zależy
+od kontraktów pozostałych typów.
+
+\section{Praktyczna ściąga i zalecenia projektowe}
+
+\begin{center}
+\begin{tabular}{|p{4.0cm}|p{8.4cm}|}
+\hline
+\textbf{Sytuacja} & \textbf{Zalecenie} \\
+\hline
+Zwracam utworzony obiekt & Zwróć go przez wartość; korzystaj z elizji lub NRVO. \\
+\hline
+Przenoszę zasób z lokalnego obiektu & Użyj \texttt{std::move(x)} w miejscu przekazania własności. \\
+\hline
+Piszę wrapper o argumentach \texttt{Args\&\&...} & Wykorzystaj \texttt{std::forward<Args>(args)...}. \\
+\hline
+Klasa ma \texttt{vector}/\texttt{string} jako składowe & Preferuj regułę zera i generowane operacje. \\
+\hline
+Klasa posiada goły wskaźnik do alokacji & Preferuj zmianę projektu na RAII; jeśli zarządzasz nim ręcznie, rozważ wszystkie operacje specjalne. \\
+\hline
+Kontener przenosi elementy przy realokacji & Właściwy, bezpieczny \texttt{noexcept} w konstruktorze move pomaga w gwarancjach wyjątkowych. \\
+\hline
+Argument będzie tylko odczytywany & Zwykle \texttt{const T\&} dla dużego \texttt{T}, a małe typy przez wartość. \\
+\hline
+Funkcja przejmuje \texttt{unique\_ptr} & Przyjmij go przez wartość; wywołujący świadomie używa \texttt{std::move}. \\
+\hline
+\end{tabular}
+\end{center}
+
+\paragraph{Najważniejsze rozróżnienie.}
+\begin{enumerate}
+\item \texttt{std::move} wyraża zgodę na potraktowanie obiektu jako źródła przeniesienia, ale samo zasobów nie przenosi.
+\item \texttt{std::forward<T>} zachowuje kategorię argumentu dedukowanego w szablonie.
+\item Konstruktor przenoszący to zwykle operacja \texttt{T(T\&\&)}, ale może wykonywać dowolną operację zgodną z kontraktem typu.
+\item \texttt{T\&\&} jako typ parametru nie zawsze jest referencją przekazującą.
+\item Nazwany parametr typu \texttt{T\&\&} jest wyrażeniem \texttt{lvalue}.
+\item Zwracanie przez wartość jest często najlepszym sposobem przekazywania wyniku.
+\item Kiedy tylko się da, stosuj regułę zera zamiast własnych pięciu funkcji specjalnych.
+\end{enumerate}
+
+\paragraph{Pytania kontrolne.}
+\begin{enumerate}
+\item Dlaczego wywołanie \texttt{g(x)} w funkcji \texttt{f(T\&\& x)} traktuje \texttt{x} jako lvalue?
+\item Kiedy \texttt{std::move(x)} kończy się kopiowaniem zamiast przeniesienia?
+\item Czym różnią się \texttt{return T\{\};} i \texttt{return local;} w C++20?
+\item Dlaczego przy powiększaniu \texttt{vector} konstruktor move z \texttt{noexcept} ma znaczenie?
+\item Kiedy użyć \texttt{std::forward<T>(x)}, a kiedy \texttt{std::move(x)}?
+\item Dlaczego metoda zwracająca \texttt{const std::string\&} nie powinna ujawniać referencji do składowej obiektu tymczasowego?
+\end{enumerate}
+
+\paragraph{Dalsza lektura.} \emph{cppreference}: \textit{Value categories},
+\textit{Move constructors}, \textit{Reference declaration},
+\textit{Copy elision}, \textit{std::move}, \textit{std::forward}.

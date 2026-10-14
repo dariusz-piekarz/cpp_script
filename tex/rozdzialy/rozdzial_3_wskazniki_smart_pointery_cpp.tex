@@ -1,0 +1,1273 @@
+% ROZDZIAL 3 -- fragment do dolaczenia do glownego skryptu.
+% Przykladowe programy zakladaja C++20, jesli nie podano inaczej.
+% W preambule dokumentu potrzebny jest pakiet listings:
+% \usepackage{listings}
+% \lstset{language=C++,basicstyle=\ttfamily\small,
+%   columns=fullflexible,keepspaces=true,breaklines=true,
+%   showstringspaces=false,frame=single,tabsize=4}
+% Fragment mozna wlaczyc przez:
+% \input{rozdzial_3_wskazniki_smart_pointery_cpp.tex}
+
+\chapter[Wskaźniki i inteligentne wskaźniki w C++]{Wskaźniki, zarządzanie pamięcią i inteligentne wskaźniki w C++}
+\label{chap:wskazniki-cpp}
+
+\section{Po co istnieją wskaźniki?}
+
+Wskaźnik (ang. \emph{pointer}) przechowuje wartość pozwalającą
+odwołać się do obiektu albo funkcji. Typowy wskaźnik do obiektu ma
+postać \texttt{T*}. W odróżnieniu od obiektu typu \texttt{T},
+wskaźnik może wskazywać na inny obiekt, może być pusty, a samo
+wskazywanie \emph{nie oznacza posiadania wskazywanego obiektu}.
+
+Wskaźniki wykorzystuje się między innymi do:
+\begin{itemize}
+    \item przekazywania i modyfikowania istniejących obiektów bez ich kopiowania;
+    \item opisywania opcjonalnej relacji ``obiekt istnieje albo go nie ma'';
+    \item implementowania dynamicznych struktur danych, takich jak listy,
+    drzewa i grafy;
+    \item realizowania polimorfizmu i dynamicznego wiązania;
+    \item współpracy z interfejsami C, sterownikami i bibliotekami systemowymi;
+    \item kontrolowania czasu życia zasobów za pomocą
+    \texttt{std::unique\_ptr}, \texttt{std::shared\_ptr} i
+    \texttt{std::weak\_ptr}.
+\end{itemize}
+
+\paragraph{Najważniejsza zasada.}
+W nowoczesnym C++ wskaźnik \texttt{T*} traktujemy przede wszystkim
+jako \emph{nieposiadający dostęp} do obiektu (\emph{observer}).
+Odpowiedzialność za czas życia obiektu powinna być reprezentowana
+osobno i jednoznacznie. Najczęściej wystarcza obiekt przechowywany
+bezpośrednio, kontener standardowy albo \texttt{std::unique\_ptr}.
+
+\section{Podstawy: adres, dereferencja i \texttt{nullptr}}
+
+\subsection{Deklarowanie wskaźników}
+
+Operator \texttt{\&} zastosowany do obiektu daje jego adres, natomiast
+operator jednoargumentowy \texttt{*} służy do dereferencji (dostępu do
+wskazywanego obiektu):
+
+\begin{lstlisting}
+#include <iostream>
+
+int main() {
+    int x = 10;
+    int* p = &x;             // p points to x
+
+    std::cout << x << '\n';  // 10
+    std::cout << *p << '\n'; // 10
+
+    *p = 25;                 // modifies x
+    std::cout << x << '\n';  // 25
+}
+\end{lstlisting}
+
+W deklaracji \texttt{int* p} gwiazdka należy do deklaratora, nie jest
+operacją dereferencji. Nie należy też utożsamiać wskaźnika z samym
+obiektem: \texttt{p} jest osobnym obiektem o własnej wartości i adresie.
+
+\begin{lstlisting}
+int x = 7;
+int* p = &x;
+int** pp = &p;  // pointer to a pointer
+
+**pp = 9;       // changes x
+\end{lstlisting}
+
+Zapis \texttt{int* a, b;} deklaruje wskaźnik \texttt{a} oraz
+zwykłą zmienną \texttt{b}. Dla czytelności lepiej deklarować je
+oddzielnie.
+
+\subsection{Wskaźnik pusty i poprawna dereferencja}
+
+Pusty wskaźnik zapisujemy za pomocą \texttt{nullptr} (od C++11).
+Nie wolno go dereferencjonować. Samo porównanie z
+\texttt{nullptr} jest bezpieczne:
+
+\begin{lstlisting}
+int* p = nullptr;
+
+if (p != nullptr) {
+    *p = 5;
+}
+
+if (p) {                 // equivalent non-null test
+    *p = 6;
+}
+\end{lstlisting}
+
+\texttt{nullptr} ma osobny typ \texttt{std::nullptr\_t}; w odróżnieniu od
+historycznych zapisów \texttt{0} i \texttt{NULL} nie jest zwykłą
+liczbą całkowitą. Pomaga to przy przeciążaniu funkcji:
+
+\begin{lstlisting}
+void f(int);
+void f(int*);
+
+f(0);         // calls f(int)
+f(nullptr);   // calls f(int*)
+\end{lstlisting}
+
+\paragraph{Uwaga o wskaźnikach niezainicjalizowanych.}
+Lokalne \texttt{int* p;} bez inicjalizacji ma nieokreśloną wartość;
+korzystanie z niej może prowadzić do niezdefiniowanego zachowania.
+Zawsze inicjalizuj wskaźnik poprawnym adresem lub \texttt{nullptr}.
+
+\subsection{Dostęp do składowych: \texttt{.} i \texttt{->}}
+
+Operator \texttt{.} wybiera składową obiektu, natomiast
+\texttt{->} wybiera składową przez wskaźnik:
+
+\begin{lstlisting}
+#include <string>
+
+struct User {
+    std::string name;
+    int score = 0;
+};
+
+User u{"Anna", 12};
+User* p = &u;
+
+u.score = 13;
+p->score = 14;       // same as (*p).score = 14
+\end{lstlisting}
+
+Nawiasy w \texttt{(*p).score} są potrzebne ze względu na priorytety
+operatorów. Zapis \texttt{*p.score} nie oznacza tego samego.
+
+\section{Wskaźniki, referencje i kwalifikator \texttt{const}}
+
+\subsection{Kiedy wskaźnik, a kiedy referencja?}
+
+Referencja \texttt{T\&} jest zwykle odpowiednia, gdy obiekt musi
+istnieć i parametr nie jest opcjonalny. Wskaźnik \texttt{T*} nadaje
+się, gdy brak obiektu jest dopuszczalny lub gdy chcemy zmieniać
+obiekt, na który wskazujemy.
+
+\begin{lstlisting}
+void increase(int& x) { ++x; }
+
+void increase_if_present(int* x) {
+    if (x) { ++*x; }
+}
+
+int n = 3;
+increase(n);             // n == 4
+increase_if_present(&n); // n == 5
+increase_if_present(nullptr); // no operation
+\end{lstlisting}
+
+Referencja również może stać się \emph{wisząca}, gdy obiekt,
+do którego się odnosi, przestanie istnieć. Typ \texttt{T\&}
+nie gwarantuje samodzielnie, że czas życia obiektu jest wystarczająco długi.
+
+\subsection{Co jest stałe: wskaźnik czy obiekt?}
+
+\begin{lstlisting}
+int a = 1;
+int b = 2;
+
+const int* p = &a;       // read-only access through p
+p = &b;                 // OK: p can point elsewhere
+// *p = 3;              // error
+
+int* const q = &a;       // q cannot be reassigned
+*q = 3;                 // OK: a is mutable
+// q = &b;              // error
+
+const int* const r = &a; // neither reassignment nor write
+int const* s = &a;       // same type as const int*
+\end{lstlisting}
+
+Reguła praktyczna: \texttt{const} po \texttt{*} dotyczy samego
+wskaźnika, a przed \texttt{*} --- wskazywanego typu.
+
+\paragraph{Pozorna niemutowalność.}
+Wskaźnik \texttt{const T*} nie pozwala modyfikować obiektu
+\emph{przez ten wskaźnik}. Nie oznacza, że obiekt nie może ulec zmianie
+inną drogą:
+
+\begin{lstlisting}
+int x = 10;
+const int* read_only = &x;
+x = 20;                 // allowed
+// *read_only = 30;     // not allowed
+\end{lstlisting}
+
+\section{Czas życia obiektu i wskaźniki wiszące}
+
+\subsection{Adres nie oznacza prawa dostępu}
+
+Wskaźnik może przechowywać adres miejsca, w którym obiekt już
+nie istnieje. Jest wtedy wskaźnikiem \emph{wiszącym}
+(ang. \emph{dangling pointer}). Dereferencja takiego wskaźnika
+prowadzi do niezdefiniowanego zachowania (\emph{undefined behavior}, UB).
+
+\begin{lstlisting}
+int* bad() {
+    int local = 42;
+    return &local;       // WRONG: local dies at return
+}
+
+// int x = *bad();       // UB: dangling pointer
+\end{lstlisting}
+
+Prawidłowo można zwrócić samą wartość:
+
+\begin{lstlisting}
+int good() {
+    int local = 42;
+    return local;        // safe value return
+}
+\end{lstlisting}
+
+\subsection{Unieważnianie wskaźników przez kontenery}
+
+Nie każdy wskaźnik staje się wiszący przez wyjście z funkcji.
+Relokacja elementów \texttt{std::vector} także może unieważnić
+wskaźniki, referencje i iteratory do tych elementów:
+
+\begin{lstlisting}
+#include <vector>
+
+std::vector<int> values{10, 20};
+int* p = &values[0];
+
+values.reserve(100);     // may reallocate storage
+// *p = 50;              // unsafe if reallocation occurred
+p = &values[0];          // reacquire a valid pointer
+\end{lstlisting}
+
+Po zmianie pojemności wymagającej realokacji adresy elementów
+się zmieniają. W ogólności po operacji mogącej unieważnić wskaźnik
+należy pobrać go ponownie, a nie próbować odgadnąć, czy nadal działa.
+
+\subsection{Trzy niezależne pytania}
+
+Przy każdym wskaźniku rozstrzygaj:
+\begin{enumerate}
+    \item Czy wartość wskaźnika jest poprawna (np. nie jest
+    niezainicjalizowana)?
+    \item Czy obiekt, na który wskazujemy, nadal istnieje?
+    \item Czy operacja jest dozwolona dla danego typu i zakresu pamięci
+    (np. czy nie wychodzi poza tablicę)?
+\end{enumerate}
+
+Sam test \texttt{p != nullptr} rozwiązuje co najwyżej fragment
+pierwszego problemu, ale \emph{nie} wykrywa wiszących wskaźników.
+
+\section{Tablice, arytmetyka wskaźników i \texttt{std::span}}
+
+\subsection{Arytmetyka wskaźników}
+
+Dla wskaźnika do elementu tablicy operacje \texttt{p + k} i
+\texttt{p[k]} odnoszą się do jej elementów, pod warunkiem że
+poruszamy się w dozwolonym zakresie. Można utworzyć wskaźnik
+\emph{jeden za końcem} tablicy, ale nie wolno go dereferencjonować.
+
+\begin{lstlisting}
+int a[]{4, 8, 12};
+int* p = a;          // points to a[0]
+
+int x = *(p + 1);    // 8
+int y = p[2];       // 12
+int* end = a + 3;   // valid one-past-the-end pointer
+// int z = *end;     // UB
+\end{lstlisting}
+
+Dodawanie i odejmowanie wskaźników ma sens w obrębie \emph{tej samej}
+tablicy (z uwzględnieniem pozycji jeden za końcem). Nie należy
+wykorzystywać takich działań do przemieszczania się między dowolnymi
+obiektami w pamięci.
+
+\subsection{Tablica to nie wskaźnik}
+
+Typ \texttt{int[3]} i typ \texttt{int*} są różne, choć w wielu
+wyrażeniach tablica jest automatycznie konwertowana na wskaźnik
+do pierwszego elementu (tzw. \emph{array-to-pointer decay}).
+
+\begin{lstlisting}
+int a[3] = {1, 2, 3};
+int* p = a;
+
+static_assert(sizeof(a) == 3 * sizeof(int));
+// sizeof(p) is the size of a pointer, not of the array
+\end{lstlisting}
+
+Funkcja \texttt{void f(int* p)} nie zna długości tablicy.
+Jeśli trzeba pracować z ciągłym fragmentem pamięci o znanym
+rozmiarze, C++20 udostępnia \texttt{std::span}:
+
+\begin{lstlisting}
+#include <span>
+#include <vector>
+
+int sum(std::span<const int> xs) {
+    int result = 0;
+    for (int x : xs) {
+        result += x;
+    }
+    return result;
+}
+
+int a[]{1, 2, 3};
+std::vector<int> v{4, 5, 6};
+
+int s1 = sum(a);  // 6
+int s2 = sum(v);  // 15
+\end{lstlisting}
+
+\texttt{std::span<T>} przechowuje widok ciągłych danych
+(z informacją o liczbie elementów), ale \emph{nie jest właścicielem}
+pamięci. Gdy dane znikną albo przeniosą się w inne miejsce,
+\texttt{span} również może stać się niepoprawny. Dla większości
+dynamicznych tablic własnościowych preferuj \texttt{std::vector<T>}.
+
+\section{\texttt{void*}, konwersje i rzutowania wskaźników}
+
+\subsection{\texttt{void*}: adres bez informacji o typie}
+
+Wskaźnik \texttt{void*} może przechowywać adres obiektu bez
+informacji o jego konkretnym typie. Bywa używany w interfejsach C
+i bibliotekach niskopoziomowych, ale nie pozwala na bezpośrednią
+dereferencję:
+
+\begin{lstlisting}
+int x = 42;
+void* opaque = &x;              // type erased
+// *opaque = 7;                 // error: cannot dereference void*
+
+int* p = static_cast<int*>(opaque);
+*p = 7;                        // valid: original object is int
+\end{lstlisting}
+
+Przywrócenie błędnego typu i późniejsza próba użycia obiektu
+mogą prowadzić do niezdefiniowanego zachowania. Jeśli typ jest
+znany, zwykle lepiej przechowywać od razu \texttt{T*}.
+
+\subsection{\texttt{static\_cast}, \texttt{dynamic\_cast} i
+\texttt{reinterpret\_cast}}
+
+\begin{itemize}
+    \item \texttt{static\_cast<T*>} nadaje się m.in. do poprawnych
+    konwersji pomiędzy \texttt{void*} a wskaźnikiem obiektowym,
+    jeśli rzeczywisty typ i wyrównanie na to pozwalają.
+    \item \texttt{dynamic\_cast<T*>} służy do sprawdzanych w czasie
+    wykonania konwersji w hierarchiach klas polimorficznych.
+    Niepowodzenie konwersji wskaźnika zwraca \texttt{nullptr}.
+    \item \texttt{reinterpret\_cast<T*>} umożliwia niskopoziomową
+    reinterpretację reprezentacji wskaźnika, ale sama konwersja
+    nie uprawnia do dowolnej dereferencji ani nie tworzy obiektu
+    odpowiedniego typu.
+\end{itemize}
+
+\begin{lstlisting}
+struct Base {
+    virtual ~Base() = default;
+};
+
+struct Derived : Base {
+    int value = 12;
+};
+
+Derived d;
+Base* base = &d;
+
+if (Derived* p = dynamic_cast<Derived*>(base)) {
+    p->value = 30;          // checked downcast succeeded
+}
+\end{lstlisting}
+
+Przy przekazywaniu parametrów funkcji nie używaj rzutowań
+jako sposobu na obejście \texttt{const}, sprawdzania czasu życia
+ani zasad własności. Dobrze zaprojektowany interfejs zazwyczaj
+w ogóle nie wymaga rzutowania wskaźników.
+
+\section{Pamięć dynamiczna: \texttt{new}, \texttt{delete} i ich ograniczenia}
+
+\subsection{Klasyczny mechanizm}
+
+Operator \texttt{new} tworzy obiekt w pamięci przydzielonej
+dynamicznie i zwraca wskaźnik. Odpowiadający mu
+\texttt{delete} niszczy obiekt i zwalnia pamięć:
+
+\begin{lstlisting}
+int* p = new int(42);
+// use *p
+
+delete p;
+p = nullptr;           // avoids this one stale alias
+\end{lstlisting}
+
+Dla tablic obowiązuje para \texttt{new[]} i \texttt{delete[]}:
+
+\begin{lstlisting}
+int* a = new int[5]{}; // zero-initialized elements
+// use a[0], ..., a[4]
+
+delete[] a;
+\end{lstlisting}
+
+\textbf{Nie wolno} łączyć \texttt{new[]} z \texttt{delete} ani
+zwykłego \texttt{new} z \texttt{delete[]}. Ponowne
+\texttt{delete} tego samego żywego przydziału również jest błędem.
+\texttt{delete nullptr;} jest natomiast bezpieczne.
+
+\subsection{Dlaczego ręczne zarządzanie pamięcią jest niebezpieczne?}
+
+\begin{lstlisting}
+void fragile() {
+    int* p = new int(42);
+    operation_that_may_throw();
+    delete p;   // skipped if the operation throws
+}
+\end{lstlisting}
+
+Jeśli funkcja zgłosi wyjątek, pamięć zostaje utracona
+(\emph{memory leak}). Analogiczny problem powstaje przy
+wielu instrukcjach \texttt{return}, kopiowaniu wskaźników i
+niespójnym przekazywaniu odpowiedzialności za \texttt{delete}.
+
+\paragraph{Zalecenie.}
+W typowym kodzie aplikacyjnym nie pisz bezpośrednio
+\texttt{new}/\texttt{delete}. Użyj obiektu lokalnego,
+\texttt{std::vector<T>} albo inteligentnego wskaźnika.
+Ręczne operacje alokowania pozostają potrzebne w implementacjach
+niskopoziomowych, alokatorach i przy integracji z określonym API.
+
+\section{RAII i semantyka własności}
+
+\subsection{RAII: zasób należy do obiektu}
+
+\emph{Resource Acquisition Is Initialization} (RAII) oznacza
+powiązanie przejęcia zasobu z utworzeniem obiektu zarządzającego,
+a zwolnienia zasobu z jego destruktorem. Stosuje się je nie tylko
+do pamięci, ale też do plików, blokad, gniazd sieciowych i uchwytów
+systemowych.
+
+\begin{lstlisting}
+#include <fstream>
+#include <string>
+
+void save(const std::string& path) {
+    std::ofstream file(path);
+    file << "example\n";
+} // file is closed by its destructor
+\end{lstlisting}
+
+Destruktor uruchamia się podczas normalnego opuszczania zakresu
+oraz podczas odwijania stosu po wyjątku. Stąd RAII upraszcza
+bezpieczeństwo wyjątkowe.
+
+\subsection{Trzy rodzaje relacji z obiektem}
+
+\begin{description}
+    \item[Własność wyłączna (\emph{unique ownership}).]
+    Dokładnie jeden obiekt zarządzający odpowiada za zniszczenie
+    zasobu: najczęściej \texttt{std::unique\_ptr<T>}.
+    \item[Własność współdzielona (\emph{shared ownership}).]
+    Wielu właścicieli może utrzymywać jeden zasób przy życiu:
+    \texttt{std::shared\_ptr<T>}.
+    \item[Dostęp bez własności (\emph{non-owning access}).]
+    Użytkownik widzi obiekt, ale nie przedłuża jego życia:
+    zwykły wskaźnik, referencja, \texttt{std::span<T>} lub
+    \texttt{std::weak\_ptr<T>} (ten ostatni obserwuje stan
+    zarządzany przez \texttt{shared\_ptr} i pozwala warunkowo
+    uzyskać właściciela).
+\end{description}
+
+Dobór reprezentacji wynika z \emph{kontraktu własności}, a nie
+z samego faktu, że obiekt znajduje się w pamięci dynamicznej.
+
+\section{\texttt{std::unique\_ptr}: jeden właściciel}
+
+\subsection{Tworzenie obiektu i automatyczne niszczenie}
+
+\texttt{std::unique\_ptr<T>} (nagłówek \texttt{<memory>}, C++11)
+zarządza pojedynczym obiektem przez wyłączną własność. Od C++14
+najczęściej tworzymy go przez \texttt{std::make\_unique<T>}:
+
+\begin{lstlisting}
+#include <memory>
+#include <string>
+
+#include <utility>
+
+struct Person {
+    explicit Person(std::string n) : name(std::move(n)) {}
+    std::string name;
+};
+
+void example() {
+    auto p = std::make_unique<Person>("Ala");
+    p->name = "Ola";
+    // no delete needed
+} // destructor destroys Person
+\end{lstlisting}
+
+\texttt{unique\_ptr} można traktować jako obiekt zarządzający:
+jego destruktor wywołuje odpowiednią funkcję usuwającą zasób
+(\emph{deleter}). Domyślnie jest nią \texttt{std::default\_delete<T>}.
+
+\subsection{Brak kopiowania i przenoszenie własności}
+
+Wskaźnik o własności wyłącznej nie może być kopiowany.
+Może natomiast zostać \emph{przeniesiony} za pomocą
+\texttt{std::move}:
+
+\begin{lstlisting}
+#include <memory>
+#include <utility>
+
+auto first = std::make_unique<int>(10);
+// auto bad = first;                  // error: copy
+
+auto second = std::move(first);      // transfers ownership
+// first == nullptr
+*second = 20;
+\end{lstlisting}
+
+\texttt{std::move} samo niczego nie zwalnia i nie przenosi fizycznie
+wskazywanego obiektu. Zwraca wyrażenie pozwalające wywołać konstruktor
+lub przypisanie przenoszące. W tym przypadku przenoszona jest
+\emph{własność wskaźnika}, a obiekt typu \texttt{int} nie zmienia adresu.
+
+\subsection{Przekazywanie do funkcji: kto jest właścicielem?}
+
+Rozróżnijmy trzy interfejsy:
+
+\begin{lstlisting}
+#include <memory>
+#include <utility>
+
+struct Widget { void run() {} };
+
+void inspect(const Widget& w);             // borrows, non-null
+void maybe_inspect(const Widget* w);       // borrows, nullable
+void take(std::unique_ptr<Widget> w);      // takes ownership
+
+void demo() {
+    auto p = std::make_unique<Widget>();
+    inspect(*p);                // p still owns the object
+    maybe_inspect(p.get());     // p still owns the object
+    take(std::move(p));         // ownership transferred
+    // p is now empty
+}
+\end{lstlisting}
+
+Jeżeli funkcja \emph{jedynie używa} obiektu, przekazywanie przez
+\texttt{T\&}, \texttt{const T\&} lub \texttt{T*} jest zwykle
+czytelniejsze niż przekazywanie \texttt{unique\_ptr} przez referencję.
+Parametr \texttt{unique\_ptr<T>} przyjmowany \emph{przez wartość}
+sygnalizuje przejęcie własności. Dla funkcji, która ma zastąpić
+obiekt będący własnością wywołującego, można użyć
+\texttt{std::unique\_ptr<T>\&}.
+
+\subsection{Metody \texttt{get}, \texttt{reset}, \texttt{release}, \texttt{swap}}
+
+\begin{lstlisting}
+#include <memory>
+#include <utility>
+
+auto p = std::make_unique<int>(7);
+int* observer = p.get();       // borrow; do not delete
+
+p.reset(new int(9));           // destroys old int
+// observer is now dangling
+
+auto q = std::make_unique<int>(11);
+p.swap(q);                    // exchanges managed objects
+
+int* raw = q.release();        // q becomes empty; raw owns now
+// responsibility for delete raw is now explicit
+delete raw;
+\end{lstlisting}
+
+\texttt{get()} zwraca dostęp bez własności. \texttt{reset()} zastępuje
+zarządzany obiekt, zwalniając dotychczasowy. \texttt{release()} oddaje
+surowy wskaźnik \emph{bez zwolnienia obiektu}; dlatego jest potrzebne
+głównie przy przekazywaniu własności do interfejsu, który tego wymaga.
+Nie należy mylić \texttt{release()} z \texttt{reset()}.
+
+\subsection{Tablice: \texttt{unique\_ptr<T[]>} a \texttt{vector<T>}}
+
+\begin{lstlisting}
+#include <memory>
+#include <vector>
+
+auto a = std::make_unique<int[]>(5); // array of 5 zeros
+a[2] = 17;
+
+std::vector<int> b(5);         // usually more convenient
+b.at(2) = 17;                  // checked indexing
+\end{lstlisting}
+
+\texttt{unique\_ptr<T[]>} dobiera \texttt{delete[]} i udostępnia
+\texttt{operator[]}, lecz sam nie przechowuje rozmiaru.
+Zwykle preferuj \texttt{std::vector<T>}, bo posiada rozmiar,
+iteratory i bogatszy interfejs. Dla tablicy o stałym rozmiarze
+określonym w kodzie rozważ \texttt{std::array<T, N>}.
+
+\subsection{Własny deleter: zasób inny niż pamięć \texttt{new}}
+
+Inteligentny wskaźnik może wywoływać dowolną funkcję zwalniającą
+zasób. Typowym przykładem jest plik w interfejsie C:
+
+\begin{lstlisting}
+#include <cstdio>
+#include <memory>
+
+struct FileCloser {
+    void operator()(std::FILE* file) const noexcept {
+        if (file) { std::fclose(file); }
+    }
+};
+
+using FilePtr = std::unique_ptr<std::FILE, FileCloser>;
+
+void example() {
+    FilePtr file(std::fopen("log.txt", "w"));
+    if (!file) { return; }
+
+    std::fputs("hello\n", file.get());
+} // fclose is called automatically
+\end{lstlisting}
+
+W praktyce deleter bywa osobną strukturą, a jego typ wchodzi
+w skład typu \texttt{unique\_ptr<T, Deleter>}. Mechanizm pozwala
+owinąć RAII również zasoby zwalniane przez \texttt{free()},
+\texttt{fclose()} lub bibliotekę zewnętrzną.
+
+\subsection{Polimorfizm i wirtualny destruktor}
+
+\begin{lstlisting}
+#include <memory>
+
+struct Shape {
+    virtual ~Shape() = default;
+    virtual double area() const = 0;
+};
+
+struct Circle : Shape {
+    explicit Circle(double r) : radius(r) {}
+    double area() const override { return 3.14159 * radius * radius; }
+    double radius;
+};
+
+std::unique_ptr<Shape> make_shape() {
+    return std::make_unique<Circle>(2.0);
+}
+\end{lstlisting}
+
+Przy niszczeniu obiektu pochodnego przez wskaźnik do bazy
+zwykle potrzebny jest wirtualny destruktor bazy.
+Dotyczy to również przenoszenia własności z klasy pochodnej
+do bazowej przy użyciu \texttt{unique\_ptr} i domyślnego deletera.
+
+\section{\texttt{std::shared\_ptr}: współdzielona własność}
+
+\subsection{Jak działa licznik właścicieli?}
+
+\texttt{std::shared\_ptr<T>} (C++11) udostępnia współdzieloną
+własność zasobu. Zwykle tworzymy go za pomocą
+\texttt{std::make\_shared<T>}:
+
+\begin{lstlisting}
+#include <memory>
+
+auto a = std::make_shared<int>(10);
+auto b = a;             // shared ownership
+
+// a.use_count() == 2 (provided there are no other owners)
+b.reset();              // releases b's ownership
+// a.use_count() == 1
+\end{lstlisting}
+
+Gdy liczba \emph{silnych właścicieli} spadnie do zera, zarządzany
+obiekt zostaje zniszczony. Implementacja utrzymuje tzw.
+\emph{blok kontrolny} (\emph{control block}) zawierający między
+innymi liczniki właścicieli, informacje potrzebne do zniszczenia
+zasobu i ewentualny deleter.
+
+\paragraph{Schemat ideowy.}
+\begin{lstlisting}
+shared_ptr a ---\
+                +--> [ control block: strong = 2 ] --> [ T ]
+shared_ptr b ---/           weak = 0
+\end{lstlisting}
+
+\texttt{use\_count()} ma znaczenie przede wszystkim diagnostyczne.
+Nie powinno się na podstawie odczytanego licznika podejmować decyzji
+o bezpieczeństwie wątkowym ani o wyłącznej własności, która może
+zmienić się równolegle.
+
+\subsection{Tworzenie i przekazywanie \texttt{shared\_ptr}}
+
+\begin{lstlisting}
+#include <memory>
+
+struct Data { int x = 0; };
+
+std::shared_ptr<Data> create() {
+    return std::make_shared<Data>();
+}
+
+void keep(std::shared_ptr<Data> p) {
+    // stores a copy of p somewhere, if needed
+}
+
+void read_only(const Data& data) {
+    // does not require shared ownership
+}
+
+void demo() {
+    auto p = create();
+    read_only(*p); // borrow
+    keep(p);       // creates another temporary shared owner
+}
+\end{lstlisting}
+
+Parametr \texttt{shared\_ptr<T>} przyjmowany przez wartość oznacza,
+że funkcja otrzymuje własny udział we własności na czas wywołania
+i ewentualnie może go przechować. Jeśli funkcja wyłącznie
+czyta obiekt, zwykle wystarcza \texttt{const T\&} lub \texttt{T*}.
+Samo przekazanie \texttt{const shared\_ptr<T>\&} unika inkrementacji
+licznika, ale bardziej wiąże interfejs z modelem własności.
+
+\subsection{\texttt{make\_shared} a konstruktor ze wskaźnika}
+
+W typowych implementacjach \texttt{make\_shared} umieszcza obiekt
+i blok kontrolny w jednym przydziale pamięci, co może ograniczać
+narzut alokacji. Natomiast konstrukcja \texttt{shared\_ptr<T>(new T)}
+zwykle wymaga osobnych przydziałów.
+
+\begin{lstlisting}
+auto preferred = std::make_shared<int>(42);
+std::shared_ptr<int> also_valid(new int(42));
+\end{lstlisting}
+
+Nie wolno jednak tworzyć dwóch \texttt{shared\_ptr} niezależnie
+z \emph{tego samego} surowego wskaźnika:
+
+\begin{lstlisting}
+int* raw = new int(42);
+std::shared_ptr<int> a(raw);
+// std::shared_ptr<int> b(raw); // WRONG: second control block
+\end{lstlisting}
+
+Dwa niezależne bloki kontrolne próbowałyby zwolnić ten sam obiekt.
+Poprawne współdzielenie powstaje przez \emph{kopiowanie istniejącego}
+\texttt{shared\_ptr}: \texttt{auto b = a;}.
+
+\paragraph{Kiedy nie stosować \texttt{make\_shared}?}
+Zintegrowany przydział może zatrzymywać pamięć zajmowaną przez
+obiekt w przydzielonym bloku do momentu zniszczenia także ostatniego
+\texttt{weak\_ptr}, nawet gdy destruktor obiektu już się wykonał.
+Przy dużych obiektach i długo żyjących słabych referencjach
+warto rozważyć osobny przydział. Innymi powodami mogą być
+specjalne wymagania alokacji lub konstruktory niedostępne
+dla \texttt{make\_shared}.
+
+\subsection{Współdzielenie własności a współdzielenie mutacji}
+
+Sam \texttt{shared\_ptr} nie synchronizuje dostępu do pól obiektu:
+
+\begin{lstlisting}
+#include <memory>
+#include <mutex>
+
+struct Counter {
+    std::mutex mutex;
+    int value = 0;
+
+    void increment() {
+        std::lock_guard<std::mutex> lock(mutex);
+        ++value;
+    }
+};
+
+auto p = std::make_shared<Counter>();
+// many threads may own copies of p, but must synchronize
+// concurrent modifications of Counter::value
+\end{lstlisting}
+
+Blok kontrolny pozwala różnym egzemplarzom \texttt{shared\_ptr}
+bezpiecznie współdzielić własność. Równoczesna modyfikacja
+\emph{tego samego} egzemplarza wymaga jednak synchronizacji.
+Od C++20 można użyć \texttt{std::atomic<std::shared\_ptr<T>>}.
+
+\section{\texttt{std::weak\_ptr}: obserwacja bez utrzymywania przy życiu}
+
+\subsection{Problem cykli własności}
+
+Gdy obiekty wzajemnie posiadają się przez \texttt{shared\_ptr},
+liczniki właścicieli mogą nigdy nie spaść do zera:
+
+\begin{lstlisting}
+#include <memory>
+
+struct Node {
+    std::shared_ptr<Node> next;
+};
+
+void leak_cycle() {
+    auto a = std::make_shared<Node>();
+    auto b = std::make_shared<Node>();
+    a->next = b;
+    b->next = a;          // cycle of strong ownership
+} // nodes remain alive after both locals are destroyed
+\end{lstlisting}
+
+To nie jest problem \emph{niezerowego wskaźnika}, lecz błędnego
+modelu własności: każdy węzeł utrzymuje przy życiu drugi.
+
+\subsection{Przerywanie cyklu i \texttt{lock()}}
+
+\texttt{std::weak\_ptr<T>} obserwuje ten sam blok kontrolny,
+ale nie zwiększa liczby silnych właścicieli:
+
+\begin{lstlisting}
+#include <memory>
+
+struct Node {
+    std::weak_ptr<Node> parent;         // non-owning
+    std::shared_ptr<Node> child;        // owning
+};
+
+void example() {
+    auto root = std::make_shared<Node>();
+    auto leaf = std::make_shared<Node>();
+
+    root->child = leaf;
+    leaf->parent = root;
+
+    if (auto parent = leaf->parent.lock()) {
+        // parent is a temporary shared owner
+        (void)parent;
+    }
+} // no ownership cycle
+\end{lstlisting}
+
+Metoda \texttt{lock()} atomowo próbuje uzyskać
+\texttt{shared\_ptr<T>}. Jeżeli obiekt jeszcze istnieje,
+zwraca właściciela utrzymującego go przy życiu przez czas
+używania. W przeciwnym razie zwraca pusty \texttt{shared\_ptr}.
+
+\begin{lstlisting}
+std::weak_ptr<int> observer;
+{
+    auto p = std::make_shared<int>(8);
+    observer = p;
+    if (auto alive = observer.lock()) {
+        *alive += 1;           // safe while alive owns it
+    }
+}
+
+// observer.expired() is now true
+// observer.lock() now returns an empty shared_ptr
+\end{lstlisting}
+
+W kodzie współbieżnym nie stosuj schematu
+\texttt{if (!w.expired()) { ... }} z późniejszym odwołaniem:
+między sprawdzeniem a użyciem obiekt może zniknąć.
+Preferuj jedną operację \texttt{lock()} i posługuj się
+otrzymanym \texttt{shared\_ptr}.
+
+\section{\texttt{enable\_shared\_from\_this} i wskaźnik \texttt{this}}
+
+Gdy metoda obiektu zarządzanego przez \texttt{shared\_ptr}
+chce przekazać dalej \emph{współdzieloną własność do siebie},
+nie może wykonać \texttt{std::shared\_ptr<T>(this)}:
+powstałby drugi, niezależny blok kontrolny.
+
+Można zamiast tego dziedziczyć publicznie po
+\texttt{std::enable\_shared\_from\_this<T>}:
+
+\begin{lstlisting}
+#include <memory>
+
+struct Session : std::enable_shared_from_this<Session> {
+    std::shared_ptr<Session> self() {
+        return shared_from_this();
+    }
+};
+
+void example() {
+    auto session = std::make_shared<Session>();
+    auto second_owner = session->self();
+    // both share the same control block
+}
+\end{lstlisting}
+
+Metodę \texttt{shared\_from\_this()} wolno wywołać dopiero wtedy,
+gdy obiektem zarządza już \texttt{shared\_ptr}. Jej wywołanie
+na obiekcie lokalnym albo w konstruktorze, zanim powstanie
+właściciel, zgłasza wyjątek \texttt{std::bad\_weak\_ptr}.
+
+Od C++17 dostępna jest również metoda \texttt{weak\_from\_this()}.
+
+\section{Zaawansowany przykład: wskaźnik aliasujący \texttt{shared\_ptr}}
+
+\texttt{shared\_ptr} rozróżnia \emph{obiekt zarządzany} (którego
+czas życia kontroluje blok kontrolny) i \emph{przechowywany
+wskaźnik} (zwracany przez \texttt{get()}). Specjalny konstruktor
+aliasujący pozwala udostępnić adres składowej, jednocześnie
+utrzymując przy życiu cały obiekt:
+
+\begin{lstlisting}
+#include <memory>
+
+struct Pair {
+    int first = 1;
+    int second = 2;
+};
+
+void example() {
+    auto whole = std::make_shared<Pair>();
+    std::shared_ptr<int> member(whole, &whole->second);
+
+    whole.reset();       // Pair is still alive
+    *member = 20;        // accesses Pair::second safely
+} // member destroys the last strong owner
+\end{lstlisting}
+
+Konstruktor aliasujący jest przydatny np. przy udostępnianiu
+podobiektów, ale wymaga prawidłowej relacji czasów życia.
+Nie należy go traktować jako sposobu na naprawienie
+wcześniej wiszącego wskaźnika.
+
+\section{Wskaźniki w interfejsach funkcji i klas}
+
+\subsection{Katalog typowych kontraktów}
+
+\begin{center}
+\small
+\begin{tabular}{|p{0.31\textwidth}|p{0.56\textwidth}|}
+\hline
+\textbf{Interfejs} & \textbf{Znaczenie} \\
+\hline
+\texttt{void f(const T\&)} & Obiekt wymagany, tylko odczyt; brak przekazania własności. \\
+\hline
+\texttt{void f(T\&)} & Obiekt wymagany, możliwa modyfikacja; brak przekazania własności. \\
+\hline
+\texttt{void f(const T*)} & Obiekt opcjonalny, tylko odczyt; brak własności. \\
+\hline
+\texttt{void f(T*)} & Obiekt opcjonalny, możliwa modyfikacja; brak własności. \\
+\hline
+\texttt{void f(unique\_ptr<T>)} & Przejęcie wyłącznej własności. \\
+\hline
+\texttt{unique\_ptr<T> f()} & Przekazanie wyłącznej własności wywołującemu. \\
+\hline
+\texttt{void f(shared\_ptr<T>)} & Uzyskanie udziału we współdzielonej własności. \\
+\hline
+\texttt{void f(weak\_ptr<T>)} & Możliwość obserwacji obiektu, którego życie kontrolują inni. \\
+\hline
+\texttt{void f(span<const T>)} & Widok na ciągłą sekwencję, bez własności. \\
+\hline
+\end{tabular}
+\end{center}
+
+W tabeli pominięto przestrzeń nazw \texttt{std::} dla czytelności.
+To \emph{konwencje projektowania API}, a nie automatyczne
+gwarancje długowieczności surowych wskaźników i referencji.
+
+\subsection{Dlaczego nie zawsze używać \texttt{shared\_ptr}?}
+
+Rozważmy funkcję, która wyświetla nazwę:
+
+\begin{lstlisting}
+#include <iostream>
+#include <memory>
+#include <string>
+
+struct Product { std::string name; };
+
+void print(const Product& p) {
+    std::cout << p.name << '\n';
+}
+
+void example() {
+    Product local{"book"};
+    print(local);                  // no allocation
+
+    auto owned = std::make_unique<Product>(Product{"pen"});
+    print(*owned);                 // still no extra owner
+}
+\end{lstlisting}
+
+Funkcja \texttt{print} nie potrzebuje znać strategii
+przechowywania obiektu. Przekazanie referencji oddziela
+\emph{sposób dostępu} od \emph{sposobu zarządzania czasem życia}.
+
+\section{PImpl: ukrywanie implementacji przez \texttt{unique\_ptr}}
+
+Technika \emph{pointer to implementation} pozwala utrzymać
+szczegóły implementacji poza publicznym nagłówkiem.
+Typ implementacyjny może być niekompletny w nagłówku, ale
+miejsce wykonania domyślnego deletera musi widzieć jego definicję.
+Dlatego destruktor klasy definiujemy w pliku \texttt{.cpp}.
+
+\begin{lstlisting}
+// widget.hpp
+#pragma once
+#include <memory>
+
+class Widget {
+public:
+    Widget();
+    ~Widget();                 // defined in .cpp
+
+    Widget(Widget&&) noexcept;
+    Widget& operator=(Widget&&) noexcept;
+
+    Widget(const Widget&) = delete;
+    Widget& operator=(const Widget&) = delete;
+
+    void work();
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
+\end{lstlisting}
+
+\begin{lstlisting}
+// widget.cpp
+#include "widget.hpp"
+#include <memory>
+
+struct Widget::Impl {
+    int value = 0;
+    void run() { ++value; }
+};
+
+Widget::Widget() : impl_(std::make_unique<Impl>()) {}
+Widget::~Widget() = default;
+Widget::Widget(Widget&&) noexcept = default;
+Widget& Widget::operator=(Widget&&) noexcept = default;
+
+void Widget::work() { impl_->run(); }
+\end{lstlisting}
+
+Ten przykład prezentuje semantykę przenoszenia. Po przeniesieniu
+źródłowy obiekt \texttt{Widget} ma pusty \texttt{impl\_};
+nie wolno wywoływać na nim \texttt{work()} bez odpowiedniego
+sprawdzenia. W produkcyjnym API można ten stan jawnie obsłużyć
+lub określić w kontrakcie.
+
+\section{Wskaźniki do funkcji i składowych klas}
+
+Wskaźniki nie muszą odnosić się do danych. Można wskazywać
+funkcje, a także składowe klas, choć te ostatnie wymagają
+innej składni.
+
+\subsection{Wskaźnik do funkcji}
+
+\begin{lstlisting}
+int add(int a, int b) { return a + b; }
+int mul(int a, int b) { return a * b; }
+
+using Operation = int(*)(int, int);
+
+int apply(int x, int y, Operation op) {
+    return op(x, y);
+}
+
+int a = apply(2, 3, &add); // 5
+int b = apply(2, 3, &mul); // 6
+\end{lstlisting}
+
+Obiekty wywoływalne różnych typów można przechowywać za pomocą
+\texttt{std::function}. Prosty szablon lub lambda bywają jednak
+bardziej efektywne.
+
+\subsection{Wskaźnik do składowej}
+
+\begin{lstlisting}
+struct Record {
+    int value = 0;
+    int twice() const { return 2 * value; }
+};
+
+int Record::* field = &Record::value;
+int (Record::* method)() const = &Record::twice;
+
+Record r{7};
+int x = r.*field;          // 7
+int y = (r.*method)();     // 14
+
+Record* p = &r;
+int z = p->*field;         // 7
+\end{lstlisting}
+
+Wskaźnik do składowej nie jest zwykłym adresem gotowego obiektu.
+Dopiero w połączeniu z konkretną instancją klasy pozwala
+odwołać się do odpowiedniej składowej.
+
+\section{Wskaźniki i wielowątkowość}
+
+\subsection{\texttt{shared\_ptr} nie eliminuje wyścigów danych}
+
+Możliwość bezpiecznego utrzymania czasu życia obiektu nie oznacza,
+że jego pola można dowolnie zmieniać z wielu wątków.
+Jeśli dwa wątki zapisują do \texttt{*p}, potrzebna jest osobna
+synchronizacja (np. \texttt{std::mutex} albo atomiki).
+
+Od C++20 dostępna jest specjalizacja
+\texttt{std::atomic<std::shared\_ptr<T>>}, przydatna do atomowego
+publikowania nowej wersji współdzielonego obiektu:
+
+\begin{lstlisting}
+#include <atomic>
+#include <memory>
+
+struct Config {
+    int workers = 4;
+};
+
+std::atomic<std::shared_ptr<const Config>> current{
+    std::make_shared<const Config>(Config{4})
+};
+
+void publish(int count) {
+    current.store(std::make_shared<const Config>(Config{count}));
+}
+
+int read_workers() {
+    auto snapshot = current.load(); // keeps snapshot alive
+    return snapshot->workers;
+}
+\end{lstlisting}
+
+Tu czytelnicy otrzymują stabilny, niemutowalny \emph{snapshot}.
+Atomowość dotyczy odczytu i zapisu \texttt{shared\_ptr},
+a nie arbitralnych operacji na jego zawartości.
+
+\section{Najczęstsze błędy zebrane w jednym miejscu}
+
+\begin{enumerate}
+    \item \textbf{Dereferencja \texttt{nullptr} lub wskaźnika
+    niezainicjalizowanego.} Zawsze sprawdzaj kontrakt i inicjalizuj
+    wskaźniki.
+    \item \textbf{Wskaźnik wiszący.} \texttt{get()}, \texttt{span}
+    i surowa referencja nie przedłużają życia zasobu.
+    \item \textbf{Podwójne \texttt{delete}.} Jeden przydział musi mieć
+    jedną, jednoznaczną strategię zwalniania.
+    \item \textbf{Mieszanie \texttt{new[]} i \texttt{delete}.}
+    Do tablic służy \texttt{delete[]}; zwykle lepiej wybrać kontener.
+    \item \textbf{Zwracanie adresu lokalnej zmiennej.}
+    Jej czas życia kończy się przy wyjściu z zakresu.
+    \item \textbf{Przekazywanie surowego wskaźnika z \texttt{get()}
+    do nowego \texttt{shared\_ptr}.} Tworzy niezależny blok kontrolny.
+    \item \textbf{Nieuzasadnione \texttt{shared\_ptr} wszędzie.}
+    Współdzielenie własności kosztuje i zaciera odpowiedzialność.
+    \item \textbf{Cykl silnych właścicieli.} Przerywaj go przez
+    \texttt{weak\_ptr} lub przeprojektowanie relacji.
+    \item \textbf{Nadużywanie \texttt{release()}.} Po wywołaniu
+    ktoś musi jawnie przejąć odpowiedzialność za zasób.
+    \item \textbf{Brak wirtualnego destruktora w bazie.}
+    Usuwanie obiektu pochodnego przez wskaźnik bazowy z domyślnym
+    deleterem może wówczas prowadzić do UB.
+    \item \textbf{Założenie, że \texttt{shared\_ptr} chroni obiekt
+    przed wyścigami.} Chroni zarządzanie własnością, nie samą mutację.
+    \item \textbf{Przechowywanie wskaźników do elementów \texttt{vector}
+    po realokacji.} Przy operacjach zmieniających bufor pobieraj
+    adresy ponownie.
+\end{enumerate}
+
+\section{Jak wybrać właściwy typ?}
+
+\begin{center}
+\small
+\begin{tabular}{|p{0.43\textwidth}|p{0.43\textwidth}|}
+\hline
+\textbf{Sytuacja} & \textbf{Najczęstszy wybór} \\
+\hline
+Pojedynczy obiekt o prostym czasie życia & Zwykła zmienna \texttt{T} \\
+\hline
+Dynamiczna lista elementów & \texttt{std::vector<T>} \\
+\hline
+Obiekt wymagany tylko do odczytu & \texttt{const T\&} \\
+\hline
+Obiekt wymagany i modyfikowany & \texttt{T\&} \\
+\hline
+Obiekt opcjonalny bez przekazania własności & \texttt{T*} lub \texttt{const T*} \\
+\hline
+Pojedynczy właściciel dynamicznego obiektu & \texttt{std::unique\_ptr<T>} \\
+\hline
+Kilku niezależnych właścicieli & \texttt{std::shared\_ptr<T>} \\
+\hline
+Obserwacja obiektu współdzielonego & \texttt{std::weak\_ptr<T>} \\
+\hline
+Fragment istniejącej tablicy, bez własności & \texttt{std::span<T>} \\
+\hline
+Polimorficzna kolekcja obiektów & \texttt{std::vector} zawierający \texttt{unique\_ptr} \\
+\hline
+\end{tabular}
+\end{center}
+
+\subsection{Praktyczny przykład: kolekcja obiektów polimorficznych}
+
+\begin{lstlisting}
+#include <iostream>
+#include <memory>
+#include <vector>
+
+struct Task {
+    virtual ~Task() = default;
+    virtual void run() const = 0;
+};
+
+struct PrintTask : Task {
+    void run() const override { std::cout << "hello\n"; }
+};
+
+int main() {
+    std::vector<std::unique_ptr<Task>> tasks;
+    tasks.push_back(std::make_unique<PrintTask>());
+
+    for (const auto& task : tasks) {
+        task->run();
+    }
+} // vector and tasks destroy everything automatically
+\end{lstlisting}
+
+\section{Podsumowanie i praktyczne reguły}
+
+\begin{itemize}
+    \item Preferuj \emph{przechowywanie przez wartość}, jeśli
+    obiekt nie wymaga odrębnej, dynamicznej tożsamości.
+    \item Gdy obiekt ma jednego właściciela, używaj
+    \texttt{std::unique\_ptr}; własność przenoś przez
+    \texttt{std::move}.
+    \item Sięgaj po \texttt{std::shared\_ptr} dopiero wtedy,
+    gdy kilka części programu \emph{rzeczywiście} musi niezależnie
+    utrzymywać ten sam obiekt przy życiu.
+    \item Jeśli obserwator nie powinien utrzymywać obiektu przy życiu,
+    użyj \texttt{std::weak\_ptr} i metody \texttt{lock()}.
+    \item Do niewłasnościowego dostępu używaj
+    \texttt{T\&}, \texttt{const T\&}, \texttt{T*} lub
+    \texttt{std::span<T>} w zależności od kontraktu.
+    \item Nie dereferencjonuj wskaźnika tylko dlatego, że jest
+    różny od \texttt{nullptr}: obiekt może już nie istnieć.
+    \item Preferuj \texttt{std::vector} i \texttt{std::array}
+    zamiast ręcznie alokowanych tablic.
+    \item Zasoby systemowe obejmuj RAII i odpowiednim deleterem;
+    osobno analizuj bezpieczeństwo wątkowe wskazywanego obiektu.
+\end{itemize}
+
+\paragraph{Konkluzja.}
+Najważniejsze pytanie brzmi nie ``jak zdobyć adres?'', ale
+``\emph{kto jest właścicielem obiektu, jak długo on istnieje
+i kto ma prawo z niego korzystać?}''. Właśnie te trzy kwestie
+rozstrzygają, czy w danym miejscu potrzebujemy referencji,
+surowego wskaźnika, \texttt{unique\_ptr}, \texttt{shared\_ptr}
+czy \texttt{weak\_ptr}.
+
+% Dalsza lektura:
+% https://en.cppreference.com/cpp/memory/unique_ptr
+% https://en.cppreference.com/cpp/memory/shared_ptr
+% https://en.cppreference.com/cpp/memory/weak_ptr
+% https://en.cppreference.com/cpp/memory/enable_shared_from_this
+% https://en.cppreference.com/cpp/container/span

@@ -1,0 +1,1098 @@
+% ROZDZIAL 4 -- Variadic templates w C++ (C++20)
+% Fragment dolaczany do glownego dokumentu po rozdziale 3.
+% Wymagane w preambule: \usepackage{listings}, konfiguracja lstlisting
+% (taka sama jak w rozdzialach 2 i 3).
+% Uzycie: \input{rozdzial_4_variadic_templates_cpp.tex}
+
+\chapter[Variadic templates w C++]{Szablony o zmiennej liczbie argumentów (\textit{variadic templates})}
+\label{chap:variadic-templates-cpp}
+
+\section{Idea i zastosowania}
+
+Zwykły szablon funkcji przyjmuje z góry ustaloną liczbę parametrów
+szablonu. \emph{Variadic template} (szablon o zmiennej liczbie parametrów)
+może natomiast przyjmować \emph{dowolną liczbę} argumentów szablonu,
+również zero. Mechanizmem, który to umożliwia, jest
+\emph{pakiet parametrów} (ang. \emph{parameter pack}).
+
+\begin{lstlisting}
+template<class T>
+void single(const T&) {}        // one type
+
+template<class... Ts>
+void many(const Ts&...) {}      // zero or more types
+
+void demo() {
+    many();                     // zero arguments
+    many(10);                   // one argument
+    many(10, 3.5, "abc");      // three arguments
+}
+\end{lstlisting}
+
+Pakiety parametrów są ważną częścią nowoczesnego C++.
+Wykorzystują je m.in. klasy \texttt{std::tuple} i \texttt{std::variant}
+oraz fabryki \texttt{std::make\_unique} i \texttt{std::make\_shared}.
+Nie trzeba dzięki nim pisać przeciążeń dla każdej
+liczby argumentów.
+
+\paragraph{Wymagane wersje języka.}
+Pakiety parametrów i perfect forwarding pojawiły się w C++11.
+\emph{Fold expressions} dodano w C++17, a koncepcje
+(\texttt{concepts}) i klauzulę \texttt{requires} w C++20.
+Dalej zakładamy C++20.
+
+\section{Trzy kropki: deklaracja pakietu a rozwinięcie}
+\label{sec:variadic-trzy-kropki}
+
+W różnych miejscach token \texttt{...} oznacza różne operacje.
+Rozróżnienie to stanowi podstawę poprawnego używania szablonów
+wariadycznych.
+
+\begin{lstlisting}
+template<class... Ts>             // declare type pack Ts
+void f(Ts... xs) {                // declare function parameter pack xs
+    // ...
+}
+\end{lstlisting}
+
+Deklaracja \texttt{class... Ts} wprowadza pakiet \emph{typów}.
+Zapis \texttt{Ts... xs} rozwija pakiet typów i wprowadza odpowiadający
+mu pakiet parametrów funkcji. Wywołanie
+\texttt{f(1, 2.0, 'x')} tworzy w uproszczeniu funkcję o parametrach
+\texttt{(int, double, char)}.
+
+\subsection{Rozwinięcie pakietu (\textit{pack expansion})}
+
+Rozwinięcie składa się ze \emph{wzorca} (\emph{pattern}) oraz następującego
+po nim \texttt{...}. Dla każdego elementu pakietu kompilator podstawia
+kolejny element do całego wzorca:
+
+\begin{lstlisting}
+template<class... Ts>
+void demo(Ts... xs) {
+    g(xs...);                // g(x1, x2, ..., xn)
+    h((xs * 2)...);          // h(x1*2, x2*2, ..., xn*2)
+}
+\end{lstlisting}
+
+W drugim wywołaniu wzorcem jest \texttt{(xs * 2)}, a \emph{nie}
+pojedyncza zmienna \texttt{xs}. Ważne: \texttt{xs...} nie jest
+kontenerem ani tablicą; nie można po nim bezpośrednio iterować zwykłą
+pętlą \texttt{for}. To składnia kompilatora służąca do generowania
+listy wyrażeń.
+
+\paragraph{Pakiet typów a pakiet wartości.}
+W przykładzie \texttt{Ts} reprezentuje typy, natomiast
+\texttt{xs} to konkretne parametry funkcji. Jeden typ może wystąpić
+w pakiecie wielokrotnie, a każdy element pakietu wartości zachowuje
+swój właściwy typ.
+
+\subsection{Liczba elementów: \texttt{sizeof...}}
+
+Operator \texttt{sizeof...} daje liczbę elementów pakietu jako
+stałą czasu kompilacji. Nie należy go mylić z operatorem
+\texttt{sizeof} mierzącym rozmiar typu lub obiektu.
+
+\begin{lstlisting}
+#include <cstddef>
+
+template<class... Ts>
+constexpr std::size_t count(Ts&&... xs) {
+    static_assert(sizeof...(Ts) == sizeof...(xs));
+    return sizeof...(xs);
+}
+
+static_assert(count() == 0);
+static_assert(count(2, 3.5, 'a') == 3);
+\end{lstlisting}
+
+Nazwy \texttt{xs} nie używamy w ciele funkcji do odczytywania
+wartości; operacja liczenia jest czysto składniowa.
+
+\section{Pierwsze praktyczne funkcje}
+
+\subsection{Wypisywanie dowolnej liczby argumentów}
+
+Najprostszy sposób wykorzystania pakietu to jego rozwinięcie
+w wywołaniu innej funkcji:
+
+\begin{lstlisting}
+#include <iostream>
+#include <string>
+
+void output(int x, double y, const std::string& z) {
+    std::cout << x << ' ' << y << ' ' << z << '\n';
+}
+
+template<class... Args>
+void forward_to_output(Args... args) {
+    output(args...);
+}
+
+int main() {
+    forward_to_output(3, 2.5, std::string{"hello"});
+}
+\end{lstlisting}
+
+Funkcja jest poprawna tylko dla takich wywołań, z których można
+utworzyć poprawne wywołanie \texttt{output}. Sama wariadyczność
+nie oznacza, że każda liczba i każdy rodzaj argumentów będą
+akceptowane przez funkcję docelową.
+
+\subsection{Przekazywanie przez wartość i przez referencję}
+
+\begin{lstlisting}
+template<class... Ts>
+void by_value(Ts... xs);            // may copy/move
+
+template<class... Ts>
+void by_const_ref(const Ts&... xs); // read-only; no copies
+
+template<class... Ts>
+void by_ref(Ts&... xs);             // needs lvalues
+\end{lstlisting}
+
+Wybór postaci parametrów ma te same skutki co w zwykłych funkcjach.
+W szczególności \texttt{Ts... xs} tworzy osobne parametry przez wartość,
+a \texttt{const Ts\&... xs} zwykle pozwala uniknąć niepotrzebnego
+kopiowania. Przypadek \texttt{Ts\&\&... xs} omówimy dokładniej
+w sekcji o \emph{perfect forwarding}.
+
+\section{Rekurencyjne przetwarzanie pakietu: metoda C++11}
+\label{sec:variadic-rekurencja}
+
+Przed C++17 często rozbijano pakiet na \emph{pierwszy argument}
+i \emph{pozostałe argumenty}, a następnie wywoływano funkcję
+rekurencyjnie. Potrzebny był osobny przypadek kończący rekurencję.
+
+\begin{lstlisting}
+#include <iostream>
+
+void print_recursive() {
+    std::cout << '\n';        // base case
+}
+
+template<class First, class... Rest>
+void print_recursive(const First& first,
+                     const Rest&... rest) {
+    std::cout << first << ' ';
+    print_recursive(rest...); // one argument fewer
+}
+
+int main() {
+    print_recursive(1, "two", 3.0);
+}
+\end{lstlisting}
+
+Przy trzech argumentach instancjonowane są kolejno wersje
+z pakietami o długościach $3$, $2$, $1$ oraz przypadek końcowy.
+Jest to \emph{rekurencja szablonowa}; nie należy automatycznie
+utożsamiać jej z dynamiczną rekurencją wykonywaną w programie.
+Kompilator może wygenerować zwykłą sekwencję operacji.
+
+\paragraph{Kiedy stosować?}
+Rekurencyjne rozkładanie pakietu nadal bywa przydatne, jeśli kolejne
+kroki mają odrębne warunki lub należy budować typy rekurencyjne.
+Jeżeli wykonujemy tę samą operację dla wszystkich argumentów,
+w C++17 i nowszych zazwyczaj lepszym wyborem jest \emph{fold expression}.
+
+\section{Fold expressions (C++17)}
+\label{sec:variadic-fold}
+
+\emph{Fold expression} redukuje pakiet wyrażeń z użyciem jednego
+operatora binarnego, np. \texttt{+}, \texttt{\&\&}, \texttt{||}
+lub operatora przecinka. Nie wymaga jawnego przypadku
+rekurencyjnego.
+
+\subsection{Cztery postacie składni}
+
+Niech \texttt{xs} oznacza pakiet, $\circ$ ustalony operator,
+a $z$ wartość początkową. Istnieją cztery postacie składni:
+
+\begin{center}
+\small
+\begin{tabular}{|p{0.39\textwidth}|p{0.47\textwidth}|}
+\hline
+\textbf{Postać C++} & \textbf{Sposób łączenia dla trzech argumentów} \\
+\hline
+\texttt{(xs op ...)} & $x_1\circ(x_2\circ x_3)$ (prawostronne, bez inicjalizatora) \\
+\hline
+\texttt{(... op xs)} & $(x_1\circ x_2)\circ x_3$ (lewostronne, bez inicjalizatora) \\
+\hline
+\texttt{(xs op ... op z)} & $x_1\circ(x_2\circ(x_3\circ z))$ (prawostronne, z inicjalizatorem) \\
+\hline
+\texttt{(z op ... op xs)} & $((z\circ x_1)\circ x_2)\circ x_3$ (lewostronne, z inicjalizatorem) \\
+\hline
+\end{tabular}
+\end{center}
+
+W tabeli \texttt{op} jest jedynie oznaczeniem miejsca na rzeczywisty
+operator, np. \texttt{+}; nie jest słowem kluczowym języka.
+\emph{Nawiasy całego fold expression są obowiązkowe}.
+Dwa operatory występujące w fold z inicjalizatorem muszą być takie same.
+
+\subsection{Suma, iloczyn i warunki logiczne}
+
+\begin{lstlisting}
+#include <concepts>
+
+template<class... Ts>
+    requires (std::integral<Ts> && ...)
+constexpr auto sum(Ts... xs) {
+    return (0 + ... + xs);       // left fold with identity 0
+}
+
+template<class... Ts>
+constexpr bool all_true(Ts... xs) {
+    return (true && ... && static_cast<bool>(xs));
+}
+
+template<class... Ts>
+constexpr bool any_true(Ts... xs) {
+    return (false || ... || static_cast<bool>(xs));
+}
+
+static_assert(sum() == 0);
+static_assert(sum(2, 3, 4) == 9);
+static_assert(all_true());
+static_assert(!any_true());
+static_assert(all_true(1, 2, 3));
+\end{lstlisting}
+
+Wyrażenie \texttt{(0 + ... + xs)} może być używane także dla
+pustego pakietu. Początkowe \texttt{0} wpływa jednak na typ wyniku
+i ewentualne promocje arytmetyczne; nie jest to uniwersalna
+implementacja sumy dowolnych typów liczbowych.
+
+\subsection{Lewostronne i prawostronne składanie nie zawsze są równe}
+
+Dla operatora odejmowania kolejność nawiasowania zmienia wynik:
+
+\begin{lstlisting}
+template<class... Ts>
+constexpr auto left_sub(Ts... xs) {
+    return (100 - ... - xs);
+}
+
+template<class... Ts>
+constexpr auto right_sub(Ts... xs) {
+    return (xs - ... - 100);
+}
+
+static_assert(left_sub(10, 3) == 87);  // (100 - 10) - 3
+static_assert(right_sub(10, 3) == 107); // 10 - (3 - 100)
+\end{lstlisting}
+
+Fold określa \emph{strukturę nawiasów}, ale nie należy mylić tej
+własności z ogólną gwarancją kolejności wykonywania wszystkich
+podwyrażeń dla dowolnego operatora. Reguły ewaluacji wynikają
+również z semantyki danego operatora.
+
+\subsection{Pusty pakiet i element neutralny}
+
+Dla \emph{jednoargumentowego} fold z pustym pakietem C++ dopuszcza
+zaledwie trzy operatory: \texttt{\&\&} zwraca \texttt{true},
+\texttt{||} zwraca \texttt{false}, a \texttt{,} daje
+wyrażenie typu \texttt{void}. Pusty pakiet w
+\texttt{(... + xs)} nie jest poprawny. Stosując wersję
+z wartością początkową, możemy jawnie obsłużyć pusty pakiet:
+
+\begin{lstlisting}
+template<class... Ts>
+constexpr auto product(Ts... xs) {
+    return (1 * ... * xs);
+}
+
+static_assert(product() == 1);
+static_assert(product(2, 3, 4) == 24);
+\end{lstlisting}
+
+\section{Operator przecinka i kolejność wykonywania}
+\label{sec:variadic-przecinek}
+
+Operator przecinka jest wygodny, gdy dla każdego elementu pakietu
+chcemy wykonać instrukcję o efektach ubocznych. W odróżnieniu
+od kolejności ewaluacji zwykłych argumentów funkcji, jego
+wbudowana postać gwarantuje wykonanie lewej strony przed prawą.
+
+\begin{lstlisting}
+#include <iostream>
+
+template<class... Ts>
+void print_all(const Ts&... xs) {
+    ((std::cout << xs << ' '), ...);
+    std::cout << '\n';
+}
+
+int main() {
+    print_all(10, 2.5, "hello");
+    print_all();                // only a newline
+}
+\end{lstlisting}
+
+Zewnętrzne nawiasy tworzą fold, a wewnętrzne oddzielają
+wyrażenie wypisujące od operatora \texttt{,}.
+
+\paragraph{Kolejność argumentów zwykłej funkcji.}
+
+\begin{lstlisting}
+template<class... Ts>
+void sink(Ts...);
+
+// sink(change_a(), change_b(), change_c());
+\end{lstlisting}
+
+Samo rozwinięcie \texttt{...} w liście argumentów funkcji
+\emph{nie} gwarantuje, że \texttt{change\_a()} zostanie obliczone
+przed \texttt{change\_b()}. W C++17 i nowszych wywołania
+te nie przeplatają swoich efektów, ale ich wzajemna kolejność
+nie jest określona. Gdy kolejność jest istotna, można użyć
+operatora przecinka lub innej konstrukcji dającej odpowiednie
+gwarancje sekwencjonowania.
+
+\section{Pakiety typów i metaprogramowanie}
+\label{sec:variadic-type-list}
+
+Wariadyczność może dotyczyć nie tylko funkcji, lecz także
+\emph{szablonów klas}. W takim przypadku pakiet przechowuje
+listę typów, a instancjonowanie klasy odbywa się podczas kompilacji.
+
+\subsection{Własna lista typów}
+
+\begin{lstlisting}
+#include <cstddef>
+#include <type_traits>
+
+template<class... Ts>
+struct type_list {};
+
+template<class List>
+struct list_size;
+
+template<class... Ts>
+struct list_size<type_list<Ts...>>
+    : std::integral_constant<std::size_t, sizeof...(Ts)> {};
+
+using Types = type_list<int, double, char>;
+static_assert(list_size<Types>::value == 3);
+static_assert(list_size<type_list<>>::value == 0);
+\end{lstlisting}
+
+Jest to przykład \emph{częściowej specjalizacji} szablonu klasy.
+Wzorzec \texttt{type\_list<Ts...>} dopasowuje dowolną listę
+typów, a \texttt{sizeof...(Ts)} oblicza jej długość.
+
+\subsection{Wydobywanie pierwszego typu}
+
+\begin{lstlisting}
+template<class List>
+struct first_type;   // intentionally undefined for empty list
+
+template<class T, class... Rest>
+struct first_type<type_list<T, Rest...>> {
+    using type = T;
+};
+
+using X = first_type<type_list<long, float>>::type;
+static_assert(std::is_same_v<X, long>);
+\end{lstlisting}
+
+Rozkład na \texttt{T} oraz \texttt{Rest...} jest odpowiednikiem
+rekurencyjnego rozdzielenia argumentów funkcji na pierwszy
+i pozostałe. Dla pustej listy \texttt{type\_list<>} nazwa
+\texttt{first\_type<...>::type} celowo nie istnieje.
+
+\subsection{Czy wszystkie typy spełniają własność?}
+
+\begin{lstlisting}
+#include <type_traits>
+
+template<class... Ts>
+inline constexpr bool all_integral_v =
+    (std::is_integral_v<Ts> && ...);
+
+template<class... Ts>
+inline constexpr std::size_t count_integral_v =
+    (std::size_t{0} + ... +
+        (std::is_integral_v<Ts> ? 1u : 0u));
+
+static_assert(all_integral_v<int, long, char>);
+static_assert(!all_integral_v<int, double>);
+static_assert(count_integral_v<int, double, char> == 2);
+\end{lstlisting}
+
+Jest to częsty wzorzec: pakiet typów łączymy z cechami
+typów (\emph{type traits}) i operatorami logicznymi fold.
+
+\section{Pakiety wartości i parametry nietypowe}
+
+Pakiet może także zawierać wartości znane w czasie kompilacji,
+a nie typy. W szablonie klasy służą do tego
+\emph{nietypowe parametry szablonu} (\emph{non-type template parameters}).
+
+\begin{lstlisting}
+#include <array>
+#include <cstddef>
+
+template<int... Ns>
+struct int_pack {
+    static constexpr std::size_t size = sizeof...(Ns);
+    static constexpr int sum = (0 + ... + Ns);
+};
+
+static_assert(int_pack<>::sum == 0);
+static_assert(int_pack<2, 4, 6>::sum == 12);
+\end{lstlisting}
+
+Od C++17 można zadeklarować pakiet \texttt{auto...}:
+
+\begin{lstlisting}
+template<auto... Values>
+struct value_pack {
+    static constexpr std::size_t size = sizeof...(Values);
+};
+
+static_assert(value_pack<42, 'x', true>::size == 3);
+\end{lstlisting}
+
+Dla \texttt{auto...} dopuszczalność konkretnej wartości jako
+argumentu szablonu nadal podlega regułom parametrów nietypowych;
+nie można przekazać do niego dowolnej wartości z czasu wykonania.
+
+\section{Przekazywanie doskonałe (\textit{perfect forwarding})}
+\label{sec:variadic-forwarding}
+
+Jednym z najważniejszych zastosowań pakietów jest budowanie
+\emph{funkcji pośredniczących}, które przekazują argumenty do
+innej funkcji lub konstruktora, możliwie wiernie zachowując
+ich kategorię wartości (\emph{value category}).
+
+\subsection{Różnica między lvalue a rvalue}
+
+\begin{lstlisting}
+#include <iostream>
+
+void use(int&)  { std::cout << "lvalue\n"; }
+void use(int&&) { std::cout << "rvalue\n"; }
+
+int main() {
+    int x = 10;
+    use(x);       // lvalue
+    use(20);      // rvalue
+}
+\end{lstlisting}
+
+Parametr funkcji, choćby zadeklarowany jako \texttt{T\&\&}, jest
+\emph{nazwanym obiektem}; użycie jego nazwy w wyrażeniu ma
+kategorię \emph{lvalue}. Dlatego samo \texttt{use(arg)}
+nie zachowa kategorii pierwotnego argumentu.
+
+\subsection{Referencje przekazujące i \texttt{std::forward}}
+
+\begin{lstlisting}
+#include <utility>
+
+template<class T>
+void wrapper(T&& arg) {
+    use(std::forward<T>(arg));
+}
+
+void forwarding_example() {
+    int y = 0;
+    wrapper(y);  // T = int&, forwarded as lvalue
+    wrapper(30); // T = int, forwarded as rvalue
+}
+\end{lstlisting}
+
+\texttt{T\&\&} jest \emph{referencją przekazującą}
+(ang. \emph{forwarding reference}), gdy \texttt{T} jest
+odpowiednio dedukowanym, niekwalifikowanym parametrem typu.
+Działa tu \emph{składanie referencji}:
+
+\[
+T\&\;\& \longrightarrow T\&,
+\qquad
+T\&\;\&\& \longrightarrow T\&,
+\qquad
+T\&\&\;\&\& \longrightarrow T\&\&.
+\]
+
+W zapisie \texttt{std::forward<T>(arg)} jawny argument
+\texttt{T} jest konieczny, by odtworzyć pierwotną kategorię.
+\texttt{std::forward} nie wykonuje bezwarunkowego przeniesienia:
+przepuszcza lvalue jako lvalue, a rvalue jako rvalue.
+
+\subsection{Pakiet referencji przekazujących}
+
+\begin{lstlisting}
+#include <functional>
+#include <utility>
+
+template<class F, class... Args>
+decltype(auto) call(F&& f, Args&&... args) {
+    return std::invoke(
+        std::forward<F>(f),
+        std::forward<Args>(args)...
+    );
+}
+\end{lstlisting}
+
+Tutaj rozwijany jest \emph{cały wzorzec}
+\texttt{std::forward<Args>(args)}, a nie tylko nazwa
+\texttt{args}. Każdy element używa właściwego typu z pakietu
+\texttt{Args}.
+\texttt{std::invoke} potrafi wywoływać zwykłe funkcje,
+obiekty funkcyjne i odpowiednio obsłużone wskaźniki do składowych.
+\texttt{decltype(auto)} zachowuje typ zwracany przez docelowe
+wywołanie, w tym referencję, jeżeli docelowa funkcja ją zwraca.
+
+\begin{lstlisting}
+#include <string>
+
+std::string join(std::string a, std::string b) {
+    return a + b;
+}
+
+auto result = call(join, std::string{"ab"}, "cd");
+// result == "abcd"
+\end{lstlisting}
+
+\subsection{Czego nie robić: \texttt{std::move} i nazwy parametrów}
+
+\begin{lstlisting}
+template<class T>
+void wrong_1(T&& arg) {
+    use(arg);              // arg is always an lvalue here
+}
+
+template<class T>
+void wrong_2(T&& arg) {
+    use(std::move(arg));   // forces an rvalue even for lvalues
+}
+\end{lstlisting}
+
+\texttt{std::move} to rzutowanie umożliwiające potraktowanie
+obiektu jak rvalue, a nie polecenie ``zachowaj kategorię''.
+Stosuj je, gdy rzeczywiście przekazujesz obiekt do operacji,
+która może pobrać z niego zasób. W uniwersalnym wrapperze
+używaj \texttt{std::forward}.
+
+\paragraph{Ograniczenia żywotności.}
+Referencje przekazujące \emph{nie przedłużają automatycznie}
+żywotności obiektu do czasu dowolnego późniejszego wykonania.
+Przechowanie referencji do argumentu tymczasowego w strukturze,
+która przeżyje wywołanie, może prowadzić do wskaźników lub
+referencji wiszących. Ten sam problem dotyczy między innymi
+\texttt{std::forward\_as\_tuple}.
+
+\section{Tworzenie obiektów z dowolnych argumentów}
+\label{sec:variadic-emplace}
+
+\subsection{Własna fabryka obiektów}
+
+\begin{lstlisting}
+#include <memory>
+#include <utility>
+
+template<class T, class... Args>
+std::unique_ptr<T> create(Args&&... args) {
+    return std::make_unique<T>(
+        std::forward<Args>(args)...
+    );
+}
+
+struct Point {
+    int x, y;
+    Point(int a, int b) : x(a), y(b) {}
+};
+
+auto point = create<Point>(4, 7);
+\end{lstlisting}
+
+\texttt{std::make\_unique} już dostarcza taką funkcjonalność,
+więc \texttt{create} ma tu charakter dydaktyczny. Pokazuje
+jednak wzorzec używany w fabrykach oraz funkcjach
+\texttt{emplace} i \texttt{make}.
+
+\subsection{Tworzenie kontenera bez wymogu kopiowalności}
+
+\begin{lstlisting}
+#include <concepts>
+#include <string>
+#include <utility>
+#include <vector>
+
+template<class T, class... Args>
+    requires (std::constructible_from<T, Args&&> && ...)
+std::vector<T> make_vector(Args&&... args) {
+    std::vector<T> result;
+    result.reserve(sizeof...(Args));
+    (result.emplace_back(std::forward<Args>(args)), ...);
+    return result;
+}
+
+auto words = make_vector<std::string>("A", "BB", "CCC");
+\end{lstlisting}
+
+Operator przecinka daje tu jednoznaczną kolejność wywołań
+\texttt{emplace\_back}. Funkcja przyjmuje także pusty pakiet
+argumentów. W przeciwieństwie do budowania wektora z listy
+inicjalizacyjnej pozwala łatwo przekazywać do kolejnych
+\texttt{emplace\_back} argumenty przenoszalne, ale niekopiowalne.
+Dla elementów konstruowanych z więcej niż jednego parametru
+wymagałaby innego interfejsu grupowania argumentów.
+
+\section{\texttt{std::tuple}, \texttt{std::apply} i \texttt{std::index\_sequence}}
+\label{sec:variadic-tuple}
+
+\subsection{Heterogeniczna krotka \texttt{std::tuple}}
+
+\texttt{std::tuple<Ts...>} to kontener o strukturze opisanej
+listą typów znaną w czasie kompilacji. Każda pozycja może
+mieć inny typ:
+
+\begin{lstlisting}
+#include <tuple>
+#include <string>
+
+std::tuple<int, std::string, double> t{7, "Ada", 3.5};
+
+int n = std::get<0>(t);
+const std::string& name = std::get<1>(t);
+\end{lstlisting}
+
+W przeciwieństwie do \texttt{std::vector<T>}, krotka nie
+przechowuje dowolnej liczby elementów jednego typu, lecz
+\emph{ustaloną na etapie kompilacji} listę typów.
+
+\subsection{Rozwinięcie krotki do argumentów funkcji}
+
+Funkcja \texttt{std::apply} (C++17) wywołuje funkcję,
+przekazując elementy obiektu \emph{tuple-like} jako osobne
+argumenty:
+
+\begin{lstlisting}
+#include <iostream>
+#include <tuple>
+
+void apply_example() {
+    std::apply([](const auto&... xs) {
+        ((std::cout << xs << ' '), ...);
+        std::cout << '\n';
+    }, t);
+}
+\end{lstlisting}
+
+\texttt{std::apply} oszczędza ręcznego konstruowania
+sekwencji indeksów, ale warto wiedzieć, jak taki mechanizm
+można zaimplementować.
+
+\subsection{Pakiety indeksów: \texttt{std::index\_sequence}}
+
+\begin{lstlisting}
+#include <cstddef>
+#include <iostream>
+#include <tuple>
+#include <utility>
+
+template<class Tuple, std::size_t... I>
+void print_tuple_impl(const Tuple& t,
+                      std::index_sequence<I...>) {
+    ((std::cout << std::get<I>(t) << ' '), ...);
+    std::cout << '\n';
+}
+
+template<class... Ts>
+void print_tuple(const std::tuple<Ts...>& t) {
+    print_tuple_impl(t, std::index_sequence_for<Ts...>{});
+}
+
+void tuple_example() {
+    print_tuple(std::make_tuple(1, "abc", 3.0));
+}
+\end{lstlisting}
+
+\texttt{std::index\_sequence<0,1,2>} jest specjalizacją
+szablonu przyjmującego pakiet indeksów całkowitych.
+\texttt{std::index\_sequence\_for<Ts...>} generuje indeksy
+$0,1,\ldots,n-1$ dla pakietu długości $n$.
+Wzorzec \texttt{std::get<I>(t)...} rozwija wyrażenie
+osobno dla każdego indeksu.
+
+\subsection{Równoległe rozwijanie pakietów}
+
+W jednym wzorcu można użyć kilku pakietów. Muszą mieć
+\emph{tę samą długość}, jeśli są rozwijane równolegle:
+
+\begin{lstlisting}
+#include <tuple>
+#include <type_traits>
+#include <utility>
+
+template<class A, class B>
+struct zipped_types;
+
+template<class... Ts, class... Us>
+struct zipped_types<std::tuple<Ts...>, std::tuple<Us...>> {
+    static_assert(sizeof...(Ts) == sizeof...(Us));
+    using type = std::tuple<std::pair<Ts, Us>...>;
+};
+
+using Z = zipped_types<
+    std::tuple<int, char>,
+    std::tuple<double, bool>
+>::type;
+
+static_assert(std::is_same_v<
+    Z, std::tuple<std::pair<int, double>,
+                  std::pair<char, bool>>>);
+\end{lstlisting}
+
+Elementy \texttt{Ts} i \texttt{Us} są łączone pozycjami:
+$\bigl(T_1,U_1\bigr),\ldots,\bigl(T_n,U_n\bigr)$.
+Nie jest to iloczyn kartezjański pakietów.
+
+\section{Dziedziczenie wariadyczne i \texttt{std::visit}}
+\label{sec:variadic-overloaded}
+
+Pakiet \texttt{Bases...} można rozwinąć na liście baz.
+Z kolei zapis \texttt{using Bases::operator()...}
+wprowadza ich operatory wywołania do jednej klasy.
+W ten sposób otrzymujemy zestaw przeciążeń.
+
+\begin{lstlisting}
+#include <iostream>
+#include <string>
+#include <variant>
+
+template<class... Fs>
+struct overloaded : Fs... {
+    using Fs::operator()...;
+};
+
+template<class... Fs>
+overloaded(Fs...) -> overloaded<Fs...>; // C++17 deduction guide
+
+int main() {
+    std::variant<int, std::string> value = "hello";
+
+    std::visit(overloaded{
+        [](int n) { std::cout << "int: " << n << '\n'; },
+        [](const std::string& s) {
+            std::cout << "string: " << s << '\n';
+        }
+    }, value);
+}
+\end{lstlisting}
+
+Jest to standardowy idiom C++17: każda lambda definiuje
+osobny \texttt{operator()}, a dziedziczenie wariadyczne
+łączy je w jeden obiekt wywoływalny. Gdy stosujemy ten wzorzec
+w wielu miejscach, warto umieścić \texttt{overloaded} w
+niewielkim nagłówku narzędziowym.
+
+\section{Ograniczanie pakietów za pomocą \texttt{concepts} (C++20)}
+\label{sec:variadic-concepts}
+
+Nie każda operacja ma sens dla każdej możliwej kombinacji
+typów. W C++20 można czytelnie określać wymagania dla
+\emph{wszystkich} elementów pakietu.
+
+\begin{lstlisting}
+#include <concepts>
+#include <type_traits>
+
+template<class... Ts>
+    requires (std::integral<Ts> && ...)
+constexpr bool all_nonnegative(Ts... xs) {
+    return ((xs >= 0) && ...);
+}
+
+static_assert(all_nonnegative(0, 2, 7));
+static_assert(!all_nonnegative(0, -1, 7));
+
+// all_nonnegative(3.14); // rejected by constraints
+\end{lstlisting}
+
+Możemy również ograniczać pakiet w odniesieniu do
+konkretnego typu docelowego:
+
+\begin{lstlisting}
+#include <concepts>
+
+template<class T, class... Args>
+concept ConstructibleWith =
+    std::constructible_from<T, Args...>;
+
+static_assert(ConstructibleWith<std::string, const char*>);
+static_assert(!ConstructibleWith<int, std::string>);
+\end{lstlisting}
+
+Pierwszy przykład stosuje fold nad \emph{warunkami dla pojedynczych
+typów}; drugi sprawdza \emph{jedną własność całej sekwencji
+typów}, tj. czy odpowiedni konstruktor przyjmuje argumenty
+\texttt{Args...} w tej kolejności. Tych dwóch mechanizmów
+nie należy utożsamiać.
+
+\subsection{\texttt{if constexpr} i struktura pakietu}
+
+\begin{lstlisting}
+#include <iostream>
+
+template<class... Ts>
+void report(const Ts&... xs) {
+    if constexpr (sizeof...(Ts) == 0) {
+        std::cout << "empty\n";
+    } else {
+        ((std::cout << xs << ' '), ...);
+        std::cout << '\n';
+    }
+}
+\end{lstlisting}
+
+\texttt{if constexpr} pozwala w zależności od długości pakietu
+wybierać gałąź w czasie kompilacji. W dobrze sformułowanym
+szablonie odrzucona gałąź nie jest instancjonowana dla danej
+specjalizacji. To użyteczne przy przypadkach brzegowych,
+które nie mają sensu dla pustego pakietu.
+
+\section{Ograniczenia, pułapki i diagnostyka}
+\label{sec:variadic-pulapki}
+
+\subsection{Pakiet typów nie jest pakietem argumentów funkcji}
+
+\begin{lstlisting}
+template<class... Ts>
+void f(Ts... args) {
+    // sizeof...(Ts): number of types
+    // sizeof...(args): number of function parameters
+    // args[0];  // ERROR: args is not an array
+}
+\end{lstlisting}
+
+Do wybierania argumentu na ustalonej pozycji można użyć
+\texttt{std::tuple} i \texttt{std::get} albo wywoływać funkcję
+przez \texttt{std::apply}. Sam pakiet \texttt{args...}
+nie jest indeksowanym kontenerem.
+
+\subsection{Brak zgodności typów po rozwinięciu}
+
+\begin{lstlisting}
+template<class... Ts>
+auto add(Ts... xs) {
+    return (0 + ... + xs);
+}
+
+// add(1, std::string{"x"}); // ERROR: unsuitable operator+
+\end{lstlisting}
+
+Pakiet nie omija systemu typów. Każde wyrażenie powstałe po
+jego rozwinięciu musi być poprawne, podobnie jak zwykły kod
+C++. Jeżeli szablon ma określone wymagania, najlepiej
+zapisać je za pomocą \texttt{requires}.
+
+\subsection{Niewłaściwe przekazywanie kategorii wartości}
+
+\begin{lstlisting}
+template<class F, class... Args>
+void bad_call(F&& f, Args&&... args) {
+    std::forward<F>(f)(args...); // loses rvalue categories
+}
+
+// Correct:
+// std::forward<F>(f)(std::forward<Args>(args)...);
+\end{lstlisting}
+
+Dla typów niekopiowalnych taki błąd często ujawnia się
+natychmiast podczas kompilacji. Dla typów kopiowalnych
+może spowodować jedynie dodatkowe kopie albo zmianę
+wybranego przeciążenia.
+
+\subsection{Wnioskowanie typów i \texttt{\{...\}}}
+
+\begin{lstlisting}
+#include <initializer_list>
+
+template<class... Args>
+void foo(Args&&...) {}
+
+void braced_example() {
+    // foo({1, 2, 3}); // ERROR: cannot deduce Args
+    foo(std::initializer_list<int>{1, 2, 3}); // OK
+}
+\end{lstlisting}
+
+Sama lista ujęta w nawiasy klamrowe \texttt{\{...\}} nie ma
+typu, który dowolny pakiet \texttt{Args\&\&...} potrafiłby
+wydedukować. Potrzebny jest określony typ parametru,
+np. \texttt{std::initializer\_list}\allowbreak\texttt{<int>}, lub jawnie
+utworzony obiekt.
+
+\subsection{Ograniczenia położenia pakietu}
+
+W \emph{głównej definicji szablonu klasy} pakiet parametrów
+szablonu musi być ostatni. Dla szablonów funkcji istnieją
+bardziej elastyczne reguły, ale kolejne parametry muszą
+być dedukowalne lub mieć argumenty domyślne, stosownie do
+kontekstu:
+
+\begin{lstlisting}
+// ERROR for a primary class template:
+// template<class... Ts, class U> struct invalid;
+
+template<class U, class... Ts>
+struct valid {};
+\end{lstlisting}
+
+\subsection{Skomplikowany kod zamiast prostego rozwiązania}
+
+Szablon wariadyczny to narzędzie, a nie obowiązkowy styl.
+Jeżeli argumenty mają \emph{jednolity typ i ich liczba
+zmienia się w czasie wykonania}, lepszy bywa
+\texttt{std::span<T>}, \texttt{std::vector<T>} lub para
+iteratorów. Pakiet ma liczbę elementów i strukturę typów
+ustalaną na etapie kompilacji; nie zastępuje kontenera.
+
+\section{Variadic templates a funkcje wariadyczne w stylu C}
+
+Historyczne funkcje z deklaracją \texttt{void f(int, ...)}
+korzystają z mechanizmu argumentów wariadycznych języka C,
+a nie z pakietu parametrów szablonu C++:
+
+\begin{lstlisting}
+#include <cstdio>
+
+int main() {
+    std::printf("%d %f\n", 7, 2.5); // C-style variadic call
+}
+\end{lstlisting}
+
+W formacie C zgodność argumentów ze specyfikatorami
+formatowania jest obowiązkiem programisty (niektóre
+kompilatory potrafią wykrywać część pomyłek). W szablonach
+wariadycznych typy argumentów pozostają dostępne
+kompilatorowi, dzięki czemu można wymuszać ograniczenia
+i stosować przeciążanie oraz \texttt{std::forward}.
+Nie należy jednak wyciągać z tego wniosku, że dowolny
+szablon automatycznie bezbłędnie formatuje argumenty.
+
+\section{Pełny przykład: prosty rejestrator zdarzeń}
+\label{sec:variadic-projekt}
+
+Zastosujmy omówione mechanizmy do funkcji tworzącej tekstowy
+komunikat z dowolnej liczby argumentów możliwych do
+wypisania do strumienia. Zamiast ręcznie doklejać spacje
+w wielu przeciążeniach, użyjemy fold nad operatorem przecinka.
+
+\begin{lstlisting}
+#include <iostream>
+#include <sstream>
+#include <string>
+
+// Each argument must support insertion into std::ostream.
+template<class... Args>
+std::string make_message(const Args&... args) {
+    std::ostringstream out;
+    ((out << args), ...);
+    return out.str();
+}
+
+template<class... Args>
+void log_line(const Args&... args) {
+    std::cout << "[LOG] " << make_message(args...) << '\n';
+}
+
+int main() {
+    log_line("count=", 3, ", ratio=", 0.75);
+    log_line("finished");
+    log_line();
+}
+\end{lstlisting}
+
+\paragraph{Analiza.}
+Dla argumentów \texttt{("count=",3,", ratio=",0.75)}
+pakiet zawiera cztery elementy. Wyrażenie
+\texttt{((out << args), ...)} wstawia je kolejno do strumienia,
+a \texttt{make\_message} zwraca powstały napis. Dla
+pustego pakietu fold z operatorem przecinka jest poprawny,
+a wynikowy napis jest pusty. W wersji produkcyjnej należałoby
+rozważyć wymagania dotyczące formatowania, zachowanie w
+obliczu wyjątków, współbieżność oraz ewentualne skorzystanie
+z narzędzia formatującego wspieranego przez używany kompilator.
+
+\section{Zestawienie: kiedy używać poszczególnych mechanizmów?}
+
+\begin{center}
+\small
+\begin{tabular}{|p{0.40\textwidth}|p{0.46\textwidth}|}
+\hline
+\textbf{Cel} & \textbf{Typowe rozwiązanie} \\
+\hline
+Dowolna liczba argumentów o różnych typach & \texttt{template<class... Ts>} i \texttt{Ts...} \\
+\hline
+Wykonanie tej samej operacji dla każdego argumentu & Fold z operatorem \texttt{,} (C++17) \\
+\hline
+Suma, iloczyn lub wspólny warunek & Fold z \texttt{+}, \texttt{*}, \texttt{\&\&} lub \texttt{||} \\
+\hline
+Przekazanie argumentów dalej z zachowaniem kategorii & \texttt{Args\&\&...}, \texttt{std::forward<Args>(args)...} \\
+\hline
+Zapis heterogenicznych wartości & \texttt{std::tuple<Ts...>} \\
+\hline
+Wywołanie funkcji elementami krotki & \texttt{std::apply} (C++17) \\
+\hline
+Rozwinięcie krotki przy pomocy indeksów & \texttt{std::index\_sequence} \\
+\hline
+Lista typów do obliczeń podczas kompilacji & Wariadyczny szablon klasy i specjalizacje \\
+\hline
+Ograniczenie do odpowiednich typów & Fold z koncepcjami i \texttt{requires} (C++20) \\
+\hline
+Zmienna długość listy jednolitych danych w czasie wykonania & \texttt{std::vector} lub \texttt{std::span}, nie pakiet \\
+\hline
+\end{tabular}
+\end{center}
+
+\section{Podsumowanie i zadania do samodzielnego sprawdzenia}
+
+\begin{enumerate}
+    \item \texttt{class... Ts} deklaruje \emph{pakiet typów},
+    a \texttt{Ts... xs} wprowadza \emph{pakiet parametrów funkcji}.
+    \item \texttt{sizeof...(Ts)} oblicza liczbę elementów pakietu
+    podczas kompilacji.
+    \item \texttt{pattern...} rozwija cały \emph{wzorzec},
+    nie tylko pojedynczy identyfikator.
+    \item Fold expressions (od C++17) zastępują wiele prostych
+    rekurencyjnych implementacji z C++11.
+    \item Dla pustego pakietu istotne są element neutralny i
+    reguły operatora; nie każda forma fold jest poprawna.
+    \item W wrapperach zachowuj kategorię wartości argumentów,
+    używając referencji przekazujących i \texttt{std::forward}.
+    \item \texttt{std::tuple}, \texttt{std::apply} i
+    \texttt{std::index\_sequence} współpracują z pakietami,
+    umożliwiając operacje na heterogenicznych danych.
+    \item W C++20 używaj \texttt{concepts}/\texttt{requires},
+    aby błędne wywołania odrzucać na granicy interfejsu.
+\end{enumerate}
+
+\paragraph{Pytania kontrolne.}
+Spróbuj przewidzieć wyniki poniższych wyrażeń bez uruchamiania
+programu. Następnie zweryfikuj je za pomocą \texttt{static\_assert}:
+
+\begin{lstlisting}
+// static_assert(sizeof...(int) == 1); // ERROR: int is not a pack
+
+// For the functions defined above:
+static_assert(product() == 1);
+static_assert(left_sub(10, 3) == 87);
+static_assert(right_sub(10, 3) == 107);
+static_assert(count_integral_v<int, double, char> == 2);
+\end{lstlisting}
+
+Pierwsza linia jest \emph{celowo niepoprawna}: operator
+\texttt{sizeof...} wymaga nazwy pakietu, a nie zwykłego typu.
+
+% Wykorzystane punkty odniesienia (bez kopiowania tresci):
+% https://en.cppreference.com/w/cpp/language/parameter_pack
+% https://en.cppreference.com/w/cpp/language/fold
+% https://en.cppreference.com/w/cpp/utility/forward
+% https://en.cppreference.com/w/cpp/utility/apply
+% https://en.cppreference.com/w/cpp/utility/integer_sequence

@@ -1,0 +1,1018 @@
+% ROZDZIAL 7 -- Lambdy, obiekty funkcyjne i wywolywalne obiekty (C++20)
+% Fragment do wlaczenia po rozdziale 6.
+% Wymagana preambula: listings, array, amsmath (opcjonalny), hyperref.
+% Uzycie: \input{rozdzial_7_lambdy_obiekty_funkcyjne_cpp.tex}
+
+\chapter[Lambdy i obiekty funkcyjne]{Wyrażenia lambda, obiekty funkcyjne i abstrakcje wywoływalne}
+\label{chap:lambdas-cpp}
+
+\section{Po co istnieją obiekty funkcyjne?}
+
+W C++ funkcję można reprezentować nie tylko przez jej nazwę lub wskaźnik.
+Można również utworzyć \emph{obiekt wywoływalny} (\textit{callable object}):
+obiekt, który daje się zastosować w wyrażeniu przypominającym wywołanie
+funkcji. Pozwala to przekazywać zachowanie jako parametr algorytmu,
+zapamiętywać stan pomiędzy wywołaniami oraz tworzyć elastyczne API
+(np. sortowanie z własnym porządkiem, filtrowanie, obsługa zdarzeń).
+
+\begin{lstlisting}
+#include <algorithm>
+#include <vector>
+
+std::vector<int> numbers{5, 2, 8, 1};
+std::sort(numbers.begin(), numbers.end(),
+          [](int a, int b) { return a > b; });
+// numbers == {8, 5, 2, 1}
+\end{lstlisting}
+
+Trzeci argument \texttt{std::sort} to reguła porównywania. Zamiast pisać
+osobną funkcję o globalnej nazwie, definiujemy ją dokładnie w miejscu
+użycia. Wyrażenie \texttt{[](int a, int b) \{ return a > b; \}}
+jest \emph{lambdą}: tworzy obiekt unikatowego typu domknięcia
+(\textit{closure type}).
+
+\paragraph{Zakres i wymagania.}
+Przyjmujemy \textbf{C++20}. Lambdy wprowadzono w C++11, przechwytywanie
+inicjalizujące i generyczne lambdy w C++14, przechwytywanie kopii
+\texttt{*this} w C++17, a jawne listy parametrów szablonu lambdy
+w C++20. Wykorzystamy semantykę przenoszenia z rozdziału~6, szablony
+wariadyczne z rozdziału~4 i koncepcje z rozdziału~5.
+
+\section{Trzy podstawowe postacie kodu wywoływalnego}
+\label{sec:callables-forms}
+
+\subsection{Funkcja i wskaźnik do funkcji}
+
+Zwykła funkcja nie przechowuje kontekstu wywołania. Jej adres można
+przypisać wskaźnikowi o odpowiednim typie:
+
+\begin{lstlisting}
+int twice(int x) { return 2 * x; }
+
+int (*fp)(int) = &twice;
+int a = fp(7);       // 14
+int b = (*fp)(7);    // also 14
+\end{lstlisting}
+
+W deklaracji \texttt{int (*fp)(int)} nawiasy są istotne. Sam wskaźnik
+przechowuje adres funkcji; nie ma miejsca na dodatkowy stan, taki jak
+współczynnik mnożenia ustalany w czasie działania programu.
+
+\subsection{Funktor: klasa z \texttt{operator()}}
+
+\begin{lstlisting}
+struct Multiply {
+    int factor;
+
+    int operator()(int x) const {
+        return factor * x;
+    }
+};
+
+Multiply times_three{3};
+int result = times_three(7); // 21
+\end{lstlisting}
+
+\texttt{Multiply} jest klasą, a \texttt{times\_three} jej egzemplarzem.
+Dzięki polu \texttt{factor} każdy egzemplarz może reprezentować inne
+zachowanie. Operator wywołania może być przeciążany, szablonowy,
+opatrzony kwalifikatorami \texttt{const} lub \texttt{\&\&} i mieć
+złożoną implementację.
+
+\subsection{Lambda jako wygodny zapis funktora}
+
+\begin{lstlisting}
+int factor = 3;
+auto times_three = [factor](int x) {
+    return factor * x;
+};
+int result = times_three(7); // 21
+\end{lstlisting}
+
+Kompilator tworzy odrębny, nienazwany typ klasy odpowiadający lambdzie.
+Uproszczony model jej działania jest następujący:
+
+\begin{lstlisting}
+struct ClosureModel {
+    int factor;
+
+    int operator()(int x) const {
+        return factor * x;
+    }
+};
+\end{lstlisting}
+
+Jest to \emph{model pojęciowy}, nie obiecana przez standard reprezentacja
+pamięci. Każde wystąpienie wyrażenia lambda ma własny typ, nawet jeżeli
+zapis kodu dwóch lambd wygląda identycznie.
+
+\section{Budowa wyrażenia lambda}
+\label{sec:lambda-syntax}
+
+Najważniejsze elementy zapisu przedstawia schemat:
+
+\begin{lstlisting}
+[captures](parameters) mutable noexcept -> ResultType {
+    // body
+}
+\end{lstlisting}
+
+W C++20 można również jawnie określić parametry szablonu, koncepcje
+oraz klauzulę \texttt{requires}. Typ wyniku zwykle jest wywnioskowany
+z instrukcji \texttt{return}; podanie \texttt{-> ResultType} bywa
+przydatne, gdy chcemy wymusić konkretny typ lub zwracać referencję.
+
+\begin{lstlisting}
+auto square = [](int x) { return x * x; };
+auto half = [](double x) -> double { return x / 2; };
+auto truth = [] { return true; }; // () may be omitted
+
+int a = square(4);  // 16
+double b = half(5); // 2.5
+\end{lstlisting}
+
+\paragraph{Najważniejsze zastrzeżenie.}
+Lambda nie jest wskaźnikiem do funkcji. Zwykle tworzy obiekt z
+\texttt{operator()}; jedynie pewne lambdy bez przechwyceń mają
+konwersję na wskaźnik do funkcji o pasującej sygnaturze.
+
+\section{Przechwytywanie zmiennych (\textit{captures})}
+\label{sec:lambda-captures}
+
+\subsection{Przechwycenie przez wartość}
+
+\begin{lstlisting}
+int threshold = 10;
+auto above = [threshold](int x) {
+    return x > threshold;
+};
+threshold = 100;
+
+bool first = above(20);  // true: saved value is 10
+\end{lstlisting}
+
+\texttt{[threshold]} inicjalizuje składową obiektu domknięcia wartością
+\texttt{threshold} w chwili tworzenia lambdy. Późniejsza zmiana zmiennej
+zewnętrznej nie modyfikuje tej kopii. Jeśli kopiowany obiekt ma kosztowne
+kopiowanie, samo utworzenie lub skopiowanie lambdy może także mieć koszt.
+
+\subsection{Przechwycenie przez referencję}
+
+\begin{lstlisting}
+int total = 0;
+auto add = [&total](int value) {
+    total += value;
+};
+add(4);
+add(8); // total == 12
+\end{lstlisting}
+
+\texttt{[\&total]} uzyskuje dostęp do tej samej zmiennej, nie do jej
+kopii. Lambda \textbf{nie wydłuża czasu życia} obiektu przechwyconego
+przez referencję. Dlatego jest wygodna, gdy callback wykonywany jest
+synchronicznie, ale potencjalnie niebezpieczna, jeśli jest zapamiętywany
+albo wykonywany później.
+
+\subsection{Przechwycenia domyślne i mieszane}
+
+\begin{lstlisting}
+int a = 2;
+int b = 3;
+int count = 0;
+
+auto first  = [=]  { return a + b; }; // by copy
+auto second = [&]  { ++count; };     // by reference
+auto third  = [=, &count] {
+    ++count;
+    return a + b;
+};
+\end{lstlisting}
+
+\texttt{[=]} i \texttt{[\&]} obejmują te użyte w treści zmienne lokalne,
+które podlegają niejawnemu przechwyceniu; nie oznaczają automatycznego
+skopiowania \emph{wszystkich} zmiennych z otoczenia. W większym kodzie
+zwykle lepiej wypisać przechwycenia jawnie: dzięki temu widać zależności
+i łatwiej ocenić bezpieczeństwo czasu życia.
+
+\subsection{Przechwytywanie inicjalizujące (C++14)}
+
+W nawiasach kwadratowych można zdefiniować nową nazwę i sposób jej
+inicjalizacji. Dzięki temu lambdy mogą przechowywać wartości pochodne,
+a także zasoby, których nie wolno kopiować:
+
+\begin{lstlisting}
+#include <memory>
+#include <utility>
+
+auto p = std::make_unique<int>(42);
+auto read = [q = std::move(p)] {
+    return *q;
+};
+// p == nullptr; ownership is now in the closure
+int answer = read(); // 42
+\end{lstlisting}
+
+Taka lambda jest \emph{move-only}, ponieważ zawiera
+\texttt{std::unique\_ptr}. Nie można jej skopiować. To istotne przy
+wyborze miejsca przechowywania callbacków: w C++20
+\texttt{std::function} wymaga kopiowalnego obiektu docelowego.
+
+\subsection{Niebezpieczne przechwytywanie: wisząca referencja}
+
+\begin{lstlisting}
+// WRONG: do not call the returned lambda!
+auto broken() {
+    int local = 5;
+    return [&local] { return local; };
+}
+
+// Correct: capture the value.
+auto safe() {
+    int local = 5;
+    return [local] { return local; };
+}
+\end{lstlisting}
+
+\texttt{broken()} zwraca obiekt z dostępem do zmiennej, która przestaje
+istnieć wraz z wyjściem z funkcji. Późniejsze wywołanie prowadziłoby
+do niezdefiniowanego zachowania (\textit{undefined behavior}).
+Przechwycenie przez kopię rozwiązuje ten konkretny problem.
+
+\section{Przechwytywanie \texttt{this} i \texttt{*this}}
+\label{sec:lambda-this}
+
+W metodzie klasy można korzystać z jej pól wewnątrz lambdy. Trzeba
+jednak rozróżnić przechwycenie wskaźnika \texttt{this} od skopiowania
+bieżącego obiektu.
+
+\begin{lstlisting}
+#include <string>
+
+struct Label {
+    std::string text;
+
+    auto by_pointer() const {
+        return [this] { return text; };
+    }
+
+    auto by_copy() const {
+        return [*this] { return text; }; // C++17
+    }
+};
+\end{lstlisting}
+
+Lambda zwrócona przez \texttt{by\_pointer()} odwołuje się do oryginalnego
+obiektu. Nie może być bezpiecznie wywoływana po jego zniszczeniu.
+Lambda z \texttt{[*this]} przechowuje kopię obiektu (jeśli da się go
+skopiować); dla składowych zarządzanych przez RAII jest to zwykle
+bardziej przewidywalne, ale może być kosztowne.
+
+\textbf{Uwaga:} zapis \texttt{[=]} użyty w metodzie nie kopiuje automatycznie
+całego obiektu. Niejawne przechwytywanie \texttt{this} przez \texttt{[=]}
+jest w C++20 przestarzałe (\textit{deprecated}); zapisujmy
+\texttt{[this]} jawnie albo \texttt{[*this]}, gdy potrzebujemy kopii.
+
+\section{Domyślnie stały operator wywołania i \texttt{mutable}}
+
+Dla typowej lambdy bez słowa \texttt{mutable} operator wywołania ma
+kwalifikator \texttt{const}. Oznacza to, że przechwyconych przez wartość
+składowych nie wolno w nim zwyczajnie modyfikować:
+
+\begin{lstlisting}
+int counter = 0;
+
+// ERROR: captured counter is not writable in this closure.
+// auto bad = [counter] { ++counter; };
+
+auto next = [counter]() mutable {
+    return ++counter;
+};
+
+int a = next(); // 1
+int b = next(); // 2
+// outer counter is still 0
+\end{lstlisting}
+
+\texttt{mutable} modyfikuje zachowanie \emph{kopii wewnątrz lambdy},
+nie powoduje przechwycenia oryginalnej zmiennej przez referencję.
+Różne kopie obiektu domknięcia mogą przechowywać różny stan:
+
+\begin{lstlisting}
+auto a = [n = 0]() mutable { return ++n; };
+auto b = a; // independent copy of state
+
+a(); // 1
+a(); // 2
+b(); // 1
+\end{lstlisting}
+
+Przy przechwyceniu przez referencję do modyfikacji zewnętrznego
+obiektu \texttt{mutable} nie jest potrzebne: stałość metody
+\texttt{operator()} nie zmienia stałości obiektu osiąganego przez
+referencję.
+
+\section{Typ lambdy, kopiowanie i konwersja na wskaźnik}
+
+\begin{lstlisting}
+#include <type_traits>
+
+inline constexpr auto f = [](int x) { return x + 1; };
+
+auto a = [](int x) { return x; };
+auto b = [](int x) { return x; };
+static_assert(!std::is_same_v<decltype(a), decltype(b)>);
+
+int (*pf)(int) = +[](int x) { return x + 1; };
+\end{lstlisting}
+
+Dwie osobno zapisane lambdy mają różne typy, nawet jeśli robią to samo.
+W C++20 typ domknięcia lambdy bez przechwyceń jest domyślnie
+konstruowalny; dostępność różnych operacji kopiowania/przypisywania
+zależy od tego, czy lambda przechwytuje zmienne. Dla lambd z
+przechwyceniami obowiązują też ograniczenia narzucone przez typy pól
+(na przykład niekopiowalność \texttt{unique\_ptr}).
+
+\texttt{+[]} jest znanym idiomem wymuszającym konwersję
+nieprzechwytującej żadnej zmiennej lambdy na wskaźnik do funkcji.
+Nie działa dla lambd przechwytujących:
+
+\begin{lstlisting}
+int offset = 10;
+auto with_state = [offset](int x) { return x + offset; };
+// int (*bad)(int) = with_state;  // ERROR
+\end{lstlisting}
+
+\section{Lambdy generyczne i własne parametry szablonu}
+\label{sec:lambda-generic}
+
+\subsection{Parametry \texttt{auto} (C++14)}
+
+\begin{lstlisting}
+auto print_twice = [](const auto& value) {
+    return value + value;
+};
+
+auto x = print_twice(7);                 // 14
+auto s = print_twice(std::string("ab")); // "abab"
+\end{lstlisting}
+
+Parametr \texttt{auto} sprawia, że \texttt{operator()} obiektu domknięcia
+jest szablonem funkcji. Przy wywołaniu kompilator dedukuje odpowiednie
+typy tak jak przy zwykłej funkcji szablonowej.
+
+\subsection{Jawne parametry szablonu w lambdzie (C++20)}
+
+\begin{lstlisting}
+#include <concepts>
+
+auto equal_types = []<class T>(const T& a, const T& b) {
+    return a == b;
+};
+
+auto sum_integrals = []<std::integral... Ts>(Ts... values) {
+    return (0 + ... + values);
+};
+
+bool yes = equal_types(3, 3);
+int total = sum_integrals(1, 2, 3, 4); // 10
+\end{lstlisting}
+
+W przypadku \texttt{equal\_types} oba argumenty muszą dać ten sam
+dedukowany typ \texttt{T}. W drugim przykładzie łączymy \emph{concepts}
+z pakietem parametrów i wyrażeniem fold znanym z rozdziałów~4--5.
+
+\subsection{Uniwersalny wrapper z perfect forwarding}
+
+\begin{lstlisting}
+#include <functional>
+#include <utility>
+
+auto invoke_once = []<class F, class... Args>(
+    F&& f, Args&&... args) -> decltype(auto) {
+    return std::invoke(std::forward<F>(f),
+                       std::forward<Args>(args)...);
+};
+\end{lstlisting}
+
+\texttt{F\&\&} i \texttt{Args\&\&...} są tu referencjami przekazującymi,
+a \texttt{decltype(auto)} zachowuje typ wyniku, w tym jego
+referencyjność. W odróżnieniu od \texttt{std::move},
+\texttt{std::forward} nie wymusza kategorii rvalue dla każdego argumentu.
+Dzięki \texttt{std::invoke} wrapper działa nie tylko dla zwykłych
+funkcji i lambd, lecz także dla wskaźników do składowych.
+
+\section{Wymuszanie sygnatury: \texttt{noexcept}, \texttt{requires}, zwracanie referencji}
+
+\begin{lstlisting}
+#include <concepts>
+#include <utility>
+
+auto absolute = [](int x) noexcept {
+    return x < 0 ? -x : x;
+};
+
+auto increment = []<std::integral T>(T x) -> T {
+    return x + 1;
+};
+
+auto first = []<class T>(T& x) -> T& {
+    return x;
+};
+
+int value = 3;
+first(value) = 17; // modifies value
+\end{lstlisting}
+
+Ważne są dwie subtelności. Po pierwsze, \texttt{noexcept} jest obietnicą
+programisty; jeśli wyjątek wydostanie się z funkcji oznaczonej
+\texttt{noexcept}, wywołane zostanie \texttt{std::terminate}.
+Po drugie, domyślna dedukcja wyniku lambdy deklarowanej bez
+\texttt{decltype(auto)} lub jawnego \texttt{-> T\&} zwykle usuwa
+referencję. Właściwe zwracanie referencji wymaga zatem świadomego
+określenia typu wyniku i zapewnienia jego poprawnego czasu życia.
+
+\section{\texttt{std::invoke}: jeden mechanizm wywołania}
+\label{sec:std-invoke}
+
+\texttt{std::invoke} z nagłówka \texttt{<functional>} wywołuje funkcję,
+funktor lub lambdę, ale obsługuje także wskaźnik do metody i pola.
+
+\begin{lstlisting}
+#include <functional>
+
+struct Box {
+    int value = 10;
+    int add(int x) const { return value + x; }
+};
+
+Box b;
+int a = std::invoke([](int x) { return x * 2; }, 4);
+int c = std::invoke(&Box::add, b, 7);      // 17
+int& r = std::invoke(&Box::value, b);
+r = 25;                                   // b.value == 25
+\end{lstlisting}
+
+To podstawowa cegiełka generycznych algorytmów. W nagłówku
+\texttt{<type\_traits>} zdefiniowano m.in. \texttt{std::invoke\_result\_t},
+\texttt{std::is\_invocable\_v} i \texttt{std::is\_nothrow\_invocable\_v},
+które pozwalają sprawdzić w czasie kompilacji poprawność wywołania.
+
+\begin{lstlisting}
+#include <type_traits>
+
+static_assert(std::is_invocable_v<decltype(absolute), int>);
+static_assert(!std::is_invocable_v<decltype(absolute),
+                                   std::string>);
+static_assert(std::is_nothrow_invocable_v<decltype(absolute),
+                                          int>);
+\end{lstlisting}
+
+\section{\texttt{std::function}: jeden typ dla wielu zachowań}
+\label{sec:std-function}
+
+Lambdy o różnych typach nie mogą bezpośrednio zastępować się w jednej
+zmiennej zadeklarowanej przez \texttt{auto}. Jeżeli chcemy przechowywać
+\emph{dowolny} kopiowalny obiekt wywoływalny o zadanej sygnaturze,
+możemy użyć \texttt{std::function<R(Args...)>}.
+
+\begin{lstlisting}
+#include <functional>
+#include <string>
+
+std::function<int(int)> operation =
+    [](int x) { return 2 * x; };
+
+int factor = 5;
+operation = [factor](int x) { return factor * x; };
+int result = operation(3); // 15
+
+operation = nullptr;
+if (!operation) {
+    // no callable stored
+}
+\end{lstlisting}
+
+\texttt{std::function} stosuje \emph{type erasure}: ukrywa rzeczywisty
+typ obiektu docelowego za wspólnym interfejsem wywołania. Może
+przechowywać funkcje, funktory i lambdy z przechwyceniami. Nie jest
+odpowiednikiem \texttt{auto}: deklaracja \texttt{auto} zachowuje
+konkretny typ i pozwala zwykle kompilatorowi łatwiej zoptymalizować
+wywołanie.
+
+\subsection{Pusty \texttt{std::function} i wyjątek}
+
+\begin{lstlisting}
+#include <functional>
+
+std::function<void()> callback;
+if (callback) {
+    callback();
+}
+// Calling callback() while empty throws std::bad_function_call.
+\end{lstlisting}
+
+Sprawdzenie \texttt{if (callback)} jest zatem standardową częścią
+obsługi opcjonalnych callbacków. Nie należy przechowywać
+\texttt{std::function} bez potrzeby, jeśli konkretny typ wywoływalny
+jest znany w czasie kompilacji.
+
+\subsection{Koszty i ograniczenie kopiowalności}
+
+Zwykle \texttt{std::function} wymaga pośredniego wywołania. Przechowywanie
+większego domknięcia może też wymagać dynamicznej alokacji (zależy to
+od implementacji i rozmiaru obiektu). To koszt elastyczności API, nie
+argument przeciw używaniu \texttt{std::function} w każdym przypadku.
+
+W C++20 przechowywany obiekt docelowy musi być kopiowalny, dlatego
+następujący kod nie jest poprawny:
+
+\begin{lstlisting}
+#include <functional>
+#include <memory>
+
+// ERROR in C++20: the closure is not copy-constructible.
+// std::function<int()> f =
+//     [p = std::make_unique<int>(9)] { return *p; };
+\end{lstlisting}
+
+Od \textbf{C++23} biblioteka udostępnia
+\texttt{std::move\_only\_function}, która służy do przechowywania
+nienadających się do kopiowania obiektów wywoływalnych. W C++20
+można natomiast przechowywać taki obiekt bezpośrednio jako \texttt{auto}
+lub przekazać go do szablonu, który nie wymaga kopiowania.
+
+\section{Co wybrać: \texttt{auto}, szablon, wskaźnik czy \texttt{std::function}?}
+\label{sec:lambda-choice}
+
+\begin{center}
+\begin{tabular}{|p{3.0cm}|p{4.4cm}|p{5.0cm}|}
+\hline
+\textbf{Forma} & \textbf{Zalety} & \textbf{Ograniczenia} \\
+\hline
+\texttt{auto f = lambda} & Konkretny typ, bez koniecznej wymazywania typu, naturalna obsługa stanu & Zmienna ma ustalony typ domknięcia \\
+\hline
+\texttt{template<class F>} & Działa z wieloma typami, umożliwia inline i forwarding & Definicja szablonu zwykle dostępna w nagłówku; możliwe powiększanie kodu \\
+\hline
+Wskaźnik do funkcji & Prosty nieposiadający stanu interfejs & Nie przyjmuje lambd z przechwyceniami \\
+\hline
+\texttt{std::function} & Jedna sygnatura, zmienne zachowanie w czasie wykonania & Type erasure; koszt pośredniego wywołania; wymóg kopiowalności celu w C++20 \\
+\hline
+\end{tabular}
+\end{center}
+
+\paragraph{Praktyczna reguła.}
+Jeżeli callback wykorzystujemy natychmiast, wybierajmy zwykle szablon
+lub \texttt{auto}. Jeżeli musimy przechowywać i później podmieniać różne
+callbacki o jednej sygnaturze, \texttt{std::function} jest często
+czytelniejsza niż ręczne modelowanie polimorfizmu.
+
+\section{Lambdy ze standardowymi algorytmami}
+\label{sec:lambda-algorithms}
+
+\subsection{\texttt{find\_if}, \texttt{count\_if}, \texttt{transform}}
+
+\begin{lstlisting}
+#include <algorithm>
+#include <vector>
+
+std::vector<int> xs{1, 2, 3, 4, 5, 6};
+
+int limit = 3;
+auto it = std::find_if(xs.begin(), xs.end(),
+                       [limit](int x) { return x > limit; });
+// *it == 4
+
+auto even_count = std::count_if(xs.begin(), xs.end(),
+                                [](int x) { return x % 2 == 0; });
+// even_count == 3
+
+std::vector<int> squares(xs.size());
+std::transform(xs.begin(), xs.end(), squares.begin(),
+               [](int x) { return x * x; });
+\end{lstlisting}
+
+Dla \texttt{std::find\_if} trzeba przed dereferencją sprawdzić, czy
+wynik jest różny od \texttt{xs.end()}. Dla \texttt{std::transform} zbiór
+docelowy musi mieć wystarczającą pojemność na zapisywane elementy
+(alternatywą jest iterator \texttt{std::back\_inserter}).
+
+\subsection{\texttt{std::ranges} i projekcje (C++20)}
+
+\begin{lstlisting}
+#include <algorithm>
+#include <ranges>
+#include <string>
+#include <vector>
+
+struct Person {
+    std::string name;
+    int age;
+};
+
+std::vector<Person> people{{"Ada", 31}, {"Bob", 18}, {"Eve", 25}};
+
+std::ranges::sort(people, {}, &Person::age);
+// sorted by age ascending
+
+auto adults = people | std::views::filter(
+    [](const Person& p) { return p.age >= 18; });
+\end{lstlisting}
+
+Trzeci argument \texttt{ranges::sort} to \emph{projekcja}:
+\texttt{\&Person::age} pobiera klucz sortowania, a domyślny komparator
+porównuje klucze. \texttt{views::filter} nie buduje automatycznie nowego
+wektora; jest leniwym widokiem, który odwołuje się do danych źródłowych.
+Przy widokach szczególnie uważnie trzeba kontrolować czas życia
+kontenera i przechwyceń predykatu.
+
+\section{\texttt{std::ref}, \texttt{std::bind\_front} i częściowe wiązanie argumentów}
+\label{sec:bind-front}
+
+\begin{lstlisting}
+#include <functional>
+
+int add(int x, int y) { return x + y; }
+
+auto add_ten = std::bind_front(add, 10); // C++20
+int x = add_ten(5);                      // 15
+\end{lstlisting}
+
+\texttt{std::bind\_front} przechowuje funkcję i ustalone argumenty,
+a pozostałe przyjmuje podczas wywołania. W wielu zastosowaniach
+równoważna lambda jest czytelniejsza:
+
+\begin{lstlisting}
+auto add_ten_lambda = [](int x) { return add(10, x); };
+\end{lstlisting}
+
+Domyślnie argumenty przechowywane przez \texttt{bind\_front} są
+przechowywane przez wartość, z uwzględnieniem przenoszenia. Jeśli
+potrzebujemy odwołania do oryginalnego obiektu, stosujemy
+\texttt{std::ref} (a dla dostępu tylko do odczytu
+\texttt{std::cref}), pamiętając o czasie jego życia:
+
+\begin{lstlisting}
+#include <functional>
+
+struct Accumulator {
+    int total = 0;
+    void add(int n) { total += n; }
+};
+
+Accumulator acc;
+auto update = std::bind_front(&Accumulator::add, std::ref(acc));
+update(7); // acc.total == 7
+\end{lstlisting}
+
+Starsze \texttt{std::bind} jest dostępne, ale ma bardziej skomplikowane
+reguły dotyczące argumentów i podstawiania. W nowym kodzie zwykle
+preferujemy lambdy lub \texttt{std::bind\_front}.
+
+\section{Praktyczny projekt: rejestr callbacków}
+\label{sec:callbacks}
+
+Rozważmy klasę powiadamiającą o zmianie wartości. Do przechowywania
+procedury obsługi zdarzenia użyjemy \texttt{std::function}. Dzięki
+temu można ją zastąpić inną nawet po utworzeniu obiektu.
+
+\begin{lstlisting}
+#include <functional>
+#include <utility>
+
+class Counter {
+public:
+    using Callback = std::function<void(int)>;
+
+    void on_change(Callback callback) {
+        callback_ = std::move(callback);
+    }
+
+    void increment() {
+        ++value_;
+        if (callback_) callback_(value_);
+    }
+
+    int value() const noexcept { return value_; }
+
+private:
+    int value_ = 0;
+    Callback callback_;
+};
+
+Counter counter;
+counter.on_change([](int value) {
+    // report the new value
+});
+counter.increment();
+\end{lstlisting}
+
+Kod w pojedynczym wątku jest prosty i wystarczający dla wielu
+interfejsów zdarzeniowych. W programie wielowątkowym równoczesna
+zmiana \texttt{callback\_} oraz wykonywanie \texttt{increment()}
+wymaga dodatkowej synchronizacji. \texttt{std::function} nie zapewnia
+automatycznie ochrony wewnętrznego stanu przed wyścigami danych.
+
+\subsection{Callback a czas życia właściciela}
+
+\begin{lstlisting}
+#include <memory>
+
+struct Worker : std::enable_shared_from_this<Worker> {
+    int total = 0;
+
+    auto callback() {
+        std::weak_ptr<Worker> weak = shared_from_this();
+        return [weak](int n) {
+            if (auto self = weak.lock()) {
+                self->total += n;
+            }
+        };
+    }
+};
+\end{lstlisting}
+
+Przykład zakłada, że obiekt \texttt{Worker} jest już zarządzany przez
+\texttt{std::shared\_ptr} w chwili wywołania \texttt{callback()}.
+\texttt{weak\_ptr} pozwala sprawdzić, czy obiekt wciąż istnieje,
+bez przedłużania jego życia przez przechwycenie silnego wskaźnika.
+To ważne również dla unikania cykli własności, np. gdy sam obiekt
+przechowuje callback odnoszący się do niego.
+
+\section{Rekurencyjne lambdy bez \texttt{std::function}}
+
+Lambda zwykle nie zna bezpośrednio własnej nazwy podczas definiowania.
+Można jednak przekazywać obiekt wywoływalny jako argument:
+
+\begin{lstlisting}
+auto factorial = [](auto&& self, unsigned n) -> unsigned {
+    return n <= 1 ? 1 : n * self(self, n - 1);
+};
+
+unsigned x = factorial(factorial, 5); // 120
+\end{lstlisting}
+
+To odmiana wzorca \emph{self-parameter}. Dla realnych zastosowań
+rekurencyjnych warto ponadto zwrócić uwagę na przepełnienie liczb
+całkowitych i maksymalną głębokość stosu. W C++20 metoda ta pozwala
+uniknąć pośredniej alokacji i wymazywania typu, których mogłaby wymagać
+rekurencja oparta na \texttt{std::function}.
+
+\section{Lambdy w metaprogramowaniu: \texttt{std::visit} i \texttt{std::apply}}
+\label{sec:lambda-visit-apply}
+
+Dwa przydatne zastosowania łączą lambdy z mechanizmami z rozdziału~4.
+\texttt{std::visit} wybiera wywołanie na podstawie aktywnego typu
+\texttt{std::variant}, natomiast \texttt{std::apply} rozwija argumenty
+z krotki lub podobnej struktury.
+
+\subsection{Zestaw przeciążeń oparty na dziedziczeniu}
+
+\begin{lstlisting}
+#include <string>
+#include <variant>
+
+template <class... Fs>
+struct overloaded : Fs... {
+    using Fs::operator()...;
+};
+
+std::variant<int, std::string> value = std::string{"Hello"};
+
+auto stringify = overloaded{
+    [](int x) { return std::to_string(x); },
+    [](const std::string& x) { return x; }
+};
+
+std::string result = std::visit(stringify, value); // "Hello"
+\end{lstlisting}
+
+Każda lambda dostarcza jeden \texttt{operator()}. Dziedziczenie
+wariadyczne i deklaracja \texttt{using Fs::operator()...} tworzą zbiór
+przeciążeń, spośród których kompilator wybiera odpowiednią funkcję.
+W tym przykładzie wszystkie warianty wywołania zwracają ten sam typ,
+\texttt{std::string}, czego wymaga tu pojedyncze wywołanie
+\texttt{std::visit}. Konstrukcja jest przydatna przy przetwarzaniu
+stanów programu i heterogenicznych danych.
+
+\subsection{Rozwijanie krotki przez \texttt{std::apply}}
+
+\begin{lstlisting}
+#include <tuple>
+
+std::tuple<int, int, int> data{2, 3, 5};
+int sum = std::apply(
+    [](auto... values) { return (0 + ... + values); },
+    data);
+// sum == 10
+\end{lstlisting}
+
+Tutaj \texttt{std::apply} bierze elementy krotki i wywołuje lambdę
+jak zwykłą funkcję trójargumentową. Sama lambda wykorzystuje
+\emph{fold expression}, a więc nie trzeba pisać rekurencyjnego kodu.
+
+\section{Pakiety przechwyceń i obliczenia odroczone (C++20)}
+
+C++20 pozwala stosować \emph{pack expansion} również w przechwytywaniu
+inicjalizującym. Możemy w ten sposób zbudować jeden obiekt domknięcia,
+który przechowuje cały pakiet wartości do późniejszego przetworzenia:
+
+\begin{lstlisting}
+#include <concepts>
+
+template <std::integral... Ts>
+auto delayed_sum(Ts... xs) {
+    return [...stored = xs] {
+        return (0 + ... + stored);
+    };
+}
+
+auto job = delayed_sum(2, 3, 5);
+int result = job(); // 10
+\end{lstlisting}
+
+Lambdę można zwrócić z funkcji, ponieważ wartości są przechowywane
+wewnątrz domknięcia. Przechwycenie przez referencję miałoby inne
+wymagania dotyczące czasu życia. W rzeczywistych fabrykach callbacków
+pakiet może zawierać obiekty niekopiowalne; wtedy należy zadbać
+o przekazanie własności (np. przez \texttt{std::move} i
+\texttt{std::forward}) oraz o wymagania interfejsu, który callback
+przechowuje.
+
+\section{Lambdy w obliczeniach stałych}
+
+Jeśli ciało lambdy dopuszcza obliczanie stałe, jej wywołanie może
+być częścią wyrażenia stałego. Od C++17 odpowiedni operator wywołania
+jest domyślnie \texttt{constexpr}, gdy spełnia wymagania takiej funkcji:
+
+\begin{lstlisting}
+constexpr auto cube = [](int x) { return x * x * x; };
+static_assert(cube(3) == 27);
+
+// C++20: each call must be evaluated at compile time.
+auto fourth_power = [](int x) consteval {
+    return x * x * x * x;
+};
+static_assert(fourth_power(2) == 16);
+\end{lstlisting}
+
+\texttt{consteval} jest mocniejszą deklaracją niż \texttt{constexpr}:
+wymaga, aby właściwe wywołania funkcji natychmiastowej spełniały
+reguły obliczania stałego. Nie należy traktować tego jako gwarancji,
+że każda zwykła lambda zostanie wykonana podczas kompilacji.
+
+\section{Koncepcje dla obiektów wywoływalnych}
+\label{sec:callable-concepts}
+
+W C++20 można ograniczać typy wywoływalne m.in. następującymi
+koncepcjami:
+\begin{itemize}
+\item \texttt{std::invocable} -- poprawność wywołania z danymi argumentami;
+\item \texttt{std::regular\_invocable} -- dodatkowe wymagania semantyczne;
+\item \texttt{std::predicate} -- poprawnie wywoływalny predykat z
+wynikiem dającym się traktować jako wartość logiczną.
+\end{itemize}
+Koncepcje nie dowodzą wszystkich własności semantycznych. Przykładowo
+kompilator nie zweryfikuje matematycznie stabilności wyników predykatu.
+
+\begin{lstlisting}
+#include <concepts>
+#include <functional>
+#include <utility>
+
+template <class F, class T>
+    requires std::predicate<F&, const T&>
+bool test(const T& value, F&& predicate) {
+    return std::invoke(std::forward<F>(predicate), value);
+}
+
+bool ok = test(8, [](int x) { return x % 2 == 0; });
+\end{lstlisting}
+
+\textbf{Istotne rozróżnienie:} koncepcja weryfikuje przede wszystkim
+własności typów i poprawność wyrażeń. Nie dowodzi matematycznie
+własności predykatu, np. że comparator tworzy ścisły słaby porządek.
+Programista nadal odpowiada za kontrakt semantyczny.
+
+\section{Typowe błędy i trudniejsze przypadki}
+\label{sec:lambda-pitfalls}
+
+\subsection{Referencja przechwycona do operacji asynchronicznej}
+
+\begin{lstlisting}
+#include <future>
+
+std::future<int> start() {
+    int x = 7;
+    // WRONG: the task could outlive x.
+    // return std::async(std::launch::async, [&x] { return x; });
+    return std::async(std::launch::async, [x] { return x; });
+}
+\end{lstlisting}
+
+W zadaniach asynchronicznych preferuj przechwycenia przez wartość
+lub świadomie zarządzaną własność, dopóki nie mamy ścisłej gwarancji,
+że obiekt referowany przetrwa wykonanie zadania. Sama biblioteka
+\texttt{std::async} nie wydłuża życia lokalnych zmiennych funkcji
+uruchamiającej.
+
+\subsection{Predykat sortowania nie może naruszać porządku}
+
+\begin{lstlisting}
+// WRONG: <= is not a strict ordering relation.
+// std::sort(xs.begin(), xs.end(),
+//           [](int a, int b) { return a <= b; });
+
+std::sort(xs.begin(), xs.end(),
+          [](int a, int b) { return a < b; });
+\end{lstlisting}
+
+Komparator do \texttt{sort} musi definiować \emph{ścisły słaby
+porządek}. Przykładowo \texttt{comp(x,x)} ma dawać \texttt{false}.
+Naruszenie wymagań algorytmu może prowadzić do niezdefiniowanego
+zachowania, mimo że typy argumentów się zgadzają.
+
+\subsection{Pomylenie kopii z oryginalnym stanem}
+
+\begin{lstlisting}
+int sum = 0;
+std::for_each(xs.begin(), xs.end(), [sum](int x) mutable {
+    sum += x; // modifies only the closure's copy
+});
+// outer sum remains 0
+
+std::for_each(xs.begin(), xs.end(), [&sum](int x) {
+    sum += x;
+});
+\end{lstlisting}
+
+Nie należy zakładać, że \texttt{mutable} zmienia zewnętrzną
+zmienną. Należy też pamiętać, że algorytmy
+mogą kopiować obiekt funkcyjny; nie opierajmy semantyki algorytmu
+na nieudokumentowanych szczegółach kopiowania predykatu.
+
+\subsection{Przechwycenie wskaźnika nie przedłuża życia obiektu}
+
+\begin{lstlisting}
+int* p = /* pointer to some object */ nullptr;
+auto f = [p] {
+    if (p) return *p;
+    return 0;
+};
+\end{lstlisting}
+
+Wartość wskaźnika może zostać skopiowana do lambdy, ale wskazywany
+obiekt nadal musi istnieć w chwili dereferencji. Przechwycenie
+\texttt{shared\_ptr} przenosi własność współdzieloną, a
+\texttt{weak\_ptr} pozwala ją warunkowo odzyskać. To nie jest to
+samo co skopiowanie wskaźnika surowego.
+
+\section{Zestawienie: kiedy stosować którą konstrukcję?}
+
+\begin{center}
+\begin{tabular}{|p{5.7cm}|p{6.6cm}|}
+\hline
+\textbf{Potrzeba} & \textbf{Zalecany wybór} \\
+\hline
+Krótki predykat do algorytmu & Lambda z jawnymi przechwyceniami \\
+\hline
+Wywołanie bez stanu w API C & Zwykła funkcja albo zgodna lambda bez przechwyceń jako wskaźnik do funkcji \\
+\hline
+Wydajny callback o typie znanym w czasie kompilacji & Parametr szablonowy \texttt{F}, ewentualnie \texttt{std::invocable} \\
+\hline
+Callback z możliwością późniejszej podmiany & \texttt{std::function} (C++20, kopiowalny cel) \\
+\hline
+Przechowanie \texttt{unique\_ptr} wewnątrz lambdy & Init-capture i przeniesienie; nie przechowuj takiej lambdy w \texttt{std::function} w C++20 \\
+\hline
+Callback żyjący dłużej niż zmienne lokalne & Kopiuj potrzebny stan lub zarządzaj życiem przez RAII i smart pointery \\
+\hline
+Uniwersalne wywołanie dowolnego callable & \texttt{std::invoke} i \texttt{std::forward} \\
+\hline
+Częściowe podstawienie kilku argumentów & Lambda lub \texttt{std::bind\_front} \\
+\hline
+Bezpieczny predykat dla szablonu & \texttt{std::predicate} plus kontrola jego semantyki \\
+\hline
+\end{tabular}
+\end{center}
+
+\paragraph{Pytania kontrolne.}
+\begin{enumerate}
+\item Dlaczego dwie lambdy o identycznym kodzie mają różne typy?
+\item Jaka jest różnica między \texttt{[x]}, \texttt{[\&x]} i \texttt{[x]() mutable}?
+\item Kiedy bezpiecznie zwrócić lambdę przechwytującą zmienną lokalną?
+\item Dlaczego lambda posiadająca \texttt{unique\_ptr} nie może być celem \texttt{std::function} w C++20?
+\item Jak \texttt{std::invoke} wywołuje wskaźnik do metody klasy?
+\item Czym różnią się \texttt{[this]} i \texttt{[*this]}?
+\item Co może pójść źle, gdy \texttt{std::views::filter} korzysta z lokalnej zmiennej przez referencję?
+\item Kiedy interfejs przyjmujący szablon \texttt{F} jest lepszy od \texttt{std::function}?
+\item Dlaczego komparator \texttt{a <= b} nie jest poprawny dla \texttt{std::sort}?
+\item W jakiej sytuacji przechwycenie \texttt{weak\_ptr} jest lepsze od \texttt{shared\_ptr}?
+\end{enumerate}
+
+\paragraph{Dalsza lektura.}
+W dokumentacji \emph{cppreference} warto przeczytać hasła
+\emph{Lambda expressions}, \emph{Function objects} i \emph{Ranges}.
+Dokładne opisy narzędzi znajdują się również pod hasłami:
+\begin{itemize}
+\item \texttt{std::invoke} oraz \texttt{std::function};
+\item \texttt{std::bind\_front} oraz \texttt{std::predicate}.
+\end{itemize}

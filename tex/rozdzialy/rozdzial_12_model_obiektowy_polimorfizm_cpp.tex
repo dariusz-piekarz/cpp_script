@@ -1,0 +1,1068 @@
+% ROZDZIAL 12 — Model obiektowy C++ i polimorfizm
+% Fragment do zbiorczego skryptu; wczytac przez \input{...} PO rozdziale 11.
+% Standard podstawowy: C++20. Wymagane pakiety: listings, amsmath, amssymb,
+% booktabs, tabularx, array, hyperref, xcolor (jak we wczesniejszych rozdzialach).
+% Ten plik celowo nie zawiera \documentclass ani \begin{document}.
+
+\chapter{Model obiektowy C++ i polimorfizm}
+\label{chap:cpp-object-model}
+
+\section{Po co poznawać model obiektowy?}
+
+Klasy w C++ są jednocześnie narzędziem modelowania danych, organizowania
+interfejsów i budowania różnych rodzajów polimorfizmu. Dwie implementacje
+tego samego interfejsu mogą jednak mieć bardzo różne własności:
+\begin{itemize}
+\item mogą rozstrzygać wywołanie już w trakcie kompilacji albo dopiero w
+  czasie wykonania;
+\item mogą wymagać alokacji dynamicznej lub działać bez niej;
+\item mogą przechowywać obiekty bezpośrednio, przez referencję albo przez
+  wskaźnik zarządzający czasem życia;
+\item mogą zachowywać tożsamość dynamicznego typu obiektu lub ją utracić
+  wskutek \emph{object slicing}.
+\end{itemize}
+
+W tym rozdziale rozdzielamy \emph{gwarancje standardu C++} od typowych
+technik używanych przez kompilatory, takich jak tablice funkcji wirtualnych
+(\emph{vtable}). Pozwala to czytać kod zarówno od strony języka, jak i
+możliwych kosztów wykonania.
+
+\section{Obiekty, podobiekty i tożsamość typu}
+\label{sec:cpp12-subobjects}
+
+\emph{Obiekt} zajmuje pewien obszar pamięci, ma określony typ i czas życia.
+Obiekt klasy może zawierać \emph{podobiekty składowych} oraz
+\emph{podobiekty klas bazowych}. Dziedziczenie nie oznacza zatem
+,,zamiany'' klasy pochodnej na bazową: obiekt pochodny zawiera w sobie
+odpowiedni podobiekt bazowy.
+
+\begin{lstlisting}[caption={Klasa pochodna zawiera podobiekt bazowy (C++11); kompletny program.}]
+#include <cassert>
+#include <string>
+
+struct Entity {
+    int id = 0;
+};
+
+struct Employee : Entity {
+    std::string name;
+};
+
+int main() {
+    Employee e;
+    e.id = 7;
+    e.name = "Ada";
+    Entity& base = e;  // odniesienie do podobiektu Entity
+    assert(&base == static_cast<Entity*>(&e));
+    assert(base.id == 7);
+}
+\end{lstlisting}
+
+\paragraph{Typ statyczny a typ dynamiczny.}
+\emph{Typ statyczny} wyrażenia wynika z reguł języka i jest znany
+kompilatorowi. Gdy wyrażenie wskazuje na obiekt klasy polimorficznej
+(czyli klasy posiadającej lub dziedziczącej funkcję wirtualną),
+\emph{typ dynamiczny} obiektu może być klasą pochodną.
+
+\begin{lstlisting}[caption={Statyczny i dynamiczny typ obiektu; fragment.}]
+struct Animal { virtual ~Animal() = default; };
+struct Dog : Animal {};
+
+Dog dog;
+Animal& ref = dog;  // statyczny typ: Animal&; obiekt: Dog
+Animal* ptr = &dog; // statyczny typ: Animal*; obiekt: Dog
+\end{lstlisting}
+
+\noindent W C++ nie ma wymogu, aby podobiekt klasy bazowej zajmował
+\emph{pierwsze} bajty obiektu pochodnego. Nie należy również zakładać,
+że wskaźnik do całego obiektu i wskaźnik do dowolnej jego bazy mają
+tę samą reprezentację liczbową. Odpowiednie konwersje wykonuje język.
+
+\subsection{Składnia dziedziczenia i kontrola dostępu}
+
+\begin{lstlisting}[caption={Dziedziczenie publiczne, chronione i prywatne; fragment.}]
+class Base {
+public:
+    int a = 1;
+protected:
+    int b = 2;
+private:
+    int c = 3;
+};
+
+class PublicDerived    : public Base {};
+class ProtectedDerived : protected Base {};
+class PrivateDerived   : private Base {};
+\end{lstlisting}
+
+Przy dziedziczeniu publicznym publiczne elementy interfejsu bazowego
+pozostają publiczne, a chronione pozostają chronione. Przy dziedziczeniu
+chronionym oba rodzaje stają się chronione, natomiast przy prywatnym
+oba stają się prywatne dla użytkowników klasy pochodnej.
+Prywatne elementy bazy pozostają niedostępne \emph{bezpośrednio}
+wewnątrz klasy pochodnej niezależnie od rodzaju dziedziczenia.
+
+Sama dostępność elementu nie zmienia jego faktycznego istnienia
+w podobiekcie bazowym. Publiczne dziedziczenie najczęściej wyraża
+relację \emph{is-a}: obiekt pochodny może być używany tam, gdzie
+oczekiwany jest interfejs bazowy.
+
+\section{Przeciążanie, przesłanianie i funkcje wirtualne}
+\label{sec:cpp12-virtual}
+
+\emph{Przeciążanie} (\emph{overloading}) polega na deklarowaniu kilku
+funkcji o tej samej nazwie, różniących się listą parametrów.
+\emph{Przesłanianie nazwy} (\emph{name hiding}) zachodzi, gdy deklaracja
+w klasie pochodnej zasłania nazwę z klasy bazowej.
+\emph{Nadpisywanie} (\emph{overriding}) oznacza dostarczenie implementacji
+funkcji wirtualnej z bazy przez klasę pochodną.
+
+\begin{lstlisting}[caption={Dynamiczne wiązanie wywołania przez virtual (C++11); kompletny program.}]
+#include <iostream>
+
+struct Shape {
+    virtual ~Shape() = default;
+    virtual double area() const = 0;
+    virtual void print() const {
+        std::cout << "Shape\n";
+    }
+};
+
+struct Square final : Shape {
+    explicit Square(double side) : side_(side) {}
+    double area() const override { return side_ * side_; }
+    void print() const override {
+        std::cout << "Square: " << area() << '\n';
+    }
+private:
+    double side_;
+};
+
+int main() {
+    Square square{3.0};
+    Shape& shape = square;
+    shape.print(); // Square: 9
+    std::cout << shape.area() << '\n';
+}
+\end{lstlisting}
+
+Klasa \texttt{Shape} jest \emph{abstrakcyjna}, ponieważ jej funkcja
+\texttt{area()} jest czysto wirtualna, co oznaczamy \texttt{= 0}.
+Nie można skonstruować obiektu \texttt{Shape}, lecz można utworzyć
+referencję lub wskaźnik do jej podobiektu w obiekcie konkretnym.
+
+\paragraph{Reguła wyboru funkcji.}
+Dla wywołania \texttt{base.f()} najpierw rozstrzygane są dostępność
+nazwy, przeciążenia i poprawność wywołania według \emph{typu statycznego}.
+Jeśli wybrana funkcja jest wirtualna, a wywołanie nie wyłącza mechanizmu
+wirtualnego przez kwalifikację nazwy, uruchamiany jest odpowiedni
+\emph{final overrider} dla dynamicznego typu obiektu.
+
+\subsection{Dlaczego stosować \texttt{override} i \texttt{final}?}
+
+\texttt{override} oznacza, że dana metoda ma nadpisywać metodę wirtualną.
+Jeśli sygnatura nie pasuje, kompilator zgłosi błąd. \texttt{final}
+uniemożliwia dalsze nadpisywanie metody albo dziedziczenie po klasie.
+
+\begin{lstlisting}[caption={override wykrywa niezgodność sygnatur; fragment.}]
+struct Base {
+    virtual void draw() const {}
+    virtual ~Base() = default;
+};
+
+struct Good : Base {
+    void draw() const override {} // poprawnie
+};
+
+// BLEDNE -- celowo niekompilowalne:
+// struct Bad : Base {
+//     void draw() override {} // brak const
+// };
+\end{lstlisting}
+
+\noindent Przy nadpisywaniu znaczenie mają między innymi kwalifikatory
+\texttt{const}/\texttt{volatile} metody i kwalifikator referencyjny
+\texttt{\&}/\texttt{\&\&}. Specyfikacja wyjątków też podlega regułom
+zgodności: nadpisanie metody \texttt{noexcept} metodą potencjalnie
+zgłaszającą wyjątek jest niedozwolone. Zwykłego typu wyniku nie można
+zmienić, z wyjątkiem określonych \emph{kowariantnych} typów zwracanych.
+
+\begin{lstlisting}[caption={noexcept i kwalifikatory referencyjne w nadpisywaniu; fragment.}]
+struct Service {
+    virtual int read() const & noexcept { return 1; }
+    virtual ~Service() = default;
+};
+
+struct FastService : Service {
+    int read() const & noexcept override { return 2; }
+};
+\end{lstlisting}
+
+\subsection{Przesłanianie przeciążeń i \texttt{using}}
+
+\begin{lstlisting}[caption={Odsłanianie przeciążeń klasy bazowej; kompletny program.}]
+#include <cassert>
+
+struct Printer {
+    int print(int) const { return 1; }
+    int print(double) const { return 2; }
+};
+
+struct FancyPrinter : Printer {
+    using Printer::print;
+    int print(const char*) const { return 3; }
+};
+
+int main() {
+    FancyPrinter p;
+    assert(p.print(10) == 1);
+    assert(p.print(2.5) == 2);
+    assert(p.print("text") == 3);
+}
+\end{lstlisting}
+
+Bez deklaracji \texttt{using Printer::print;} nazwa \texttt{print}
+z klasy pochodnej przesłaniałaby zestaw przeciążeń o tej nazwie
+z klasy bazowej. Mechanizm przesłaniania występuje również dla
+funkcji \emph{niewirtualnych}.
+
+\subsection{Argumenty domyślne i wiązanie statyczne}
+
+Wartości domyślnych argumentów nie wybiera się polimorficznie:
+są związane ze statycznym typem wyrażenia, mimo że sama implementacja
+funkcji może być wybrana dynamicznie.
+
+\begin{lstlisting}[caption={Domyślny argument pochodzi z deklaracji bazy (C++11); kompletny program.}]
+#include <cassert>
+
+struct Base {
+    virtual int calculate(int x = 10) const { return x; }
+    virtual ~Base() = default;
+};
+
+struct Derived : Base {
+    int calculate(int x = 20) const override { return 2 * x; }
+};
+
+int main() {
+    Derived object;
+    Base& base = object;
+    assert(base.calculate() == 20); // 2 * 10
+    assert(object.calculate() == 40); // 2 * 20
+}
+\end{lstlisting}
+
+Z tego powodu w praktycznych interfejsach polimorficznych warto unikać
+różnych domyślnych argumentów dla nadpisywanych funkcji.
+
+\section{Destruktor wirtualny i reguły czasu życia}
+\label{sec:cpp12-lifetime}
+
+Jeżeli obiekt klasy pochodnej ma być niszczony przez wskaźnik do
+klasy bazowej, destruktor bazy powinien być \texttt{public virtual}
+(alternatywnie projekt może zabraniać usuwania przez bazę,
+np. za pomocą \texttt{protected} destruktora niewirtualnego).
+
+\begin{lstlisting}[caption={Bezpieczne usuwanie obiektu przez wskaźnik bazowy (C++14); kompletny program.}]
+#include <iostream>
+#include <memory>
+
+struct Resource {
+    virtual ~Resource() { std::cout << "~Resource\n"; }
+};
+
+struct FileResource : Resource {
+    ~FileResource() override {
+        std::cout << "~FileResource\n";
+    }
+};
+
+int main() {
+    std::unique_ptr<Resource> object =
+        std::make_unique<FileResource>();
+    // Najpierw ~FileResource, potem ~Resource.
+}
+\end{lstlisting}
+
+Jeżeli bazowy destruktor nie jest wirtualny, standardowe
+\texttt{delete base\_ptr;} przy dynamicznym typie różnym od statycznego
+może prowadzić do niezdefiniowanego zachowania; istnieją szczególne
+reguły związane z tzw. \emph{destroying delete}, ale nie należy
+traktować ich jako zwykłego substytutu destruktora wirtualnego.
+
+\subsection{Kolejność konstrukcji i destrukcji}
+
+Dla obiektu klasy pochodnej kolejność konstrukcji jest następująca:
+\begin{enumerate}
+\item wirtualne podobiekty bazowe (przez najbardziej pochodny obiekt);
+\item niewirtualne podobiekty bazowe w kolejności ich deklaracji;
+\item składowe klasy w kolejności \emph{deklaracji pól}, niezależnie od
+      kolejności w liście inicjalizacyjnej;
+\item ciało konstruktora klasy.
+\end{enumerate}
+Destrukcja przebiega w odpowiedniej kolejności odwrotnej.
+W prostym pojedynczym dziedziczeniu można to zilustrować następująco.
+
+\begin{lstlisting}[caption={Kolejność konstruowania podobiektów (C++11); kompletny program.}]
+#include <iostream>
+
+struct A {
+    A()  { std::cout << "A+ "; }
+    ~A() { std::cout << "A- "; }
+};
+struct B {
+    B()  { std::cout << "B+ "; }
+    ~B() { std::cout << "B- "; }
+};
+struct C : A {
+    B member;
+    C()  { std::cout << "C+ "; }
+    ~C() { std::cout << "C- "; }
+};
+
+int main() {
+    C object;
+    // A+ B+ C+ C- B- A-
+}
+\end{lstlisting}
+
+\subsection{Funkcje wirtualne w konstruktorach i destruktorach}
+
+Podczas wykonywania konstruktora \texttt{Base} wywołanie wirtualne
+nie trafia do implementacji z \texttt{Derived}, której część nie
+została jeszcze skonstruowana. Analogicznie podczas wykonywania
+destruktora \texttt{Base} część pochodna została już zniszczona.
+
+\begin{lstlisting}[caption={Dynamiczne wiązanie podczas konstrukcji (C++11); kompletny program.}]
+#include <cassert>
+
+struct Base {
+    Base() { assert(code() == 1); }
+    virtual ~Base() = default;
+    virtual int code() const { return 1; }
+};
+struct Derived : Base {
+    int code() const override { return 2; }
+};
+int main() {
+    Derived object;
+    Base& b = object;
+    assert(b.code() == 2);
+}
+\end{lstlisting}
+
+\noindent Nie należy wywoływać funkcji \emph{czysto wirtualnej}
+przez mechanizm wirtualny z konstruktora albo destruktora klasy,
+na której poziomie funkcja jest czysto wirtualna: takie wywołanie
+jest niezdefiniowanym zachowaniem. Preferuj dwufazową konstrukcję
+kontrolowaną przez fabrykę tylko wtedy, gdy naprawdę jest potrzebna,
+a w typowych sytuacjach inicjalizację kompletnych podobiektów
+przez konstruktory i RAII.
+
+\section{Object slicing: utrata części pochodnej}
+\label{sec:cpp12-slicing}
+
+\emph{Object slicing} nie jest dynamicznym rzutowaniem. Gdy obiekt
+pochodny kopiujemy \emph{przez wartość} do obiektu bazy,
+powstaje osobny obiekt bazy, zawierający tylko część bazową.
+
+\begin{lstlisting}[caption={Kopiowanie przez wartość powoduje slicing (C++11); kompletny program.}]
+#include <cassert>
+
+struct Base {
+    virtual ~Base() = default;
+    virtual int value() const { return 1; }
+};
+struct Derived : Base {
+    int value() const override { return 2; }
+};
+
+int by_value(Base object) { return object.value(); }
+int by_reference(const Base& object) {
+    return object.value();
+}
+
+int main() {
+    Derived d;
+    assert(by_value(d) == 1);      // nowy obiekt Base
+    assert(by_reference(d) == 2);  // oryginalny Derived
+}
+\end{lstlisting}
+
+Zwykle przechowujemy heterogeniczne obiekty polimorficzne
+jako \texttt{std::unique\_ptr<Base>} (własność wyłączna),
+\texttt{std::shared\_ptr<Base>} (współdzielona własność) albo
+nieposiadające obiektu \texttt{Base\&}/\texttt{Base*} (widoki).
+Bezpośredni \texttt{std::vector<Base>} przechowuje wyłącznie obiekty
+\texttt{Base} i nie zachowuje typów pochodnych przy kopiowaniu.
+
+\subsection{Bezpieczny kontener polimorficzny}
+
+\begin{lstlisting}[caption={Własność obiektów pochodnych w kontenerze unikalnych wskaźników (C++14); kompletny program.}]
+#include <cassert>
+#include <memory>
+#include <vector>
+
+struct Operation {
+    virtual ~Operation() = default;
+    virtual int apply(int x) const = 0;
+};
+struct Add : Operation {
+    explicit Add(int delta) : delta_(delta) {}
+    int apply(int x) const override { return x + delta_; }
+private:
+    int delta_;
+};
+struct Multiply : Operation {
+    explicit Multiply(int factor) : factor_(factor) {}
+    int apply(int x) const override { return x * factor_; }
+private:
+    int factor_;
+};
+
+int main() {
+    std::vector<std::unique_ptr<Operation>> operations;
+    operations.push_back(std::make_unique<Add>(2));
+    operations.push_back(std::make_unique<Multiply>(3));
+
+    int result = 4;
+    for (const auto& operation : operations)
+        result = operation->apply(result);
+    assert(result == 18); // (4 + 2) * 3
+}
+\end{lstlisting}
+
+Warto pamiętać, że unikalny wskaźnik na typ pochodny można
+przenieść do unikalnego wskaźnika na bazę tylko wtedy, gdy
+spełnione są wymagania dotyczące konwersji wskaźników i deletera. Domyślny deleter w typowym
+przypadku usuwa obiekt przez \texttt{Base*}, dlatego destruktor
+polimorficznej bazy musi być poprawnie zaprojektowany.
+
+\section{RTTI: \texttt{dynamic\_cast} oraz \texttt{typeid}}
+\label{sec:cpp12-rtti}
+
+RTTI (\emph{run-time type information}) pozwala w pewnych sytuacjach
+sprawdzić typ dynamiczny i wykonać sprawdzoną konwersję w hierarchii
+klas polimorficznych.
+
+\subsection{\texttt{dynamic\_cast} — sprawdzony downcast}
+
+\begin{lstlisting}[caption={Sprawdzona konwersja w dół hierarchii (C++11); kompletny program.}]
+#include <cassert>
+#include <typeinfo>
+
+struct Animal { virtual ~Animal() = default; };
+struct Dog : Animal { int bark() const { return 10; } };
+struct Cat : Animal {};
+
+int main() {
+    Dog dog;
+    Animal* animal = &dog;
+
+    if (auto* ptr = dynamic_cast<Dog*>(animal)) {
+        assert(ptr->bark() == 10);
+    }
+    assert(dynamic_cast<Cat*>(animal) == nullptr);
+
+    Animal& reference = dog;
+    assert(&dynamic_cast<Dog&>(reference) == &dog);
+    try {
+        (void)dynamic_cast<Cat&>(reference);
+        assert(false); // nie powinno zostac wykonane
+    } catch (const std::bad_cast&) {
+        // Nieudany dynamic_cast do referencji rzuca bad_cast.
+    }
+}
+\end{lstlisting}
+
+W typowym \emph{downcast} źródłowy typ klasy musi być polimorficzny.
+Nieudane rzutowanie do wskaźnika daje \texttt{nullptr}, a do referencji
+zgłasza \texttt{std::bad\_cast}. Konwersja zwykłego wskaźnika
+\texttt{Derived*} do dostępnej, jednoznacznej bazy \texttt{Base*}
+nie potrzebuje RTTI ani \texttt{dynamic\_cast}.
+
+\paragraph{\texttt{static\_cast} nie sprawdza typu dynamicznego.}
+
+\begin{lstlisting}[caption={Niebezpieczny downcast; fragment celowo błędny.}]
+struct Base { virtual ~Base() = default; };
+struct Derived : Base { int only_derived = 7; };
+
+Base base;
+Base* ptr = &base;
+// Kompilator moze zaakceptowac ponizsze rzutowanie,
+// ale wskazywany obiekt nie jest obiektem Derived:
+// Derived* wrong = static_cast<Derived*>(ptr);
+// int x = wrong->only_derived; // niezdefiniowane zachowanie
+\end{lstlisting}
+
+\noindent Stosuj \texttt{static\_cast} przy downcast tylko wtedy,
+gdy poprawny typ dynamiczny wynika z udowodnionego niezmiennika.
+Jeżeli architektura wymaga bardzo wielu wywołań \texttt{dynamic\_cast},
+rozważ lepszy interfejs wirtualny, visitor albo \texttt{std::variant}.
+
+\subsection{\texttt{typeid} i typ dynamiczny}
+
+\begin{lstlisting}[caption={Odczyt informacji o typie dynamicznym (C++11); kompletny program.}]
+#include <cassert>
+#include <typeinfo>
+
+struct Base { virtual ~Base() = default; };
+struct Derived : Base {};
+
+int main() {
+    Derived object;
+    Base& base = object;
+    assert(typeid(base) == typeid(Derived));
+    assert(typeid(object) == typeid(Derived));
+}
+\end{lstlisting}
+
+\noindent Dla wyrażenia typu klasy polimorficznej, będącego \emph{glvalue},
+\texttt{typeid(expression)} zwraca informację o typie dynamicznym.
+W innych sytuacjach zazwyczaj uwzględnia typ statyczny wyrażenia.
+Nazwy zwracane przez \texttt{type\_info::name()} są zależne
+od implementacji; nie należy używać ich jako stabilnego identyfikatora
+w zapisywanych plikach lub w protokołach sieciowych.
+Dla \texttt{typeid(*ptr)} z zerowym wskaźnikiem do typu polimorficznego
+może zostać zgłoszony \texttt{std::bad\_typeid}.
+
+\section{Wielodziedziczenie i wirtualne klasy bazowe}
+\label{sec:cpp12-multiple}
+
+C++ pozwala dziedziczyć po wielu klasach. Jest to przydatne
+np. dla kilku niezależnych interfejsów, ale wymaga zrozumienia
+niejednoznaczności oraz struktury podobiektów bazowych.
+
+\begin{lstlisting}[caption={Dwie niezależne bazy-interfejsy (C++11); kompletny program.}]
+#include <cassert>
+
+struct Readable {
+    virtual ~Readable() = default;
+    virtual int read() const = 0;
+};
+struct Writable {
+    virtual ~Writable() = default;
+    virtual void write(int x) = 0;
+};
+struct Buffer : Readable, Writable {
+    int value = 0;
+    int read() const override { return value; }
+    void write(int x) override { value = x; }
+};
+
+int main() {
+    Buffer buffer;
+    Writable& out = buffer;
+    Readable& in = buffer;
+    out.write(17);
+    assert(in.read() == 17);
+}
+\end{lstlisting}
+
+\subsection{Problem diamentu}
+
+Załóżmy, że \texttt{Left} i \texttt{Right} dziedziczą po
+\texttt{Base}, a \texttt{Diamond} po obu. Przy zwykłym
+dziedziczeniu istnieją \emph{dwa różne} podobiekty \texttt{Base}.
+Przy dziedziczeniu wirtualnym najbardziej pochodny obiekt zawiera
+jedną współdzieloną wirtualną bazę \texttt{Base}.
+
+\begin{lstlisting}[caption={Jedna wirtualna baza we wzorcu diamentu (C++11); kompletny program.}]
+#include <cassert>
+
+struct Root {
+    explicit Root(int n) : value(n) {}
+    int value;
+};
+struct Left : virtual Root {
+    Left() : Root(1) {} // ignorowane jako inicjalizacja
+};                          // bazy w obiekcie Diamond
+struct Right : virtual Root {
+    Right() : Root(2) {}
+};
+struct Diamond : Left, Right {
+    Diamond() : Root(42), Left(), Right() {}
+};
+
+int main() {
+    Diamond d;
+    Root* from_left = static_cast<Left*>(&d);
+    Root* from_right = static_cast<Right*>(&d);
+    assert(from_left == from_right);
+    assert(d.value == 42);
+}
+\end{lstlisting}
+
+\noindent Najbardziej pochodna klasa \texttt{Diamond} odpowiada
+za konstrukcję wirtualnej bazy \texttt{Root}. W implementacjach
+wielodziedziczenie i wirtualne bazy mogą wymagać korekty wskaźników
+oraz dodatkowych informacji o położeniu podobiektów.
+Nie należy jednak utożsamiać modelu języka z konkretną reprezentacją
+pamięci w danym ABI.
+
+\section{Kowariantne typy zwracane}
+
+W szczególnym przypadku nadpisująca funkcja wirtualna może zwracać
+wskaźnik lub referencję do typu bardziej pochodnego, zamiast
+wskaźnika lub referencji do klasy bazowej.
+
+\begin{lstlisting}[caption={Kowariantny typ wyniku metody wirtualnej (C++11); kompletny program.}]
+#include <cassert>
+
+struct Base {
+    virtual ~Base() = default;
+    virtual Base* self() { return this; }
+};
+struct Derived : Base {
+    Derived* self() override { return this; }
+    int payload = 5;
+};
+
+int main() {
+    Derived d;
+    Base& b = d;
+    Base* a = b.self(); // typ statyczny Base*
+    Derived* x = d.self(); // typ statyczny Derived*
+    assert(a == x);
+    assert(x->payload == 5);
+}
+\end{lstlisting}
+
+\noindent Kowariancja nie obejmuje dowolnych szablonów: na przykład
+\texttt{std::unique\_ptr<Derived>} nie jest kowariantnym typem zwracanym
+nadpisującym metodę zwracającą \texttt{std::unique\_ptr<Base>}.
+Dlatego metody \texttt{clone()} zwracające \texttt{unique\_ptr}
+w klasach pochodnych zwykle zachowują wspólny typ wyniku.
+
+\section{Klasy abstrakcyjne jako kontrakty i wzorzec NVI}
+\label{sec:cpp12-nvi}
+
+Dobrą praktyką może być rozdzielenie publicznego, niewirtualnego
+interfejsu kontrolującego niezmienniki od prywatnej implementacji
+wirtualnej (\emph{non-virtual interface}, NVI).
+
+\begin{lstlisting}[caption={NVI: publiczny kontrakt i prywatna metoda wirtualna (C++11); kompletny program.}]
+#include <cassert>
+#include <stdexcept>
+
+class Encoder {
+public:
+    virtual ~Encoder() = default;
+
+    int encode(int value) const {
+        if (value < 0)
+            throw std::invalid_argument("negative input");
+        return do_encode(value);
+    }
+
+private:
+    virtual int do_encode(int value) const = 0;
+};
+
+class DoubleEncoder final : public Encoder {
+private:
+    int do_encode(int value) const override {
+        return 2 * value;
+    }
+};
+
+int main() {
+    DoubleEncoder encoder;
+    Encoder& api = encoder;
+    assert(api.encode(21) == 42);
+}
+\end{lstlisting}
+
+\noindent Wersja publiczna może centralnie realizować walidację,
+logowanie, kontrolę błędów i niezmienników. Prywatna funkcja
+wirtualna w klasie bazowej \emph{może} zostać nadpisana przez klasę
+pochodną, mimo że nie jest z niej bezpośrednio wywoływalna
+przez zwykłą nazwę; w przykładzie nadpisanie jest prywatne.
+
+\subsection{Polimorficzne kopiowanie przez \texttt{clone}}
+
+Gdy chcemy uzyskać niezależną kopię obiektu o zachowanym typie
+dynamicznym, możemy zastosować wirtualną fabrykę \texttt{clone()}.
+
+\begin{lstlisting}[caption={Kopiowanie polimorficzne (C++14); kompletny program.}]
+#include <cassert>
+#include <memory>
+
+struct Node {
+    virtual ~Node() = default;
+    virtual std::unique_ptr<Node> clone() const = 0;
+    virtual int value() const = 0;
+};
+struct Number final : Node {
+    explicit Number(int x) : x_(x) {}
+    std::unique_ptr<Node> clone() const override {
+        return std::make_unique<Number>(*this);
+    }
+    int value() const override { return x_; }
+private:
+    int x_;
+};
+
+int main() {
+    std::unique_ptr<Node> a = std::make_unique<Number>(42);
+    std::unique_ptr<Node> b = a->clone();
+    assert(a.get() != b.get());
+    assert(a->value() == b->value());
+}
+\end{lstlisting}
+
+Takie podejście przywraca semantykę kopiowania do hierarchii,
+której obiekty zwykle są trzymane przez wskaźniki.
+Trzeba jednak jawnie zdefiniować, co oznacza \emph{głęboka kopia},
+zwłaszcza jeśli obiekt współdzieli inne zasoby.
+
+\section{Model implementacyjny: \emph{vptr}, \emph{vtable} i ABI}
+\label{sec:cpp12-vtable}
+
+Standard C++ określa \emph{zachowanie}, ale nie nakazuje użycia
+żadnej konkretnej struktury wewnętrznej do realizacji funkcji
+wirtualnych. Popularne ABI używają mniej więcej następującego modelu:
+\begin{itemize}
+\item obiekt polimorficzny przechowuje ukryty wskaźnik \emph{vptr};
+\item wskaźnik ten prowadzi do tablicy \emph{vtable}, która zawiera
+  informacje potrzebne do wywołań wirtualnych i często do RTTI;
+\item wywołanie wirtualne może wymagać odczytania \texttt{vptr},
+  odpowiedniego wpisu i wykonania wywołania pośredniego.
+\end{itemize}
+
+To \emph{opis typowej implementacji}, nie kontrakt języka.
+W szczególności liczba i położenie wskaźników \texttt{vptr},
+układ tablic oraz narzut pamięci są zależne od ABI i kompilatora.
+Wielodziedziczenie może komplikować ten schemat, ponieważ niektóre
+wywołania wymagają korekty wskaźnika \texttt{this}.
+
+\begin{center}
+\fbox{\begin{minipage}{0.91\textwidth}
+\textbf{Schemat poglądowy (nie jest układem wymaganym przez standard)}
+\medskip
+
+\begin{tabular}{@{}p{0.43\textwidth}cp{0.36\textwidth}@{}}
+\textbf{Obiekt \texttt{Derived}} & & \textbf{Tablica wirtualna} \\
+\hline
+\texttt{vptr} & $\longrightarrow$ & adres implementacji \texttt{draw()} \\
+\texttt{Base::id} & & adres odpowiedniego destruktora \\
+\texttt{Derived::payload} & & metadane zależne od ABI \\
+\end{tabular}
+\end{minipage}}
+\end{center}
+
+\subsection{\texttt{sizeof}, wyrównanie i brak gwarancji binarnego układu}
+
+\begin{lstlisting}[caption={Empiryczny rozmiar klasy polimorficznej (C++11); kompletny program.}]
+#include <iostream>
+
+struct Plain { int x = 0; };
+struct Poly {
+    int x = 0;
+    virtual ~Poly() = default;
+};
+
+int main() {
+    std::cout << sizeof(Plain) << '\n';
+    std::cout << sizeof(Poly) << '\n';
+}
+\end{lstlisting}
+
+Nie wpisujemy w skrypcie stałych wartości tych rozmiarów:
+na wielu platformach typ \texttt{Poly} będzie większy, ale
+rozmiary wynikają z implementacji i obowiązujących reguł
+wyrównania. Sama obecność \texttt{virtual} nie gwarantuje określonego
+liczbowo narzutu ani ustalonej reprezentacji binarnej.
+Nie należy serializować surowych bajtów obiektu polimorficznego
+jako trwałego formatu danych.
+
+\subsection{Koszty i devirtualizacja}
+
+Wywołanie wirtualne może być droższe od zwykłego z powodu
+pośrednictwa oraz potencjalnie trudniejszego \emph{inliningu}.
+W praktyce jednak koszt zależy od rozkładu typów dynamicznych,
+lokalności pamięci, optymalizacji międzyjednostkowej i architektury CPU.
+Kompilator może zastosować \emph{devirtualizację}: jeśli potrafi
+ustalić docelową implementację, wywołanie może stać się bezpośrednie,
+a następnie zostać rozwinięte inline.
+
+\begin{lstlisting}[caption={final może ułatwiać ustalenie celu wywołania; fragment.}]
+struct Interface {
+    virtual int eval(int) const = 0;
+    virtual ~Interface() = default;
+};
+struct Square final : Interface {
+    int eval(int x) const override { return x * x; }
+};
+
+int evaluate(const Square& x, int value) {
+    return x.eval(value); // cel wywolania jest znany
+}
+\end{lstlisting}
+
+\noindent Nie oznacza to, że \texttt{final} zawsze poprawia wydajność.
+Porównania należy prowadzić na przykładach reprezentatywnych
+i przy realistycznych opcjach optymalizacji. Wąskim gardłem może
+być w istocie rozproszony układ obiektów w pamięci, a nie sam
+koszt wywołania funkcji wirtualnej.
+
+\section{Alternatywa: polimorfizm statyczny przez szablony i CRTP}
+\label{sec:cpp12-static-poly}
+
+Polimorfizm \emph{statyczny} wykorzystuje dedukcję typów i
+instancjowanie szablonów, dzięki czemu kompilator zna konkretny typ
+w miejscu użycia. Pozwala to generować kod wyspecjalizowany
+bez konieczności utrzymywania wspólnej bazy wirtualnej.
+
+\subsection{Szablon funkcji i concepts (C++20)}
+
+\begin{lstlisting}[caption={Polimorfizm statyczny przez concept (C++20); kompletny program.}]
+#include <cassert>
+#include <concepts>
+
+struct Circle {
+    double radius;
+    double area() const { return 3.141592653589793 * radius * radius; }
+};
+struct Rectangle {
+    double a, b;
+    double area() const { return a * b; }
+};
+
+template<class T>
+concept HasArea = requires(const T& x) {
+    { x.area() } -> std::convertible_to<double>;
+};
+
+template<HasArea T>
+double area_of(const T& shape) {
+    return shape.area();
+}
+
+int main() {
+    assert(area_of(Rectangle{2, 3}) == 6.0);
+    assert(area_of(Circle{2}) > 12.5);
+}
+\end{lstlisting}
+
+Powyższy kod nie wymaga wspólnej klasy bazowej. Ograniczeniem jest to,
+że w typowym kodzie szablonowym zestaw typów musi być znany przy
+kompilacji miejsca instancjowania. Nie otrzymujemy automatycznie
+heterogenicznego \texttt{std::vector<T>} dla wielu różnych typów.
+
+\subsection{CRTP (\emph{Curiously Recurring Template Pattern})}
+
+\begin{lstlisting}[caption={CRTP z metodą dostarczaną przez bazę (C++11); kompletny program.}]
+#include <cassert>
+
+template<class Derived>
+struct Printable {
+    int twice() const {
+        const auto& self = static_cast<const Derived&>(*this);
+        return 2 * self.value();
+    }
+};
+
+struct Number : Printable<Number> {
+    int data;
+    explicit Number(int x) : data(x) {}
+    int value() const { return data; }
+};
+
+int main() {
+    Number n{21};
+    assert(n.twice() == 42);
+}
+\end{lstlisting}
+
+CRTP nie jest bezpośrednim zamiennikiem wszystkich interfejsów
+wirtualnych: wyrażenie \texttt{Printable<A>*} nie jest uniwersalnym
+wskaźnikiem do dowolnego \texttt{Printable<B>}. Może natomiast
+umożliwiać \emph{static dispatch}, implementację domieszek
+(\emph{mixins}) i wykrywanie błędów już przy instancjowaniu szablonów.
+
+\section{Polimorfizm bez dziedziczenia: \texttt{std::variant}}
+\label{sec:cpp12-variant}
+
+Jeżeli lista możliwych typów jest zamknięta i znana przy kompilacji,
+\texttt{std::variant} (C++17) pozwala przechowywać jedną z kilku
+alternatyw \emph{przez wartość}. Zamiast wirtualnego wywołania
+używa się zwykle \texttt{std::visit}.
+
+\begin{lstlisting}[caption={Zamknięty zbiór typów i std::visit (C++17); kompletny program.}]
+#include <cassert>
+#include <variant>
+
+struct Add { int x; };
+struct Multiply { int x; };
+using Instruction = std::variant<Add, Multiply>;
+
+int execute(const Instruction& instruction, int input) {
+    return std::visit([input](const auto& action) -> int {
+        using T = std::decay_t<decltype(action)>;
+        if constexpr (std::is_same_v<T, Add>)
+            return input + action.x;
+        else
+            return input * action.x;
+    }, instruction);
+}
+
+int main() {
+    assert(execute(Add{2}, 4) == 6);
+    assert(execute(Multiply{3}, 4) == 12);
+}
+\end{lstlisting}
+
+\noindent To podejście ułatwia przechowywanie wartości bez osobnych
+alokacji i ma inną charakterystykę wydajnościową. Ceną jest
+konieczność jawnego wyliczenia alternatywnych typów w definicji
+\texttt{variant} oraz aktualizowania odwiedzających, gdy pojawiają
+się nowe alternatywy. W przykładzie użyto też
+\texttt{std::decay\_t} oraz \texttt{std::is\_same\_v}
+z nagłówka \texttt{<type\_traits>}.
+
+\section{Polimorfizm dynamiczny i statyczny — porównanie}
+\label{sec:cpp12-comparison}
+
+\begin{center}
+\small
+\begin{tabularx}{\textwidth}{@{}p{0.23\textwidth}XXX@{}}
+\toprule
+\textbf{Cecha} & \textbf{\texttt{virtual}} & \textbf{Szablon/CRTP} & \textbf{\texttt{variant}} \\
+\midrule
+Zbiór implementacji & Otwarty w granicach hierarchii & Ustalany przy instancjowaniu & Zamknięty zestaw alternatyw \\
+Wspólny uchwyt & \texttt{Base\&}, \texttt{Base*} & Zależny od typu & Jeden typ sumaryczny \\
+Mechanizm wywołania & Zwykle dynamiczny & Zwykle statyczny & Wybór aktywnej alternatywy \\
+Przechowywanie & Często wskaźniki do obiektów & Zazwyczaj konkretne obiekty & Wartość wewnątrz \texttt{variant} \\
+Rozszerzanie o nowy typ & Zwykle bez zmiany wywołującego & Nowa instancjacja & Zmiana listy typów \\
+Typowe koszty & Dyspozycja i lokalność danych & Rozmiar kodu po instancjacjach & Rozmiar największej alternatywy i odwiedzanie \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+Wybór zależy przede wszystkim od architektury programu:
+\begin{itemize}
+\item \textbf{Interfejsy pluginów i otwarte hierarchie}: zwykle
+  polimorfizm dynamiczny, z uwzględnieniem stabilności ABI.
+\item \textbf{Algorytmy generyczne na znanych typach}: zwykle
+  szablony i concepts.
+\item \textbf{Zamknięta rodzina wariantów wartości}: często
+  \texttt{std::variant}.
+\item \textbf{Wiele małych obiektów w intensywnej pętli}: przy wyborze
+  należy zmierzyć także koszty alokacji, lokalność danych i wynik
+  optymalizacji kompilatora.
+\end{itemize}
+
+\section{Reguła zera/pięciu w klasach polimorficznych}
+
+Wprowadzenie destruktora wirtualnego powoduje, że automatyczne
+generowanie operacji przenoszących nie działa tak samo jak w prostej
+klasie agregującej pola. Dodatkowo publiczne kopiowanie samego
+podobiektu bazowego może umożliwiać przypadkowe obcięcie obiektu.
+
+W wielu hierarchiach interfejsowych rozsądne jest zabronienie
+kopiowania i świadome zarządzanie obiektami przez smart pointery:
+
+\begin{lstlisting}[caption={Niekopiowalna klasa bazowa interfejsu (C++11); fragment.}]
+class Interface {
+public:
+    Interface() = default;
+    virtual ~Interface() = default;
+    Interface(const Interface&) = delete;
+    Interface& operator=(const Interface&) = delete;
+    Interface(Interface&&) = delete;
+    Interface& operator=(Interface&&) = delete;
+
+    virtual void run() = 0;
+};
+\end{lstlisting}
+
+\noindent Nie jest to reguła uniwersalna: klasy reprezentujące wartości
+mogą być kopiowalne, a wybrane hierarchie wspierają jawne
+\texttt{clone()}. Istotne, aby polityka kopiowania, przenoszenia
+i własności była świadomym elementem kontraktu.
+
+\section{Typowe błędy i pytania kontrolne}
+
+\begin{enumerate}
+\item \textbf{Brak wirtualnego destruktora bazy}, mimo usuwania
+  obiektów pochodnych przez wskaźnik do bazy.
+\item \textbf{Brak \texttt{override}} i przypadkowe utworzenie innej metody
+  przez pominięcie \texttt{const}, zmianę parametrów albo
+  kwalifikatora \texttt{\&}/\texttt{\&\&}.
+\item \textbf{Slicing} podczas przekazania przez wartość lub
+  wstawiania do kontenera bazowych wartości.
+\item \textbf{Bezpodstawny \texttt{static\_cast} w dół hierarchii}
+  bez gwarancji rzeczywistego typu obiektu.
+\item \textbf{Wywołanie funkcji czysto wirtualnej} podczas konstrukcji
+  lub destrukcji na etapie, gdy implementacja pochodna nie jest aktywna.
+\item \textbf{Mylenie implementacyjnej vtable z gwarancją standardu}.
+\item \textbf{Zależność od domyślnych argumentów metod wirtualnych}
+  różniących się między bazą a klasą pochodną.
+\item \textbf{Nadmierna hierarchia klas}, gdy prostsza jest kompozycja,
+  szablon lub \texttt{std::variant}.
+\end{enumerate}
+
+\noindent Pytania, które warto umieć rozstrzygnąć samodzielnie:
+\begin{enumerate}
+\item Czy \texttt{virtual} oznacza, że \emph{każde} wywołanie metody
+  danej klasy musi być realizowane pośrednio?
+\item Dlaczego \texttt{Base value = derived;} może dać inny wynik
+  niż \texttt{Base\& ref = derived;}?
+\item Co stanie się z funkcją wirtualną nadpisaną w \texttt{Derived},
+  jeśli wywoła ją konstruktor \texttt{Base}?
+\item W jakiej sytuacji \texttt{dynamic\_cast<Derived\&>} zgłasza
+  \texttt{std::bad\_cast}?
+\item Kiedy użyć \texttt{std::variant}, a kiedy interfejsu wirtualnego?
+\end{enumerate}
+
+\section{Wskazówki dotyczące diagnostyki i pomiarów}
+
+Przy analizie klas polimorficznych przydatne są ostrzeżenia
+\texttt{-Wall -Wextra -Wpedantic -Woverloaded-virtual} i, zależnie
+od kompilatora, \texttt{-Wsuggest-override}. Błędy czasu życia
+mogą być wykrywane przez AddressSanitizer i UBSan (w szczególności
+odpowiednie kontrole vptr, jeśli są wspierane).
+
+\begin{lstlisting}[language=bash,caption={Kompilacja przykładowego programu w GCC lub Clangu.}]
+g++ -std=c++20 -O2 -Wall -Wextra -Wpedantic \
+    -Woverloaded-virtual example.cpp -o example
+./example
+
+# Testy diagnostyczne (zalezne od platformy):
+g++ -std=c++20 -O1 -g -fsanitize=address,undefined \
+    -fno-omit-frame-pointer example.cpp -o example_san
+./example_san
+\end{lstlisting}
+
+Należy porównywać z \emph{realnym} obciążeniem, a nie zakładać,
+że jeden mechanizm jest zawsze szybszy od drugiego. Przy pomiarach
+uwzględniamy optymalizację, lokalność danych, rozmiar próby,
+rozrzut pomiarów i to, czy kompilator nie wyeliminował pracy.
+
+\section{Podsumowanie rozdziału}
+
+Kluczowe jest rozdzielenie trzech kwestii: \emph{jakie typy obiektów}
+występują, \emph{kto odpowiada za ich czas życia} oraz
+\emph{kiedy wybierana jest implementacja operacji}.
+\texttt{virtual} umożliwia polimorfizm dynamiczny, lecz wymaga
+rozważenia destruktorów i własności obiektów. Szablony i CRTP
+oferują polimorfizm statyczny, a \texttt{std::variant} jest
+wygodną alternatywą dla zamkniętej rodziny typów.
+Praktyczna wydajność zależy nie tylko od kosztu wywołania,
+ale również od reprezentacji i rozmieszczenia danych.
+
+\section*{Literatura i dalsze źródła}
+\addcontentsline{toc}{section}{Literatura do rozdziału 12}
+\begin{itemize}
+\item ISO C++ Standard: model obiektowy, klasy, dziedziczenie,
+      funkcje wirtualne i RTTI (normatywne źródło reguł języka).
+\item \url{https://en.cppreference.com/w/cpp/language/virtual}
+      --- funkcje wirtualne i reguły nadpisywania.
+\item \url{https://en.cppreference.com/w/cpp/language/dynamic_cast}
+      --- sprawdzane konwersje w hierarchiach.
+\item \url{https://en.cppreference.com/w/cpp/language/derived_class}
+      --- dziedziczenie i wirtualne klasy bazowe.
+\item Bjarne Stroustrup, \emph{The C++ Programming Language},
+      wydanie czwarte, Addison-Wesley, 2013.
+\end{itemize}
