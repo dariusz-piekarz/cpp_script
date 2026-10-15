@@ -721,8 +721,8 @@ struct Index {
 \end{lstlisting}
 
 \begin{itemize}
-    \item \texttt{explicit} blokuje wybrane niejawne konwersje
-    przez konstruktory i operatory konwersji;
+    \item \texttt{explicit} kontroluje niejawne konwersje
+    przez konstruktory i operatory konwersji (szczegóły poniżej);
     \item \texttt{virtual} umożliwia dynamiczny polimorfizm,
     \texttt{override} pozwala sprawdzić, czy metoda rzeczywiście
     nadpisuje metodę bazową, a \texttt{final} zabrania dalszego
@@ -735,6 +735,93 @@ struct Index {
     Atrybut \texttt{[[maybe\_unused]]} pozwala ograniczyć
     ostrzeżenia o nieużywanych bytach.
 \end{itemize}
+
+\subsection{\texttt{explicit}: kontrola niejawnych konwersji}
+
+Konstruktor bez \texttt{explicit} może zostać użyty przez kompilator do
+niejawnej konwersji, jeżeli pozostałe reguły konwersji na to pozwalają.
+\texttt{explicit} wymaga, by w takim przypadku zamiar utworzenia obiektu
+był zapisany jawnie. Dotyczy to nie tylko konstruktorów z jednym
+parametrem: także konstruktor z kilkoma parametrami może uczestniczyć
+w inicjalizacji przez listę.
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}p{0.37\textwidth}X@{}}
+\toprule
+Zapis & Skutek dla konstruktora \code{explicit Meter(int)} \\
+\midrule
+\code{Meter a(3)} & Inicjalizacja bezpośrednia: dozwolona. \\
+\code{Meter a{3}} & Inicjalizacja bezpośrednia przez listę: dozwolona. \\
+\code{Meter a = 3} & Inicjalizacja kopiująca wymagałaby niejawnej konwersji: błąd kompilacji. \\
+\code{Meter a = {3}} & Inicjalizacja kopiująca przez listę nie może zakończyć się wyborem konstruktora \code{explicit}: błąd kompilacji. \\
+\code{use(Meter{3})} & Jawne utworzenie argumentu: dozwolone. Samo \code{use(3)} byłoby niedozwolone. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\begin{lstlisting}[caption={Konstruktor i operator konwersji explicit (kompletny program, C++20).}]
+#include <iostream>
+
+struct Meter {
+    explicit Meter(int n) : value(n) {}
+    int value;
+};
+
+void use(Meter m) {
+    std::cout << m.value << '\n';
+}
+
+struct Ready {
+    bool value;
+    explicit operator bool() const { return value; }
+};
+
+int main() {
+    Meter first(3);
+    Meter second{4};
+    use(first);
+    use(Meter{5});
+    // Meter bad = 3;   // blad: niejawna konwersja
+    // Meter bad2 = {3}; // blad: copy-list-initialization
+    // use(6);           // blad: niejawna konwersja argumentu
+
+    Ready ready{true};
+    if (ready) std::cout << "ready\n"; // kontekst wymaga bool
+    bool flag = static_cast<bool>(ready); // jawna konwersja
+    // bool bad = ready; // blad: operator jest explicit
+    (void)second;
+    (void)flag;
+}
+\end{lstlisting}
+
+\texttt{explicit operator bool()} nadal działa w warunkach takich jak
+\texttt{if}, \texttt{while} czy operand \texttt{!}: język dopuszcza tam
+\emph{kontekstową konwersję do bool}. Nie pozwala natomiast na zwykłe
+\texttt{bool flag = ready}. Słowo \texttt{explicit} nie zabrania
+inicjalizacji bezpośredniej ani jawnego \texttt{static\_cast}.
+
+Od C++20 można uzależnić tę własność od warunku obliczanego podczas
+kompilacji: \texttt{explicit(condition)}. Prawdziwy warunek działa jak
+\texttt{explicit}, a fałszywy jak jego brak:
+
+\begin{lstlisting}[caption={Warunkowe explicit od C++20 (kompletny program).}]
+template<bool AllowImplicit>
+struct Token {
+    explicit(!AllowImplicit) Token(int n) : value(n) {}
+    int value;
+};
+
+int main() {
+    Token<true> a = 3;  // dozwolona konwersja
+    Token<false> b{3};  // jawna inicjalizacja
+    // Token<false> c = 3; // blad: wymaga jawnej inicjalizacji
+    return a.value + b.value == 6 ? 0 : 1;
+}
+\end{lstlisting}
+
+\texttt{explicit} jest szczególnie przydatne dla typów jednostek,
+identyfikatorów i uchwytów, w których przypadkowe utworzenie obiektu
+z liczby lub napisu mogłoby ukryć błąd wywołania.
 
 \section{Praktyczna organizacja plików: przykład całościowy}
 
@@ -868,6 +955,8 @@ nie narzuca niemutowalności obiektu.
     \item Potrzebujesz oddzielnego stanu wątku? Użyj \texttt{thread\_local}.
     \item Potrzebujesz komunikacji i synchronizacji między wątkami?
     Użyj atomików lub blokad, a nie \texttt{volatile}.
+    \item Konstruktor lub operator konwersji mógłby uruchamiać
+    niezamierzoną konwersję? Rozważ \texttt{explicit}.
 \end{itemize}
 
 \paragraph{Konkluzja.}
