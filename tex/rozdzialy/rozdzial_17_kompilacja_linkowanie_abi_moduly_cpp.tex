@@ -41,6 +41,20 @@ bibliotek \code{.so}/\code{.dll} ani poleceń linkera. Poniżej
 odróżniamy reguły języka od typowych rozwiązań narzędziowych.}
 
 \section{Od pliku źródłowego do programu}
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}p{0.31\textwidth}X@{}}
+\toprule
+Etap & Za co odpowiada \\
+\midrule
+Preprocesor & Rozwija dyrektywy \code{#include}, makra i warunkową kompilację. \\
+Kompilator & Sprawdza składnię i typy oraz wytwarza kod dla jednostki translacji. \\
+Asembler & Zamienia kod asemblera na plik obiektowy z symbolami i relokacjami. \\
+Linker & Łączy pliki obiektowe i biblioteki, rozwiązując odwołania do symboli. \\
+Loader systemowy & Ładuje program i wymagane biblioteki współdzielone przed uruchomieniem. \\
+\bottomrule
+\end{tabularx}
+\end{center}
 \label{sec:cpp17-pipeline}
 
 \subsection{Preprocesor, kompilator, asembler, linker i~loader}

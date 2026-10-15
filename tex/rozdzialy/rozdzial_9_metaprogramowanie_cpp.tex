@@ -257,6 +257,20 @@ Pełna specjalizacja funkcji istnieje, ale jej interakcja z przeciążeniami
 bywa zaskakująca; w nowym kodzie zwykle preferujemy przeciążenia.
 
 \section{\texttt{type\_traits}: pytania o typy}
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}p{0.38\textwidth}X@{}}
+\toprule
+Cecha typu & Co ustala podczas kompilacji \\
+\midrule
+\code{std::is_integral_v<T>} & Czy \code{T} jest typem całkowitym, w tym \code{bool} i typami znakowymi. \\
+\code{std::is_same_v<T, U>} & Czy oba zapisy oznaczają dokładnie ten sam typ. \\
+\code{std::is_base_of_v<B, D>} & Czy \code{B} jest klasą bazową \code{D} lub jest tym samym typem klasy. \\
+\texttt{std::is\_nothrow\_move\_}\newline\texttt{constructible\_v<T>} & Czy skonstruowanie \code{T} z rvalue \code{T} jest dostępne i nie zgłasza wyjątków. \\
+\code{std::remove_cvref_t<T>} & Usuwa z typu referencję oraz kwalifikatory \code{const}/\code{volatile} z poziomu głównego. \\
+\bottomrule
+\end{tabularx}
+\end{center}
 \label{sec:cpp9-traits}
 
 Biblioteka \texttt{<type\_traits>} jest zbiorem standardowych metafunkcji.
@@ -425,6 +439,20 @@ Podstawowa definicja zawiera nazwę zależną, która jest sprawdzana przy
 instancjowaniu odpowiedniego przypadku; nie jest potrzebna dla \texttt{int}.
 
 \section{\texttt{decltype}, \texttt{declval} i konteksty bez obliczania}
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}p{0.32\textwidth}X@{}}
+\toprule
+Narzędzie & Za co odpowiada \\
+\midrule
+\code{decltype(expr)} & Ustala typ wyrażenia bez wykonywania go; szczególna reguła dotyczy nieujętej w nawiasy nazwy. \\
+\code{decltype((x))} & Dla lvalue \code{x} zwraca typ referencyjny, np. \texttt{T\&}. \\
+\code{std::declval<T>()} & Udostępnia fikcyjne wyrażenie typu \code{T} wyłącznie w kontekście nieobliczanym. \\
+\code{std::void_t<...>} & Zamienia poprawne podstawienia typów na \code{void}; przydatne w starszych technikach wykrywania. \\
+\code{if constexpr} & W szablonie wybiera gałąź podczas kompilacji i odrzuca niepotrzebną gałąź po instancjacji. \\
+\bottomrule
+\end{tabularx}
+\end{center}
 \label{sec:cpp9-decltype}
 
 \texttt{decltype(expr)} pozwala odczytać typ wyrażenia bez wykonywania

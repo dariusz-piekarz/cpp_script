@@ -241,6 +241,20 @@ Jeżeli funkcja ma \emph{wytworzyć} wynik, zwykle powinna zwracać go
 przez wartość.
 
 \section{Co naprawdę robi \texttt{std::move}?}
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}p{0.36\textwidth}X@{}}
+\toprule
+Konstrukcja & Działanie \\
+\midrule
+\code{std::move(x)} & Rzutuje wyrażenie na kategorię umożliwiającą wybór przeniesienia; samo niczego nie przenosi. \\
+\texttt{T(T\&\&)} & Konstruktor przenoszący tworzy nowy obiekt z zasobów obiektu źródłowego. \\
+\texttt{operator=(T\&\&)} & Przenoszące przypisanie zastępuje stan istniejącego obiektu zasobami źródła. \\
+\code{std::move_if_noexcept(x)} & Wybiera przeniesienie, gdy jest bezpieczne dla gwarancji wyjątkowych, a w przeciwnym razie może wybrać kopiowanie. \\
+\code{noexcept} & Deklaruje brak wyjątków; przy przenoszeniu pomaga kontenerom zachować silną gwarancję wyjątkową. \\
+\bottomrule
+\end{tabularx}
+\end{center}
 \label{sec:move-std-move}
 
 Nazwa jest nieco myląca: \texttt{std::move(x)} \textbf{nie przenosi
@@ -630,6 +644,20 @@ ma szczególne reguły dla list inicjalizacyjnych.
 \texttt{const T\&\&} nie jest referencją przekazującą.
 
 \section{Perfect forwarding i \texttt{std::forward}}
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}p{0.35\textwidth}X@{}}
+\toprule
+Narzędzie & Znaczenie przy przekazywaniu argumentów \\
+\midrule
+\texttt{T\&\&} w szablonie & Przy dedukowanym \code{T} może być referencją przekazującą, przyjmującą lvalue i rvalue. \\
+\code{std::forward<T>(x)} & Odtwarza kategorię wartości pierwotnego argumentu. \\
+\code{std::move(x)} & Traktuje \code{x} jak rvalue niezależnie od kategorii pierwotnego argumentu. \\
+\code{decltype(auto)} & Zachowuje typ i referencyjność wyrażenia zwracanego przez funkcję. \\
+\code{std::forward_as_tuple} & Tworzy krotkę referencji z zachowaniem kategorii argumentów; nie wydłuża ich czasu życia. \\
+\bottomrule
+\end{tabularx}
+\end{center}
 \label{sec:move-perfect-forwarding}
 
 Przez \emph{perfect forwarding} rozumiemy przekazanie argumentu

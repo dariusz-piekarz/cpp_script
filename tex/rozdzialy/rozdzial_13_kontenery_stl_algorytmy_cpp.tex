@@ -69,6 +69,22 @@ Kontenery zwykle przechowują \emph{własne obiekty elementów}.
 obiektów, kopiowanie, czas życia i poprawność dostępu.
 
 \section{\texttt{std::vector}: domyślny kontener sekwencyjny}
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}p{0.34\textwidth}X@{}}
+\toprule
+Operacja & Za co odpowiada \\
+\midrule
+\code{size()}, \code{empty()} & Podają liczbę elementów i informację, czy kontener jest pusty. \\
+\code{capacity()} & Podaje liczbę elementów, które zmieszczą się bez ponownej alokacji. \\
+\code{reserve(n)} & Rezerwuje miejsce na co najmniej \code{n} elementów; nie zmienia \code{size()}. \\
+\code{resize(n)} & Zmienia liczbę elementów: tworzy nowe albo niszczy nadmiarowe. \\
+\code{push_back(x)} & Dodaje istniejącą wartość na koniec przez kopiowanie lub przeniesienie. \\
+\code{emplace_back(args...)} & Konstruuje nowy element na końcu z podanych argumentów. \\
+\code{erase(pos)} & Usuwa element; kolejne elementy przesuwają się, a iteratory od miejsca usunięcia tracą ważność. \\
+\bottomrule
+\end{tabularx}
+\end{center}
 \label{sec:cpp13-vector}
 
 \texttt{std::vector<T>} przechowuje elementy \emph{ciągle} w pamięci,
@@ -616,6 +632,21 @@ przechowywania pojedynczych \texttt{bool} ani bezpiecznej modyfikacji
 odrębnych bitów z różnych wątków bez synchronizacji.
 
 \section{Algorytmy standardowe i wymagania wobec iteratorów}
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}p{0.34\textwidth}X@{}}
+\toprule
+Algorytm & Działanie i warunki \\
+\midrule
+\code{std::find} & Szuka pierwszej wartości równej wzorcowi; przy braku zwraca iterator końcowy. \\
+\code{std::transform} & Stosuje funkcję do zakresu i zapisuje wyniki przez iterator wyjściowy. \\
+\code{std::sort} & Sortuje zakres z iteratorami dostępu swobodnego; nie zachowuje kolejności elementów równoważnych. \\
+\code{std::stable_sort} & Sortuje, zachowując wzajemną kolejność elementów równoważnych. \\
+\code{std::lower_bound} & Szuka pierwszego elementu nie mniejszego od wzorca; wymaga odpowiednio uporządkowanego zakresu. \\
+\code{std::erase_if} & Usuwa z kontenera elementy spełniające predykat; dostępne od C++20 dla wspieranych kontenerów. \\
+\bottomrule
+\end{tabularx}
+\end{center}
 \label{sec:cpp13-algorithms}
 
 Algorytmy oddzielają \emph{operację} od \emph{reprezentacji danych}.

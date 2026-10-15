@@ -172,6 +172,20 @@ wartość początkową od wywołującego.
 
 \section{Obsługa błędów: wyjątki, typ wyniku i status}
 
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}p{0.33\textwidth}X@{}}
+\toprule
+Kontrakt API & Kiedy i jak go użyć \\
+\midrule
+Wyjątek & Przerywa zwykły tok działania i przenosi błąd do obsługi; zasoby powinny być chronione przez RAII. \\
+\code{std::optional<T>} & Oznacza obecność lub brak wyniku, gdy przyczyna braku nie jest potrzebna. \\
+\code{std::expected<T,E>} & Zwraca wynik albo jawny błąd typu \code{E}; standard od C++23. \\
+\code{std::error_code} & Przenosi kod błędu bez wyjątku, często obok wariantu zgłaszającego wyjątki. \\
+\code{noexcept} & Jest częścią kontraktu: wyjątek opuszczający taką funkcję kończy program. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
 W C++20 podstawowymi wyborami są wyjątki oraz jawne typy wyniku,
 np. \code{optional<T>} dla naturalnego braku wartości. Od C++23
 \code{expected<T,E>} reprezentuje wartość lub opis błędu. Żadna

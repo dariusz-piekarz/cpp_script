@@ -41,6 +41,21 @@ bezpośrednio, kontener standardowy albo \texttt{std::unique\_ptr}.
 
 \section{Podstawy: adres, dereferencja i \texttt{nullptr}}
 
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}p{0.32\textwidth}X@{}}
+\toprule
+Zapis & Za co odpowiada \\
+\midrule
+\texttt{\&x} & Pobiera adres obiektu \code{x}. \\
+\code{*p} & Uzyskuje obiekt wskazywany przez \code{p}; wymaga ważnego, niepustego wskaźnika. \\
+\code{p->field} & Udostępnia składową przez wskaźnik; odpowiada \code{(*p).field}. \\
+\code{nullptr} & Oznacza brak wskazywanego obiektu. \\
+\code{std::span<T>} & Łączy dostęp do kolejnych elementów z ich liczbą, ale nie posiada pamięci. \\
+\code{std::addressof(x)} & Pobiera rzeczywisty adres obiektu nawet przy przeciążonym operatorze \texttt{\&}. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
 \subsection{Deklarowanie wskaźników}
 
 Operator \texttt{\&} zastosowany do obiektu daje jego adres, natomiast
@@ -481,6 +496,21 @@ Dobór reprezentacji wynika z \emph{kontraktu własności}, a nie
 z samego faktu, że obiekt znajduje się w pamięci dynamicznej.
 
 \section{\texttt{std::unique\_ptr}: jeden właściciel}
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}p{0.36\textwidth}X@{}}
+\toprule
+Mechanizm & Własność i czas życia \\
+\midrule
+\code{std::make_unique<T>(...)} & Tworzy obiekt i zwraca jego jedynego właściciela. \\
+\code{unique_ptr::get()} & Zwraca surowy wskaźnik bez przekazania własności. \\
+\code{unique_ptr::reset(p)} & Niszczy obecnie posiadany obiekt i przejmuje wskaźnik \code{p}. \\
+\code{unique_ptr::release()} & Oddaje surowy wskaźnik bez zniszczenia obiektu; odtąd trzeba osobno zadbać o jego zwolnienie. \\
+\code{std::shared_ptr<T>} & Współdzieli własność; obiekt znika po odejściu ostatniego właściciela. \\
+\code{weak_ptr::lock()} & Próbuje uzyskać \code{shared_ptr}; zwraca pusty wynik, jeśli obiekt wygasł. \\
+\bottomrule
+\end{tabularx}
+\end{center}
 
 \subsection{Tworzenie obiektu i automatyczne niszczenie}
 

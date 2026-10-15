@@ -119,6 +119,20 @@ Skrócona postać z \texttt{auto} przydaje się w niewielkich funkcjach
 i lambdach.
 
 \section{Dwie role słowa \texttt{requires}}
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}p{0.34\textwidth}X@{}}
+\toprule
+Zapis & Za co odpowiada \\
+\midrule
+\code{concept C = ...} & Nadaje nazwę logicznemu ograniczeniu parametrów szablonu. \\
+\code{requires C<T>} & Ogranicza udział szablonu w przeciążaniu do typów spełniających \code{C}. \\
+\code{requires(T x) { x.f(); }} & Sprawdza poprawność wskazanego wyrażenia dla podstawionego typu. \\
+\code{requires requires(...) { ... }} & Pierwsze \code{requires} wprowadza ograniczenie, drugie wyrażenie sprawdzające. \\
+\code{static_assert(C<T>)} & Wymusza spełnienie warunku w danym miejscu i zgłasza błąd kompilacji, gdy jest fałszywy. \\
+\bottomrule
+\end{tabularx}
+\end{center}
 \label{sec:concepts-dwa-requires}
 
 Identyczny zapis słowny \texttt{requires} występuje w dwóch
@@ -160,6 +174,19 @@ składnia, choć przy wielokrotnym użyciu lepiej utworzyć nazwaną
 koncepcję.
 
 \section{Cztery rodzaje wymagań w \texttt{requires-expression}}
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}p{0.31\textwidth}X@{}}
+\toprule
+Rodzaj wymagania & Co sprawdza \\
+\midrule
+Proste: \code{a + b;} & Czy wyrażenie jest poprawne składniowo dla danych typów. \\
+Typowe: \code{typename T::value_type;} & Czy wskazany typ zależny istnieje. \\
+Złożone: \code{{ f(x) } -> C;} & Czy wyrażenie jest poprawne oraz czy jego typ spełnia ograniczenie \code{C}. \\
+Zagnieżdżone: \code{requires C<T>;} & Czy dodatkowy warunek logiczny jest spełniony. \\
+\bottomrule
+\end{tabularx}
+\end{center}
 \label{sec:concepts-cztery-wymagania}
 
 Wyrażenie \texttt{requires} umożliwia opisanie czterech rodzajów

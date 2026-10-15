@@ -60,6 +60,20 @@ głównie klasycznym modelem plików nagłówkowych i źródłowych.
 
 \section{\texttt{const}: zakaz modyfikacji przez dany dostęp}
 
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}p{0.30\textwidth}X@{}}
+\toprule
+Specyfikator & Znaczenie \\
+\midrule
+\code{const} & Zabrania modyfikacji przez dany dostęp; wartość nie musi być znana podczas kompilacji. \\
+\code{constexpr} & Pozwala użyć wartości lub funkcji w obliczeniu stałym, gdy spełnione są jego warunki. \\
+\code{consteval} & Wymaga obliczenia wywołania funkcji w czasie kompilacji. \\
+\code{constinit} & Wymaga statycznej inicjalizacji zmiennej o statycznym lub wątkowym czasie przechowywania; nie czyni jej stałą. \\
+\code{mutable} & Pozwala zmieniać wskazaną składową także przez stały obiekt. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
 Deklaracja \texttt{const} kwalifikuje typ. Dla obiektu oznacza, że
 nie wolno zmieniać jego wartości przez dostęp, w którym typ jest
 \texttt{const} (z uwzględnieniem szczególnych zasad np. \texttt{mutable}).
@@ -244,6 +258,20 @@ globalnego, który musi być inicjalizowany bez inicjalizacji dynamicznej.
 Nie rozwiązuje natomiast problemów synchronizacji dostępu wielu wątków.
 
 \section{\texttt{static}: trzy różne zastosowania}
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}p{0.30\textwidth}X@{}}
+\toprule
+Zapis & Skutek \\
+\midrule
+\code{static} lokalne & Daje zmiennej lokalnej czas życia do końca programu; inicjalizacja następuje przy pierwszym przejściu przez deklarację. \\
+\code{static} składowa & Tworzy składową wspólną dla obiektów klasy. \\
+\code{static} w pliku & Nadaje nazwie na poziomie przestrzeni nazw łączność wewnętrzną. \\
+\code{extern} & Deklaruje nazwę o łączności zewnętrznej; definicja może być w innym pliku. \\
+\code{inline} & Umożliwia zgodne z ODR definicje funkcji lub zmiennej w wielu jednostkach translacji; nie nakazuje optymalizacji wywołania. \\
+\bottomrule
+\end{tabularx}
+\end{center}
 
 Znaczenie \texttt{static} zależy od miejsca deklaracji. Jest to jedno
 z najczęstszych źródeł nieporozumień.

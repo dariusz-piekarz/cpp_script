@@ -41,6 +41,21 @@ jeden wątek go modyfikuje. Sam fakt istnienia wielu wątków nie jest błędem;
 problem pojawia się przy niezsynchronizowanym dostępie do pamięci.
 
 \section{Uruchamianie wątków: \texttt{std::thread}}
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}p{0.34\textwidth}X@{}}
+\toprule
+Operacja & Za co odpowiada \\
+\midrule
+\code{std::thread(f)} & Uruchamia \code{f} w nowym wątku; obiekt wątku trzeba później obsłużyć. \\
+\code{joinable()} & Informuje, czy obiekt nadal reprezentuje wątek wymagający \code{join()} albo \code{detach()}. \\
+\code{join()} & Czeka na zakończenie wątku i odbiera jego uchwyt wykonania. \\
+\code{detach()} & Oddziela wątek od obiektu; trzeba samodzielnie zapewnić poprawny czas życia danych. \\
+\code{std::jthread} & Przy zniszczeniu prosi o zatrzymanie i dołącza wątek; dostępny od C++20. \\
+\code{std::ref(x)} & Przekazuje \code{x} do funkcji wątku przez referencję zamiast przez kopię. \\
+\bottomrule
+\end{tabularx}
+\end{center}
 \label{sec:thread}
 
 Nagłówek \code{<thread>} udostępnia typ \code{std::thread} (C++11).

@@ -29,6 +29,21 @@ Znaczenie mają kontrakty funkcji, konwencje projektu, ograniczenia
 środowiska oraz wymagania dotyczące opóźnień wykonania.
 
 \section{Składnia \texttt{try}, \texttt{throw} i \texttt{catch}}
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}p{0.32\textwidth}X@{}}
+\toprule
+Konstrukcja & Za co odpowiada \\
+\midrule
+\code{try} & Obejmuje blok, z którego wyjątki mogą zostać przechwycone przez następujące bloki \code{catch}. \\
+\code{throw value} & Tworzy obiekt wyjątku i rozpoczyna poszukiwanie pasującej obsługi. \\
+\texttt{catch(const E\& e)} & Przechwytuje wyjątek zgodnego typu bez kopiowania i bez obcinania części pochodnej. \\
+\code{catch(...)} & Przechwytuje dowolny wyjątek, także nieznanego typu. \\
+\code{throw;} & Wewnątrz obsługi ponownie zgłasza bieżący wyjątek, zachowując jego typ dynamiczny. \\
+\code{std::exception::what()} & Zwraca tekstowy opis błędu; służy do diagnostyki, nie do sterowania logiką. \\
+\bottomrule
+\end{tabularx}
+\end{center}
 \label{sec:cpp11-basics}
 
 \begin{lstlisting}
@@ -180,6 +195,20 @@ zamknięcia jest istotna, należy zapewnić osobną, jawną operację
 finalizacji, której wynik można obsłużyć \emph{przed} destrukcją.
 
 \section{Gwarancje bezpieczeństwa wyjątkowego}
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}p{0.32\textwidth}X@{}}
+\toprule
+Gwarancja lub narzędzie & Skutek w razie wyjątku \\
+\midrule
+Brak wycieku & Zasoby pozostają poprawnie zwalniane, zwykle przez RAII. \\
+Gwarancja podstawowa & Obiekty pozostają poprawne, choć ich stan może się zmienić. \\
+Gwarancja silna & Operacja kończy się sukcesem albo pozostawia obserwowalny stan bez zmian. \\
+Gwarancja braku wyjątków & Operacja nie pozwala wyjątkowi opuścić funkcji. \\
+\code{noexcept} & Deklaruje gwarancję braku wyjątku; wyjątek opuszczający funkcję kończy program przez \code{std::terminate}. \\
+\bottomrule
+\end{tabularx}
+\end{center}
 \label{sec:cpp11-guarantees}
 
 Bezpieczeństwo wyjątkowe nie oznacza tylko braku wycieków pamięci.

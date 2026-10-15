@@ -137,6 +137,21 @@ Lambda nie jest wskaźnikiem do funkcji. Zwykle tworzy obiekt z
 konwersję na wskaźnik do funkcji o pasującej sygnaturze.
 
 \section{Przechwytywanie zmiennych (\textit{captures})}
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}p{0.30\textwidth}X@{}}
+\toprule
+Zapis lambdy & Znaczenie \\
+\midrule
+\code{[x]} & Przechwytuje wartość \code{x} przez kopię w obiekcie domknięcia. \\
+\texttt{[\&x]} & Przechwytuje referencję do \code{x}; wywołanie wymaga, by \code{x} nadal żyło. \\
+\code{[=]} & Domyślnie przechwytuje użyte zmienne lokalne przez wartość. \\
+\texttt{[\&]} & Domyślnie przechwytuje użyte zmienne lokalne przez referencję. \\
+\code{[p = std::move(p)]} & Przenosi wartość do składowej domknięcia przez inicjalizację przechwycenia. \\
+\code{mutable} & Pozwala zmieniać kopie przechwycone przez wartość wewnątrz lambdy. \\
+\bottomrule
+\end{tabularx}
+\end{center}
 \label{sec:lambda-captures}
 
 \subsection{Przechwycenie przez wartość}
@@ -432,6 +447,20 @@ referencję. Właściwe zwracanie referencji wymaga zatem świadomego
 określenia typu wyniku i zapewnienia jego poprawnego czasu życia.
 
 \section{\texttt{std::invoke}: jeden mechanizm wywołania}
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}p{0.34\textwidth}X@{}}
+\toprule
+Narzędzie & Za co odpowiada \\
+\midrule
+\code{std::invoke(f, args...)} & Jednolicie wywołuje funkcję, lambdę lub wskaźnik do składowej. \\
+\code{std::function<R(Args...)>} & Przechowuje kopiowalny obiekt wywoływalny o ustalonej sygnaturze przez wymazywanie typu. \\
+\code{std::ref(x)} & Opakowuje referencję, gdy API normalnie kopiuje argument. \\
+\code{std::bind_front(f, args...)} & Wiąże pierwsze argumenty funkcji i zwraca nowy obiekt wywoływalny. \\
+\code{noexcept} przy lambdzie & Określa, że operator wywołania nie powinien pozwolić wyjątkowi opuścić funkcji. \\
+\bottomrule
+\end{tabularx}
+\end{center}
 \label{sec:std-invoke}
 
 \texttt{std::invoke} z nagłówka \texttt{<functional>} wywołuje funkcję,

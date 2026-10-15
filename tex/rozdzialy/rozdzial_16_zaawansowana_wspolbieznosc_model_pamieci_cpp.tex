@@ -292,6 +292,20 @@ Nie można w~ogólności zastąpić \code{fetch_add} zwykłym
 \code{store(2, relaxed)} i~utrzymać tej samej argumentacji.
 
 \section{CAS: porównaj i~zamień, pętle ponawiania i~porządek niepowodzenia}
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}p{0.38\textwidth}X@{}}
+\toprule
+Operacja atomowa & Działanie \\
+\midrule
+\code{compare_exchange_strong} & Jednorazowo porównuje i próbuje podmienić wartość; nie zgłasza pozornego niepowodzenia. \\
+\code{compare_exchange_weak} & Może zgłosić pozorne niepowodzenie; nadaje się do pętli ponawiania. \\
+\code{expected} przy CAS & Przy niepowodzeniu otrzymuje rzeczywistą wartość atomika, którą trzeba uwzględnić przy kolejnej próbie. \\
+\code{memory_order_acq_rel} & Przy udanej operacji odczytująco-zapisującej łączy własności acquire i release. \\
+\code{memory_order_relaxed} & Zapewnia atomowość bez dodatkowej synchronizacji z innymi danymi. \\
+\bottomrule
+\end{tabularx}
+\end{center}
 \label{sec:cpp16-cas}
 
 \code{compare_exchange_weak(expected, desired, success, failure)}

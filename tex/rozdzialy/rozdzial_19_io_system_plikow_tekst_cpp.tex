@@ -51,6 +51,22 @@ Nie należy pisać \code{while (!in.eof())}: wskaźnik końca pliku jest
 ustawiany \emph{po nieudanej próbie odczytu}, a nie przed nią.
 Warunkiem pętli powinien być sam odczyt.
 
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}p{0.32\textwidth}X@{}}
+\toprule
+Polecenie lub stan & Za co odpowiada \\
+\midrule
+\code{std::cin >> x} & Odczytuje i interpretuje wartość; domyślnie pomija białe znaki przed nią. Nieudane parsowanie ustawia \code{failbit}. \\
+\code{std::getline(in, s)} & Odczytuje całą linię do \code{s}, bez końcowego znaku nowej linii. Pusty wiersz daje pusty napis. \\
+\code{in.ignore(n, '\n')} & Odrzuca najwyżej \code{n} znaków, kończąc wcześniej po napotkaniu nowej linii; przydaje się po \code{>>}. \\
+\code{in.clear()} & Zeruje bity błędu strumienia, lecz nie usuwa znaków z wejścia. \\
+\code{goodbit}, \code{eofbit} & Odpowiednio: brak błędu oraz wykrycie końca wejścia podczas próby czytania. \\
+\code{failbit}, \code{badbit} & Odpowiednio: nieudana operacja lub parsowanie oraz poważniejszy błąd strumienia lub bufora. \\
+\code{in.fail()}, \code{in.bad()} & Pozwalają rozpoznać niepowodzenie; \code{fail()} jest prawdziwe także przy \code{badbit}. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
 \begin{lstlisting}[caption={Odczyt liczb i kontrola bledu formatu (kompletny program, C++20).}]
 #include <iostream>
 #include <sstream>
@@ -102,6 +118,21 @@ pozostaje w strumieniu na kolejne operacje; \code{setw} dotyczy tylko
 następnego pola. Ustawienie \code{exceptions(mask)} sprawia, że zmiana
 odpowiednich bitów stanu może zgłosić \code{std::ios_base::failure}.
 
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}p{0.31\textwidth}X@{}}
+\toprule
+Manipulator & Efekt i czas działania \\
+\midrule
+\code{std::fixed} & Zapis zmiennoprzecinkowy w notacji stałoprzecinkowej; zostaje ustawiony w strumieniu. \\
+\code{std::scientific} & Notacja wykładnicza; zastępuje \code{fixed} i również pozostaje ustawiona. \\
+\code{std::setprecision(n)} & Ustawia precyzję na kolejne operacje: przy \code{fixed} i \code{scientific} liczbę cyfr po przecinku, bez nich liczbę cyfr znaczących. \\
+\code{std::setw(n)} & Minimalna szerokość tylko następnego formatowanego pola; krótszą wartość dopełnia znak wypełnienia. \\
+\code{std::setfill(c)} & Ustawia znak dopełnienia używany m.in. przez \code{setw}; pozostaje aktywny. \\
+\code{std::boolalpha} & Wypisuje \code{true}/\code{false} zamiast \code{1}/\code{0}; wpływa też na formatowany odczyt \code{bool}. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
 \begin{lstlisting}[caption={Lokalne formatowanie bez zmieniania std::cout.}]
 #include <iomanip>
 #include <iostream>
@@ -114,10 +145,83 @@ int main() {
 }
 \end{lstlisting}
 
-\nota{\code{std::endl} nie jest tylko nową linią: dodatkowo opróżnia
-bufor. W pętli wypisującej wiele rekordów używamy zwykle \code{'\\n'},
-a \code{flush} wywołujemy, gdy rzeczywiście wymagamy wypchnięcia bufora.
-\code{flush} nie oznacza trwałego zapisania danych na fizycznym nośniku.}
+\subsection{Nowa linia a opróżnienie bufora}
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}p{0.31\textwidth}X@{}}
+\toprule
+Zapis & Działanie \\
+\midrule
+\code{out << '\n'} & Wstawia znak nowej linii; sam z siebie nie żąda opróżnienia bufora. \\
+\code{out << std::flush} & Żąda opróżnienia bufora; nie wstawia żadnego znaku. \\
+\code{out << std::endl} & Wstawia znak nowej linii i następnie żąda opróżnienia bufora. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+Poniższy bufor przechowuje zapisane znaki do chwili wywołania
+\code{sync()}. Dzięki temu wynik nie zależy od terminala ani systemu
+operacyjnego. Licznik pokazuje żądania opróżnienia bufora.
+
+\begin{lstlisting}[caption={Roznica miedzy nowa linia, flush i endl (kompletny program, C++20).}]
+#include <iostream>
+#include <ostream>
+#include <streambuf>
+#include <string>
+
+class TrackedBuffer : public std::streambuf {
+public:
+    std::string pending;
+    std::string sent;
+    int flushes = 0;
+
+protected:
+    std::streamsize xsputn(const char* data, std::streamsize n) override {
+        pending.append(data, static_cast<std::size_t>(n));
+        return n;
+    }
+
+    int_type overflow(int_type ch) override {
+        if (traits_type::eq_int_type(ch, traits_type::eof()))
+            return traits_type::not_eof(ch);
+        pending.push_back(traits_type::to_char_type(ch));
+        return ch;
+    }
+
+    int sync() override {
+        sent += pending;
+        pending.clear();
+        ++flushes;
+        return 0;
+    }
+};
+
+int main() {
+    TrackedBuffer buffer;
+    std::ostream out(&buffer);
+
+    out << "A\n";           // sam znak: nic jeszcze nie wyslano
+    std::cout << "\\n: " << buffer.sent.size() << " bajtow, "
+              << buffer.flushes << " flush\n";  // 0 bajtow, 0 flush
+
+    out << "B" << std::flush; // bez nowej linii, ale wysyla A\nB
+    std::cout << "flush: " << buffer.sent.size() << " bajtow, "
+              << buffer.flushes << " flush\n";  // 3 bajty, 1 flush
+
+    out << "C" << std::endl;  // dopisuje \n i wysyla C\n
+    std::cout << "endl: " << buffer.sent.size() << " bajtow, "
+              << buffer.flushes << " flush\n";  // 5 bajtow, 2 flush
+}
+\end{lstlisting}
+
+Na zwykłym terminalu nowa linia może wyglądać, jakby sama opróżniała
+bufor: wpływają na to konfiguracja buforowania oraz powiązanie strumieni
+(\code{tie}). Gwarantowana różnica między tymi trzema zapisami pozostaje
+taka jak w tabeli. Żaden z nich nie gwarantuje utrwalenia danych na dysku.
+
+W pętli wypisującej wiele rekordów używamy zwykle \code{'\n'};
+\code{std::flush} wywołujemy wtedy, gdy odbiorca potrzebuje danych
+przed zakończeniem buforowania.
 
 \subsection{Formatowanie a ustawienia regionalne}
 
@@ -145,6 +249,22 @@ a \code{std::fstream} obsługuje oba kierunki. Otwarcie odbywa się
 w konstruktorze lub przez \code{open}; destruktor zamyka uchwyt
 zgodnie z RAII. Tryby obejmują \code{std::ios::in}, \code{out},
 \code{app}, \code{trunc}, \code{binary} i \code{ate}.
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}p{0.31\textwidth}X@{}}
+\toprule
+Typ lub tryb & Za co odpowiada \\
+\midrule
+\code{std::ifstream} & Strumień odczytu z pliku; domyślnie otwiera go z trybem \code{in}. \\
+\code{std::ofstream} & Strumień zapisu do pliku; domyślnie otwiera go z trybem \code{out}, który bez \code{app} lub \code{in} zwykle usuwa poprzednią zawartość. \\
+\code{std::fstream} & Odczyt i zapis; domyślny tryb otwarcia to \code{in | out}. \\
+\code{std::ios::app} & Każdy zapis kieruje na koniec pliku; przydaje się do dopisywania. \\
+\code{std::ios::trunc} & Opróżnia istniejący plik przy otwarciu, jeśli tryb otwarcia na to pozwala. \\
+\code{std::ios::ate} & Ustawia pozycję na końcu zaraz po otwarciu; później można ją zmienić. \\
+\code{std::ios::binary} & Włącza tryb binarny; nie definiuje formatu liczb ani struktur. \\
+\bottomrule
+\end{tabularx}
+\end{center}
 
 \begin{lstlisting}[caption={Zapis i odczyt pliku tekstowego (kompletny program).}]
 #include <fstream>
@@ -211,6 +331,24 @@ Nagłówek \code{<filesystem>} (C++17) udostępnia typ \code{path}
 oraz operacje na ścieżkach i katalogach. \code{path} reprezentuje
 ścieżkę w notacji systemu, nie otwiera jeszcze pliku. Operator
 \code{/} poprawnie dołącza elementy ścieżki.
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}p{0.33\textwidth}X@{}}
+\toprule
+Operacja & Za co odpowiada \\
+\midrule
+\code{path / "nazwa"} & Składa ścieżkę z części, używając reguł danej platformy; nie tworzy pliku. \\
+\code{filename()}, \code{extension()} & Zwracają odpowiednio ostatni element ścieżki i jego rozszerzenie. \\
+\code{parent_path()} & Zwraca część ścieżki przed ostatnim elementem. \\
+\code{exists(path)} & Sprawdza, czy wskazywany obiekt istnieje w chwili wywołania. \\
+\code{is_regular_file(path)} & Sprawdza, czy obiekt jest zwykłym plikiem, a nie np. katalogiem. \\
+\code{directory_iterator} & Przechodzi po wpisach jednego katalogu; kolejność jest nieokreślona. \\
+\code{recursive_directory_iterator} & Przechodzi także do podkatalogów; wymaga obsługi błędów dostępu i możliwych zmian w drzewie. \\
+\code{canonical(path)} & Zwraca bezwzględną, kanoniczną ścieżkę istniejącego obiektu, rozstrzygając łącza symboliczne. \\
+\code{weakly_canonical(path)} & Kanonizuje istniejącą część ścieżki i normalizuje resztę; nie wymaga istnienia całej ścieżki. \\
+\bottomrule
+\end{tabularx}
+\end{center}
 
 \begin{lstlisting}[caption={Sciezki i katalogi (kompletny program).}]
 #include <filesystem>
@@ -379,6 +517,19 @@ od lokalizacji \code{std::locale}. Wynik \code{from_chars} zawiera
 wskaźnik na pierwszy nieprzetworzony znak oraz \code{std::errc}.
 W szczególności udany odczyt prefiksu \code{123} z \code{123abc}
 nie oznacza, że całe wejście jest poprawną liczbą.
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}p{0.33\textwidth}X@{}}
+\toprule
+Element & Za co odpowiada \\
+\midrule
+\code{std::from_chars} & Parsuje początek zakresu \code{[first, last)} do \code{value}; nie pomija białych znaków. \\
+\code{result.ptr} & Wskazuje pierwszy znak po rozpoznanej liczbie; porównanie z \code{last} wykrywa dodatkowy tekst. \\
+\code{result.ec} & Kod wyniku: pusty przy sukcesie, \code{std::errc::invalid_argument} przy braku liczby lub \code{std::errc::result_out_of_range} przy wartości poza zakresem typu. \\
+\code{std::to_chars} & Zapisuje liczbę do zakresu \code{[first, last)} bez dopisywania znaku \code{'\0'}; wynik wskazuje miejsce za ostatnim zapisanym znakiem. \\
+\bottomrule
+\end{tabularx}
+\end{center}
 
 \begin{lstlisting}[caption={Poprawny parser pelnej liczby calkowitej (C++17).}]
 #include <charconv>

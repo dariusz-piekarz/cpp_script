@@ -119,6 +119,20 @@ elementu nie unieważnia iteratorów do pozostałych elementów, ale nie
 oznacza to, że można dalej używać iteratora do elementu usuniętego.
 
 \section{Kategorie iteratorów i ich wymagania}
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}p{0.31\textwidth}X@{}}
+\toprule
+Kategoria & Dostępne możliwości \\
+\midrule
+\code{input_iterator} & Jednokierunkowy odczyt; wielokrotne przejście może być niemożliwe. \\
+\code{forward_iterator} & Jednokierunkowe, wielokrotne przechodzenie po tym samym zakresie. \\
+\code{bidirectional_iterator} & Także przechodzenie wstecz operatorem \code{--}. \\
+\code{random_access_iterator} & Skoki o odległość i porównania kolejności w stałym czasie. \\
+\code{contiguous_iterator} & Elementy zajmują kolejne miejsca w pamięci, jak w \code{vector}. \\
+\bottomrule
+\end{tabularx}
+\end{center}
 \label{sec:cpp8-iterator-categories}
 
 Zestaw koncepcji C++20 opisuje operacje i własności iteratorów, a nie
@@ -397,6 +411,21 @@ adaptującymi zakresy. \texttt{std::ranges::view} to natomiast
 z pojęciem \texttt{std::ranges::range}.
 
 \section{Leniwe potoki \texttt{filter}, \texttt{transform}, \texttt{take}}
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}p{0.36\textwidth}X@{}}
+\toprule
+Adaptor widoku & Działanie \\
+\midrule
+\code{views::filter(pred)} & Udostępnia tylko elementy spełniające predykat podczas iteracji. \\
+\code{views::transform(f)} & Przy odczycie przekształca element przez funkcję \code{f}. \\
+\code{views::take(n)} & Ogranicza iterację do najwyżej \code{n} elementów. \\
+\code{views::drop(n)} & Pomija pierwsze \code{n} elementów zakresu. \\
+\code{views::iota(a, b)} & Generuje kolejne wartości od \code{a} do granicy \code{b}. \\
+\code{ranges::to<vector>} & Materializuje zakres do kontenera; funkcja jest dostępna od C++23, nie w samym C++20. \\
+\bottomrule
+\end{tabularx}
+\end{center}
 \label{sec:cpp8-pipelines}
 
 Najczęściej stosowane widoki łączymy za pomocą operatora \texttt{|}.

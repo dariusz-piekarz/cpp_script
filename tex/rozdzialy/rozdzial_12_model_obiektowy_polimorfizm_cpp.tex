@@ -108,6 +108,21 @@ relację \emph{is-a}: obiekt pochodny może być używany tam, gdzie
 oczekiwany jest interfejs bazowy.
 
 \section{Przeciążanie, przesłanianie i funkcje wirtualne}
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}p{0.33\textwidth}X@{}}
+\toprule
+Konstrukcja & Za co odpowiada \\
+\midrule
+\code{virtual} & Wybiera przesłoniętą metodę według typu dynamicznego obiektu przy wywołaniu przez bazę. \\
+\code{override} & Wymaga rzeczywistego przesłonięcia metody wirtualnej; błędna sygnatura staje się błędem kompilacji. \\
+\code{final} & Blokuje dalsze przesłanianie metody albo dziedziczenie po klasie. \\
+\code{= 0} & Oznacza funkcję wirtualną jako czysto wirtualną; klasa staje się abstrakcyjna. \\
+\code{using Base::f} & Udostępnia przeciążenia \code{f} z klasy bazowej, ukryte przez deklarację w klasie pochodnej. \\
+\code{virtual ~Base()} & Pozwala poprawnie niszczyć obiekt pochodny przez wskaźnik do bazy. \\
+\bottomrule
+\end{tabularx}
+\end{center}
 \label{sec:cpp12-virtual}
 
 \emph{Przeciążanie} (\emph{overloading}) polega na deklarowaniu kilku
@@ -439,6 +454,20 @@ przypadku usuwa obiekt przez \texttt{Base*}, dlatego destruktor
 polimorficznej bazy musi być poprawnie zaprojektowany.
 
 \section{RTTI: \texttt{dynamic\_cast} oraz \texttt{typeid}}
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}p{0.37\textwidth}X@{}}
+\toprule
+Mechanizm & Działanie przy sprawdzaniu typu \\
+\midrule
+\code{dynamic_cast<Derived*>(p)} & Sprawdza rzutowanie wskaźnika w hierarchii polimorficznej; przy niepowodzeniu zwraca \code{nullptr}. \\
+\texttt{dynamic\_cast<Derived\&>(r)} & Sprawdza rzutowanie referencji; przy niepowodzeniu zgłasza \code{std::bad_cast}. \\
+\code{typeid(expr)} & Dla glvalue typu polimorficznego podaje typ dynamiczny; w innych przypadkach typ statyczny. \\
+\code{std::variant} & Przechowuje jedną z jawnie wymienionych alternatyw, gdy zbiór możliwych typów jest zamknięty. \\
+\code{std::visit} & Wywołuje odwiedzający obiekt dla aktualnej alternatywy wariantu. \\
+\bottomrule
+\end{tabularx}
+\end{center}
 \label{sec:cpp12-rtti}
 
 RTTI (\emph{run-time type information}) pozwala w pewnych sytuacjach

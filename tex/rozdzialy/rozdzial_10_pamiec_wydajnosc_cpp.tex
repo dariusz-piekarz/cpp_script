@@ -139,6 +139,20 @@ pierwszy wytwarza \emph{wartość}, drugi może tylko zmienić sposób
 interpretacji wskaźnika; sam nie tworzy obiektu docelowego.
 
 \section{Layout struktury: \texttt{sizeof}, \texttt{alignof}, padding}
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}p{0.33\textwidth}X@{}}
+\toprule
+Narzędzie & Co pokazuje lub zmienia \\
+\midrule
+\code{sizeof(T)} & Podaje rozmiar obiektu typu \code{T} w bajtach, wraz z ewentualnym paddingiem. \\
+\code{alignof(T)} & Podaje wymagane wyrównanie adresu obiektu typu \code{T}. \\
+\code{offsetof(T, field)} & Podaje przesunięcie składowej w typie o standardowym układzie. \\
+\code{alignas(n)} & Żąda wyrównania co najmniej do granicy \code{n} dla obiektu lub typu. \\
+\code{std::byte} & Reprezentuje jednostkę surowej pamięci bez znaczenia znaku tekstowego. \\
+\bottomrule
+\end{tabularx}
+\end{center}
 \label{sec:cpp10-layout}
 
 \subsection{Skąd bierze się padding?}
@@ -424,6 +438,20 @@ Dla większości zastosowań wygodniejsza jest warstwa
 \texttt{std::pmr}, którą poznamy teraz.
 
 \section{\texttt{std::pmr}: polimorficzne zasoby pamięci}
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}p{0.37\textwidth}X@{}}
+\toprule
+Mechanizm & Zastosowanie i ograniczenie \\
+\midrule
+\code{pmr::memory_resource} & Interfejs strategii przydziału i zwalniania pamięci używany przez alokatory PMR. \\
+\code{pmr::vector<T>} & Kontener, którego alokator korzysta z wybranego zasobu pamięci. \\
+\code{monotonic_buffer_resource} & Przydziela kolejne bloki szybko; pojedyncze zwolnienia nie odzyskują miejsca, zasób zwalnia je zbiorczo. \\
+\code{unsynchronized_pool_resource} & Pula małych bloków bez synchronizacji między wątkami. \\
+\code{synchronized_pool_resource} & Pula z synchronizacją, odpowiednia do współdzielenia między wątkami. \\
+\bottomrule
+\end{tabularx}
+\end{center}
 \label{sec:cpp10-pmr}
 
 \subsection{Alokator jako decyzja w czasie działania}

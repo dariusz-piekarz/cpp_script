@@ -64,6 +64,21 @@ W bibliotekach produkcyjnych zaleca się test konfiguracji
 \emph{compile-and-link}, a nie tylko sprawdzenie preprocesora.
 
 \section{C++23: \texttt{std::expected<T,E>} i jawne błędy}
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}p{0.35\textwidth}X@{}}
+\toprule
+Operacja & Znaczenie \\
+\midrule
+\code{std::expected<T,E>} & Przechowuje wartość \code{T} albo błąd \code{E}. \\
+\code{std::unexpected(error)} & Tworzy wariant błędu przekazywany do \code{expected}. \\
+\code{has_value()} & Sprawdza, czy dostępna jest wartość, a nie błąd. \\
+\code{value()} & Zwraca wartość; gdy przechowywany jest błąd, zgłasza \code{std::bad_expected_access}. \\
+\code{error()} & Udostępnia błąd; należy używać, gdy obiekt przechowuje błąd. \\
+\code{value_or(fallback)} & Zwraca wartość albo podany zamiennik. \\
+\bottomrule
+\end{tabularx}
+\end{center}
 \label{sec:cpp21-expected}
 
 \code{std::expected<T,E>} reprezentuje wynik typu \code{T} albo błąd

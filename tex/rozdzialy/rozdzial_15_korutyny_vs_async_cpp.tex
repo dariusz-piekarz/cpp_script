@@ -44,6 +44,21 @@ przez różne wątki, jeżeli tak zdecyduje dostarczony mechanizm planowania.
 
 \subsection{Trzy słowa kluczowe}
 
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}p{0.32\textwidth}X@{}}
+\toprule
+Konstrukcja & Działanie w korutynie \\
+\midrule
+\code{co_await expr} & Przekazuje sterowanie obiektowi oczekującemu; może zawiesić korutynę bez blokowania wątku. \\
+\code{co_yield value} & Udostępnia kolejną wartość i zwykle zawiesza generator do wznowienia. \\
+\code{co_return value} & Kończy korutynę i przekazuje wynik zgodnie z protokołem jej typu zwracanego. \\
+\code{await_ready()} & Określa, czy wynik jest już gotowy i można pominąć zawieszenie. \\
+\code{await_suspend(h)} & Obsługuje zawieszenie i uchwyt \code{h}; może zaplanować późniejsze wznowienie. \\
+\code{await_resume()} & Zwraca rezultat oczekiwania albo zgłasza zapisany wyjątek po wznowieniu. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
 C++20 wprowadził następujące konstrukcje składniowe:
 \begin{description}
 \item[\texttt{co\_await expr}] Zastosuj protokół oczekiwania do wyrażenia;

@@ -42,6 +42,20 @@ Pakiety parametrów i perfect forwarding pojawiły się w C++11.
 Dalej zakładamy C++20.
 
 \section{Trzy kropki: deklaracja pakietu a rozwinięcie}
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}p{0.35\textwidth}X@{}}
+\toprule
+Zapis & Działanie \\
+\midrule
+\code{typename... Ts} & Deklaruje pakiet parametrów typowych szablonu. \\
+\code{Ts...} & Rozwija pakiet typów w miejscu, które dopuszcza taki wzorzec. \\
+\code{args...} & Rozwija pakiet argumentów, tworząc listę wyrażeń. \\
+\code{sizeof...(Ts)} & Podaje liczbę elementów pakietu w czasie kompilacji. \\
+\code{std::forward<Ts>(args)...} & Przekazuje każdy argument z zachowaniem jego kategorii wartości. \\
+\bottomrule
+\end{tabularx}
+\end{center}
 \label{sec:variadic-trzy-kropki}
 
 W różnych miejscach token \texttt{...} oznacza różne operacje.
@@ -197,6 +211,20 @@ Jeżeli wykonujemy tę samą operację dla wszystkich argumentów,
 w C++17 i nowszych zazwyczaj lepszym wyborem jest \emph{fold expression}.
 
 \section{Fold expressions (C++17)}
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}p{0.35\textwidth}X@{}}
+\toprule
+Forma złożenia & Sposób rozwinięcia \\
+\midrule
+\code{(... + args)} & Złożenie lewostronne: kolejne dodawania łączone od lewej. \\
+\code{(args + ...)} & Złożenie prawostronne: kolejne dodawania łączone od prawej. \\
+\code{(init + ... + args)} & Złożenie z wartością początkową; działa także dla pustego pakietu. \\
+\code{(f(args), ...)} & Wywołuje \code{f} dla każdego argumentu od lewej do prawej dzięki operatorowi przecinka. \\
+\texttt{(args \&\& ...)} & Łączy warunki z krótkim spięciem; dla pustego pakietu daje \code{true}. \\
+\bottomrule
+\end{tabularx}
+\end{center}
 \label{sec:variadic-fold}
 
 \emph{Fold expression} redukuje pakiet wyrażeń z użyciem jednego

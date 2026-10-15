@@ -56,6 +56,21 @@ modułom dodawanie nowych rodzajów poleceń, lepszy bywa interfejs
 polimorficzny lub ręcznie zbudowany mechanizm type erasure.
 
 \section{\texttt{std::optional<T>}: wartość, której może nie być}
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}p{0.33\textwidth}X@{}}
+\toprule
+Typ lub operacja & Co reprezentuje \\
+\midrule
+\code{std::optional<T>} & Wartość typu \code{T} albo jej brak; nie opisuje przyczyny błędu. \\
+\code{has_value()} & Sprawdza, czy \code{optional} przechowuje wartość. \\
+\code{value()} & Zwraca wartość lub zgłasza \code{std::bad_optional_access}, gdy jej brak. \\
+\code{value_or(fallback)} & Zwraca wartość albo podany zamiennik, konwertowany do \code{T}. \\
+\code{std::variant<Ts...>} & Dokładnie jedną z ustalonych alternatyw typów. \\
+\code{std::any} & Wartość typu ustalonego dopiero w czasie wykonania; przy odczycie trzeba sprawdzić typ. \\
+\bottomrule
+\end{tabularx}
+\end{center}
 \label{sec:cpp14-optional}
 
 Typ \texttt{std::optional<T>} (C++17, nagłówek \texttt{<optional>})
