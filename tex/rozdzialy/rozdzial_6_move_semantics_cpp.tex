@@ -1,5 +1,5 @@
 % ROZDZIAL 6 -- Semantyka przenoszenia, kategorie wartosci, perfect forwarding (C++20)
-% Fragment do wstawienia za rozdzialem 5.
+% Kolejnosc rozdzialow okresla cpp.tex.
 % Wymagana preambula: pakiet listings i konfiguracja lstlisting.
 % Uzycie: \input{rozdzial_6_move_semantics_cpp.tex}
 
@@ -40,12 +40,17 @@ Kluczowa idea jest semantyczna: \emph{przeniesienie pozwala zmienić stan
 Zakładamy \textbf{C++20}. Kategorie wartości istnieją od początku języka,
 referencje do r-wartości i \texttt{std::move} wprowadzono w C++11,
 \emph{guaranteed copy elision} w C++17, a wiele przykładów poniżej
-wykorzystuje koncepcje omówione w rozdziale~5.
-Wszystkie przykłady zawierają komentarze angielskie, aby łatwo
-przenosić je do projektów.
+wykorzystuje koncepcje omówione w rozdziale~\ref{chap:concepts-cpp}.
 
 \section{Typ wyrażenia a kategoria wartości}
 \label{sec:move-categories}
+
+Najpierw intuicja: \texttt{a} w wyrażeniu oznacza nazwany obiekt,
+\texttt{std::move(a)} pozwala potraktować jego zasoby jako możliwe
+do oddania, a \texttt{std::string("x")} tworzy nową wartość.
+Te trzy przypadki język nazywa odpowiednio \emph{lvalue},
+\emph{xvalue} i \emph{prvalue}. Nazwy przydają się przede wszystkim
+do zrozumienia, którą wersję funkcji kompilator wybierze.
 
 \textbf{Typ} i \textbf{kategoria wartości} są dwiema różnymi własnościami
 wyrażenia. Typ mówi, jaki rodzaj danych otrzymujemy; kategoria mówi
@@ -552,6 +557,11 @@ Dlatego bezwyjątkowość musi wynikać z rzeczywistych operacji składowych.
 \section{Zwijanie referencji (\textit{reference collapsing})}
 \label{sec:move-ref-collapse}
 
+Zwijanie referencji i kolejne sekcje o przekazywaniu doskonałym są
+przydatne głównie przy pisaniu kodu generycznego. Przy pierwszej
+lekturze można po poznaniu \texttt{std::move} przejść do części o
+\emph{copy elision} i wrócić tutaj później.
+
 Gdy referencje występują pośrednio poprzez aliasy lub
 podstawienie argumentów szablonu, stosuje się \emph{zwijanie
 referencji}. Wszystkie przypadki przedstawia tabela:
@@ -730,7 +740,7 @@ To edukacyjna wersja fabryki. W produkcyjnym kodzie
 sposób. W drugim wywołaniu użytkownik świadomie pozwolił na
 przeniesienie \texttt{first}; w pierwszym pozostaje on
 nienaruszony. \texttt{std::forward<Args>(args)...} rozwija pakiet
-argumentów omówiony w rozdziale~4.
+argumentów omówiony w rozdziale~\ref{chap:variadic-templates-cpp}.
 
 \subsection{Nie przekazuj tego samego zasobu dwa razy bez zastanowienia}
 
@@ -800,7 +810,7 @@ struct SafeNamed {
 \end{lstlisting}
 
 Takie powiązanie rozdziału o perfect forwarding z koncepcjami
-z rozdziału~5 jest bardzo przydatne
+z rozdziału~\ref{chap:concepts-cpp} jest bardzo przydatne
 w bibliotekach generycznych.
 
 \section{Copy elision: kiedy nie ma ani kopii, ani przeniesienia?}
@@ -940,7 +950,7 @@ int main() {
 Przekazanie \texttt{unique\_ptr} przez wartość oznacza przejęcie
 własności. Jeżeli funkcja ma jedynie korzystać z obiektu,
 zwykle lepiej przyjąć \texttt{T\&} lub \texttt{const T\&}.
-Temat własności zasobów omówiono w rozdziale~3.
+Temat własności zasobów omówiono w rozdziale~\ref{chap:wskazniki-cpp}.
 
 \section{Rvalue-qualified methods i świadome udostępnianie zasobów}
 \label{sec:move-ref-qualified}
@@ -1022,7 +1032,7 @@ std::move(source.begin(), source.end(),
 Nazwa \texttt{std::move} występuje również dla algorytmu z nagłówka
 \texttt{<algorithm>}. W przeciwieństwie do pojedynczego
 \texttt{std::move(x)} z nagłówka \texttt{<utility>}, algorytm
-przypisuje kolejno elementy z zakresu docelowego, korzystając
+przypisuje kolejno elementy z zakresu wejściowego do docelowego, korzystając
 z możliwości ich przenoszenia.
 
 \section{Typowe błędy i pułapki}
