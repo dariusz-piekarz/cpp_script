@@ -1,5 +1,5 @@
 % ROZDZIAL 12 — Model obiektowy C++ i polimorfizm
-% Fragment do zbiorczego skryptu; wczytac przez \input{...} PO rozdziale 11.
+% Fragment do zbiorczego skryptu; kolejnosc okresla cpp.tex.
 % Standard podstawowy: C++20. Wymagane pakiety: listings, amsmath, amssymb,
 % booktabs, tabularx, array, hyperref, xcolor (jak we wczesniejszych rozdzialach).
 % Ten plik celowo nie zawiera \documentclass ani \begin{document}.
@@ -8,6 +8,14 @@
 \label{chap:cpp-object-model}
 
 \section{Po co poznawać model obiektowy?}
+
+Wyobraźmy sobie klasę \texttt{Shape} z metodą \texttt{area()} oraz
+pochodną \texttt{Circle}. Jeśli zmienna \texttt{Circle circle} jest
+przekazana jako \texttt{Shape\& shape = circle}, referencja ma
+statyczny typ \texttt{Shape\&}, lecz nadal wskazuje obiekt
+\texttt{Circle}. Wywołanie \texttt{shape.area()} może więc trafić do
+implementacji \texttt{Circle}, jeśli \texttt{area()} jest wirtualna.
+To podstawowy przykład polimorfizmu dynamicznego.
 
 Klasy w C++ są jednocześnie narzędziem modelowania danych, organizowania
 interfejsów i budowania różnych rodzajów polimorfizmu. Dwie implementacje
@@ -131,6 +139,11 @@ funkcji o tej samej nazwie, różniących się listą parametrów.
 w klasie pochodnej zasłania nazwę z klasy bazowej.
 \emph{Nadpisywanie} (\emph{overriding}) oznacza dostarczenie implementacji
 funkcji wirtualnej z bazy przez klasę pochodną.
+Na przykład dwie metody \texttt{print(int)} i \texttt{print(double)}
+w tej samej klasie są przeciążeniami. Nowa metoda \texttt{print(char)}
+w klasie pochodnej może przesłonić ich nazwę. Dopiero metoda
+\texttt{draw() override} nadpisująca bazowe \texttt{virtual draw()}
+korzysta z wyboru według rzeczywistego typu obiektu.
 
 \begin{lstlisting}[caption={Dynamiczne wiązanie wywołania przez virtual (C++11); kompletny program.}]
 #include <iostream>
@@ -170,8 +183,8 @@ referencję lub wskaźnik do jej podobiektu w obiekcie konkretnym.
 Dla wywołania \texttt{base.f()} najpierw rozstrzygane są dostępność
 nazwy, przeciążenia i poprawność wywołania według \emph{typu statycznego}.
 Jeśli wybrana funkcja jest wirtualna, a wywołanie nie wyłącza mechanizmu
-wirtualnego przez kwalifikację nazwy, uruchamiany jest odpowiedni
-\emph{final overrider} dla dynamicznego typu obiektu.
+wirtualnego przez kwalifikację nazwy, uruchamiana jest ostatnia
+implementacja tej metody w rzeczywistym typie obiektu.
 
 \subsection{Dlaczego stosować \texttt{override} i \texttt{final}?}
 
@@ -301,9 +314,8 @@ int main() {
 
 Jeżeli bazowy destruktor nie jest wirtualny, standardowe
 \texttt{delete base\_ptr;} przy dynamicznym typie różnym od statycznego
-może prowadzić do niezdefiniowanego zachowania; istnieją szczególne
-reguły związane z tzw. \emph{destroying delete}, ale nie należy
-traktować ich jako zwykłego substytutu destruktora wirtualnego.
+prowadzi do niezdefiniowanego zachowania. Dlatego baza, przez której
+wskaźnik usuwamy obiekty pochodne, powinna mieć destruktor wirtualny.
 
 \subsection{Kolejność konstrukcji i destrukcji}
 
@@ -462,7 +474,7 @@ Mechanizm & Działanie przy sprawdzaniu typu \\
 \midrule
 \code{dynamic_cast<Derived*>(p)} & Sprawdza rzutowanie wskaźnika w hierarchii polimorficznej; przy niepowodzeniu zwraca \code{nullptr}. \\
 \texttt{dynamic\_cast<Derived\&>(r)} & Sprawdza rzutowanie referencji; przy niepowodzeniu zgłasza \code{std::bad_cast}. \\
-\code{typeid(expr)} & Dla glvalue typu polimorficznego podaje typ dynamiczny; w innych przypadkach typ statyczny. \\
+\code{typeid(expr)} & Dla wyrażenia wskazującego istniejący obiekt typu polimorficznego podaje typ dynamiczny; w innych przypadkach typ statyczny. \\
 \code{std::variant} & Przechowuje jedną z jawnie wymienionych alternatyw, gdy zbiór możliwych typów jest zamknięty. \\
 \code{std::visit} & Wywołuje odwiedzający obiekt dla aktualnej alternatywy wariantu. \\
 \bottomrule
@@ -546,14 +558,15 @@ int main() {
 }
 \end{lstlisting}
 
-\noindent Dla wyrażenia typu klasy polimorficznej, będącego \emph{glvalue},
+\noindent Dla wyrażenia oznaczającego istniejący obiekt klasy
+polimorficznej (\emph{glvalue}),
 \texttt{typeid(expression)} zwraca informację o typie dynamicznym.
 W innych sytuacjach zazwyczaj uwzględnia typ statyczny wyrażenia.
 Nazwy zwracane przez \texttt{type\_info::name()} są zależne
 od implementacji; nie należy używać ich jako stabilnego identyfikatora
 w zapisywanych plikach lub w protokołach sieciowych.
 Dla \texttt{typeid(*ptr)} z zerowym wskaźnikiem do typu polimorficznego
-może zostać zgłoszony \texttt{std::bad\_typeid}.
+zostanie zgłoszony \texttt{std::bad\_typeid}.
 
 \section{Wielodziedziczenie i wirtualne klasy bazowe}
 \label{sec:cpp12-multiple}
@@ -920,6 +933,7 @@ używa się zwykle \texttt{std::visit}.
 
 \begin{lstlisting}[caption={Zamknięty zbiór typów i std::visit (C++17); kompletny program.}]
 #include <cassert>
+#include <type_traits>
 #include <variant>
 
 struct Add { int x; };
@@ -968,6 +982,13 @@ Typowe koszty & Dyspozycja i lokalność danych & Rozmiar kodu po instancjacjach
 \bottomrule
 \end{tabularx}
 \end{center}
+
+Jeśli aplikacja ma wczytywać nowe rodzaje figur dostarczane przez
+wtyczki, otwarta hierarchia z metodami wirtualnymi jest naturalna.
+Jeśli program obsługuje tylko trzy znane podczas kompilacji rodzaje
+poleceń, \texttt{variant} pozwala je wyliczyć w jednym typie. Szablon
+przydaje się wtedy, gdy ten sam algorytm ma działać na wielu typach,
+ale konkretny typ znamy już przy kompilacji wywołania.
 
 Wybór zależy przede wszystkim od architektury programu:
 \begin{itemize}
@@ -1082,7 +1103,7 @@ Praktyczna wydajność zależy nie tylko od kosztu wywołania,
 ale również od reprezentacji i rozmieszczenia danych.
 
 \section*{Literatura i dalsze źródła}
-\addcontentsline{toc}{section}{Literatura do rozdziału 12}
+\addcontentsline{toc}{section}{Literatura i dalsze źródła}
 \begin{itemize}
 \item ISO C++ Standard: model obiektowy, klasy, dziedziczenie,
       funkcje wirtualne i RTTI (normatywne źródło reguł języka).
