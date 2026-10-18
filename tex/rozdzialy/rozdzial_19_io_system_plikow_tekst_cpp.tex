@@ -14,6 +14,12 @@ warstwy: \emph{pozyskanie bajtów}, \emph{parsowanie reprezentacji} oraz
 \emph{przetworzenie obiektów}. Dzięki temu test parsera nie wymaga dysku,
 a zmiana formatu pliku nie wymusza zmiany algorytmu numerycznego.
 
+Na przykład plik zawiera tekst \code{42} zakończony znakiem nowej linii.
+Najpierw program odczytuje bajty z pliku, potem zamienia zapis \code{42}
+na liczbę typu \code{int}, a dopiero wtedy dodaje ją do sumy. Gdy odczyt
+się nie uda lub w pliku będzie słowo zamiast liczby, każda z tych
+warstw może zgłosić własny, zrozumiały błąd.
+
 \begin{center}\small
 \begin{tabularx}{\textwidth}{@{}p{0.28\textwidth}X@{}}
 \toprule
@@ -159,9 +165,16 @@ Zapis & Działanie \\
 \end{tabularx}
 \end{center}
 
+W zwykłym kodzie wybór jest prosty: \code{'\n'} kończy wiersz,
+a \code{std::endl} dodatkowo prosi strumień o natychmiastowe
+opróżnienie bufora. To drugie bywa przydatne, gdy program czeka
+na odpowiedź użytkownika, ale w częstej pętli może spowalniać zapis.
+
 Poniższy bufor przechowuje zapisane znaki do chwili wywołania
 \code{sync()}. Dzięki temu wynik nie zależy od terminala ani systemu
-operacyjnego. Licznik pokazuje żądania opróżnienia bufora.
+operacyjnego. Klasa \code{TrackedBuffer} służy tu wyłącznie do
+obserwacji: \code{pending} trzyma znaki przed opróżnieniem,
+\code{sent} po opróżnieniu, a \code{flushes} liczy takie żądania.
 
 \begin{lstlisting}[caption={Roznica miedzy nowa linia, flush i endl (kompletny program, C++20).}]
 #include <iostream>
@@ -302,7 +315,9 @@ nie wprowadza przenośnego sposobu kodowania struktur. Zapis
 \code{reinterpret_cast<const char*>(&obj)} pomija kwestie
 \emph{endianness}, wyrównania, paddingu, rozmiaru typów i wersji
 reprezentacji. W plikach wymiany zalecamy własny jawny format albo
-przetestowaną bibliotekę serializacji.
+przetestowaną bibliotekę serializacji. Przykładowo liczba
+\code{0x12345678} zapisana w kolejności \emph{little-endian} ma
+cztery bajty w kolejności \code{78 56 34 12} (zapis szesnastkowy).
 
 \begin{lstlisting}[caption={Jawny zapis liczby 32-bitowej w kolejnosci little-endian (C++20).}]
 #include <array>
@@ -406,7 +421,12 @@ uprawnienia i zmiany katalogów mogą zmienić wynik.
 int main() {
     namespace fs = std::filesystem;
     std::error_code ec;
-    for (fs::directory_iterator it(fs::current_path(), ec), end;
+    const fs::path directory = fs::current_path(ec);
+    if (ec) {
+        std::cerr << ec.message() << '\n';
+        return 1;
+    }
+    for (fs::directory_iterator it(directory, ec), end;
          !ec && it != end; it.increment(ec)) {
         std::error_code item_ec;
         if (it->is_regular_file(item_ec) && !item_ec)
@@ -500,6 +520,9 @@ int main() {
 }
 \end{lstlisting}
 
+Program wypisze \code{3 2}: litera \code{A} zajmuje jeden bajt UTF-8,
+a \code{ą} dwa bajty. Razem są to trzy bajty, ale dwa punkty kodowe.
+
 Funkcja z przykładu \emph{zakłada poprawne UTF-8} i liczy jedynie
 jednostki niebędące bajtami kontynuacji: nie jest walidatorem kodowania.
 Dla danych niezaufanych wymagane jest pełne sprawdzenie składni UTF-8,
@@ -562,6 +585,11 @@ i zachowanie wobec niepoprawnych danych. Poniższy prosty parser
 obsługuje jeden rekord przechowywany już jako \code{string_view},
 cudzysłowy i podwojone cudzysłowy, ale \emph{nie obsługuje wieloliniowych
 rekordów} (ich odczyt wymaga osobnej warstwy).
+
+Dla wejścia \code{A,"B,C","D""E",} parser zwróci cztery pola:
+\code{A}, \code{B,C}, \code{D"E} i puste pole. Cudzysłowy wokół
+drugiego pola chronią przecinek przed potraktowaniem go jako separatora;
+podwojony cudzysłów w trzecim polu oznacza jeden znak cudzysłowu.
 
 \begin{lstlisting}[caption={Parser pojedynczego rekordu CSV (C++20).}]
 #include <stdexcept>
@@ -766,7 +794,7 @@ W systemach obsługujących dane niezaufane kod przetwarzający tekst
 powinien obowiązkowo mieć testy brzegowe: pusty plik, zerowy bajt,
 wielobajtowy znak na granicy bufora, cytowanie CSV, rekord przekraczający
 limit oraz zmianę pliku podczas odczytu. Dla parserów złożonych
-pomocne są fuzzery i sanitizatory opisane w rozdziale 18.
+pomocne są fuzzery i sanitizatory opisane w rozdziale~\ref{chap:cpp18-test-debug-profile}.
 
 
 \section{Podsumowanie: kiedy używać którego narzędzia?}
