@@ -15,6 +15,19 @@ Wówczas wykonanie jest przekazywane do odpowiedniego bloku
 czas życia dobiegł końca. To ostatnie zjawisko nazywamy
 \emph{odwijaniem stosu} (\emph{stack unwinding}).
 
+Najprostszy schemat wygląda tak: \texttt{throw} zgłasza problem,
+a pasujący \texttt{catch} go odbiera. Kod po \texttt{throw} w tym samym
+bloku nie zostanie wykonany:
+\begin{lstlisting}
+try {
+    throw std::runtime_error("bad input");
+} catch (const std::runtime_error& error) {
+    std::cerr << error.what() << '\n';
+}
+\end{lstlisting}
+W samodzielnym programie ten fragment wymaga nagłówków
+\texttt{<iostream>} i \texttt{<stdexcept>}.
+
 Z perspektywy projektowania API warto odróżniać:
 \begin{itemize}
 \item \emph{zwykły wynik} (w tym informację, że elementu nie znaleziono),
@@ -127,12 +140,13 @@ void log_and_rethrow() {
 
 Najważniejsza reguła praktyczna brzmi: \emph{zwalnianie zasobu powinno
 wynikać z destruktora obiektu zarządzającego zasobem}. Stanowi to
-rozwinięcie idei RAII poznanej w rozdziałach 3 i 10.
+rozwinięcie idei RAII poznanej w rozdziale~\ref{chap:wskazniki-cpp}.
 
 \begin{lstlisting}
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 struct Trace {
     std::string name;
@@ -212,27 +226,12 @@ Gwarancja braku wyjątków & Operacja nie pozwala wyjątkowi opuścić funkcji. 
 \label{sec:cpp11-guarantees}
 
 Bezpieczeństwo wyjątkowe nie oznacza tylko braku wycieków pamięci.
-Chodzi również o stan obiektów po niepowodzeniu:
-
-\begin{center}
-\begin{tabular}{|p{0.23\textwidth}|p{0.65\textwidth}|}
-\hline
-\textbf{Gwarancja} & \textbf{Znaczenie} \\
-\hline
-No-throw / no-fail & Operacja nie zgłasza wyjątku; w wariancie
-no-fail dodatkowo musi się udać. \\
-\hline
-Silna (strong) & Jeśli pojawi się wyjątek, obserwowalny stan objęty
-kontraktem pozostaje taki jak przed operacją. \\
-\hline
-Podstawowa (basic) & Obiekty zachowują niezmienniki, zasoby nie
-wyciekają, ale stan może się zmienić. \\
-\hline
-Brak gwarancji & Po błędzie mogą zostać naruszone niezmienniki lub
-utracone zasoby. \\
-\hline
-\end{tabular}
-\end{center}
+Załóżmy, że lista zawiera \texttt{[1, 2]} i dopisanie \texttt{3}
+zgłosi wyjątek. Gwarancja podstawowa oznacza, że lista nadal nadaje
+się do użycia, choć może mieć zmienioną zawartość. Gwarancja silna
+oznacza, że nadal zawiera dokładnie \texttt{[1, 2]}. Gwarancja braku
+wyjątków mówi tylko, że wyjątek nie opuści funkcji; jeśli operacja
+ma dodatkowo zawsze osiągnąć cel, mówimy o gwarancji \emph{no-fail}.
 
 Silna gwarancja nie oznacza automatycznie cofnięcia efektów
 zewnętrznych, np. wysłanego pakietu czy wpisu w bazie danych.
@@ -410,8 +409,10 @@ typów. W typowych zastosowaniach najczęściej spotkamy
 \texttt{std::system\_error}.
 
 \begin{lstlisting}
+#include <cstddef>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 class ParseError : public std::runtime_error {
     std::size_t position_;
@@ -467,13 +468,19 @@ odpowiadać stanowi sprzed wywołania.
 \section{Przenoszenie wyjątków między funkcjami i wątkami}
 \label{sec:cpp11-exception-ptr}
 
+Ta i dwie kolejne sekcje pokazują zastosowania bardziej zaawansowane.
+Do podstaw wystarczą \texttt{try}/\texttt{catch}, RAII oraz gwarancje
+stanu po niepowodzeniu.
+
 Typ \texttt{std::exception\_ptr} pozwala zachować wyjątek poza blokiem
 \texttt{catch}, a później zgłosić go ponownie. Jest przydatny
 szczególnie w programowaniu współbieżnym.
 
 \begin{lstlisting}
 #include <exception>
+#include <iostream>
 #include <stdexcept>
+#include <string>
 #include <thread>
 
 std::exception_ptr error;
@@ -552,9 +559,7 @@ void print_nested(const std::exception& e, int depth = 0) {
 }
 \end{lstlisting}
 
-W tym fragmencie należy dodać nagłówki \texttt{<iostream>} i
-\texttt{<string>} przy samodzielnym uruchamianiu funkcji
-\texttt{print\_nested}. Takie opakowywanie wyjątków nie jest tym
+Takie opakowywanie wyjątków nie jest tym
 samym co zgłoszenie \texttt{throw e;}: nowy wyjątek przechowuje
 kontekst, a przyczynę można odzyskać przez \texttt{rethrow\_if\_nested}.
 
