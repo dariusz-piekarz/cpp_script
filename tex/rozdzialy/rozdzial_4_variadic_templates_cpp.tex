@@ -1,5 +1,5 @@
-% ROZDZIAL 4 -- Variadic templates w C++ (C++20)
-% Fragment dolaczany do glownego dokumentu po rozdziale 3.
+% Rozdzial 11 w kolejnosci cpp.tex -- variadic templates w C++ (C++20).
+% Fragment dolaczany do glownego dokumentu po rozdziale 10.
 % Wymagane w preambule: \usepackage{listings}, konfiguracja lstlisting
 % (taka sama jak w rozdzialach 2 i 3).
 % Uzycie: \input{rozdzial_4_variadic_templates_cpp.tex}
@@ -34,6 +34,12 @@ Wykorzystują je m.in. klasy \texttt{std::tuple} i \texttt{std::variant}
 oraz fabryki \texttt{std::make\_unique} i \texttt{std::make\_shared}.
 Nie trzeba dzięki nim pisać przeciążeń dla każdej
 liczby argumentów.
+Liczba argumentów jest ustalana podczas kompilacji każdego wywołania.
+To odróżnia pakiet od kontenera, którego rozmiar może zmieniać się
+podczas działania programu. Zapis \texttt{void f(int, ...)} znany
+z języka C oznacza inny mechanizm: kompilator nie zachowuje w nim
+pełnej informacji o typach dodatkowych argumentów. Porównamy je
+dokładniej pod koniec rozdziału.
 
 \paragraph{Wymagane wersje języka.}
 Pakiety parametrów i perfect forwarding pojawiły się w C++11.
@@ -73,7 +79,10 @@ Deklaracja \texttt{class... Ts} wprowadza pakiet \emph{typów}.
 Zapis \texttt{Ts... xs} rozwija pakiet typów i wprowadza odpowiadający
 mu pakiet parametrów funkcji. Wywołanie
 \texttt{f(1, 2.0, 'x')} tworzy w uproszczeniu funkcję o parametrach
-\texttt{(int, double, char)}.
+\texttt{(int, double, char)}. Gdy ciało wywoła \texttt{output(xs...)},
+rozwinięcie daje w tym przypadku odpowiednik
+\texttt{output(1, 2.0, 'x')}. Trzy kropki zastępują więc listę
+argumentów, nie tworzą tablicy.
 
 \subsection{Rozwinięcie pakietu (\textit{pack expansion})}
 
@@ -212,25 +221,14 @@ w C++17 i nowszych zazwyczaj lepszym wyborem jest \emph{fold expression}.
 
 \section{Fold expressions (C++17)}
 
-\begin{center}\small
-\begin{tabularx}{\textwidth}{@{}p{0.35\textwidth}X@{}}
-\toprule
-Forma złożenia & Sposób rozwinięcia \\
-\midrule
-\code{(... + args)} & Złożenie lewostronne: kolejne dodawania łączone od lewej. \\
-\code{(args + ...)} & Złożenie prawostronne: kolejne dodawania łączone od prawej. \\
-\code{(init + ... + args)} & Złożenie z wartością początkową; działa także dla pustego pakietu. \\
-\code{(f(args), ...)} & Wywołuje \code{f} dla każdego argumentu od lewej do prawej dzięki operatorowi przecinka. \\
-\texttt{(args \&\& ...)} & Łączy warunki z krótkim spięciem; dla pustego pakietu daje \code{true}. \\
-\bottomrule
-\end{tabularx}
-\end{center}
 \label{sec:variadic-fold}
 
 \emph{Fold expression} redukuje pakiet wyrażeń z użyciem jednego
 operatora binarnego, np. \texttt{+}, \texttt{\&\&}, \texttt{||}
 lub operatora przecinka. Nie wymaga jawnego przypadku
-rekurencyjnego.
+rekurencyjnego. Dla argumentów \texttt{2, 3, 4} zapis
+\texttt{(0 + ... + xs)} oznacza \texttt{((0 + 2) + 3) + 4},
+czyli daje \texttt{9}. To jedna operacja zapisana dla całego pakietu.
 
 \subsection{Cztery postacie składni}
 
@@ -258,14 +256,14 @@ W tabeli \texttt{op} jest jedynie oznaczeniem miejsca na rzeczywisty
 operator, np. \texttt{+}; nie jest słowem kluczowym języka.
 \emph{Nawiasy całego fold expression są obowiązkowe}.
 Dwa operatory występujące w fold z inicjalizatorem muszą być takie same.
+Operator przecinka w \texttt{(f(xs), ...)} wykonuje wywołania po kolei
+od lewej do prawej; \texttt{(pred(xs) \&\& ...)} kończy sprawdzanie,
+gdy wynik jest już fałszywy.
 
 \subsection{Suma, iloczyn i warunki logiczne}
 
 \begin{lstlisting}
-#include <concepts>
-
 template<class... Ts>
-    requires (std::integral<Ts> && ...)
 constexpr auto sum(Ts... xs) {
     return (0 + ... + xs);       // left fold with identity 0
 }
@@ -287,6 +285,9 @@ static_assert(!any_true());
 static_assert(all_true(1, 2, 3));
 \end{lstlisting}
 
+Wywołanie \texttt{sum} ma sens dla argumentów, które można dodawać
+z początkowym \texttt{0}. Warunek typów da się zapisać jawnie za
+pomocą koncepcji; zrobimy to w dalszej części rozdziału.
 Wyrażenie \texttt{(0 + ... + xs)} może być używane także dla
 pustego pakietu. Początkowe \texttt{0} wpływa jednak na typ wyniku
 i ewentualne promocje arytmetyczne; nie jest to uniwersalna
@@ -314,7 +315,9 @@ static_assert(right_sub(10, 3) == 107); // 10 - (3 - 100)
 Fold określa \emph{strukturę nawiasów}, ale nie należy mylić tej
 własności z ogólną gwarancją kolejności wykonywania wszystkich
 podwyrażeń dla dowolnego operatora. Reguły ewaluacji wynikają
-również z semantyki danego operatora.
+również z semantyki danego operatora. Przykładowo zapis z
+\texttt{+} nie jest obietnicą kolejności efektów ubocznych
+w argumentach; wbudowany operator przecinka taką kolejność daje.
 
 \subsection{Pusty pakiet i element neutralny}
 
@@ -433,6 +436,7 @@ i pozostałe. Dla pustej listy \texttt{type\_list<>} nazwa
 \subsection{Czy wszystkie typy spełniają własność?}
 
 \begin{lstlisting}
+#include <cstddef>
 #include <type_traits>
 
 template<class... Ts>
@@ -645,13 +649,11 @@ jednak wzorzec używany w fabrykach oraz funkcjach
 \subsection{Tworzenie kontenera bez wymogu kopiowalności}
 
 \begin{lstlisting}
-#include <concepts>
 #include <string>
 #include <utility>
 #include <vector>
 
 template<class T, class... Args>
-    requires (std::constructible_from<T, Args&&> && ...)
 std::vector<T> make_vector(Args&&... args) {
     std::vector<T> result;
     result.reserve(sizeof...(Args));
@@ -704,12 +706,16 @@ argumenty:
 #include <tuple>
 
 void apply_example() {
+    auto t = std::tuple{1, 2.5, "x"};
     std::apply([](const auto&... xs) {
         ((std::cout << xs << ' '), ...);
         std::cout << '\n';
     }, t);
 }
 \end{lstlisting}
+
+Wywołanie wypisze \texttt{1 2.5 x}: trzy elementy krotki stają się
+trzema argumentami lambdy.
 
 \texttt{std::apply} oszczędza ręcznego konstruowania
 sekwencji indeksów, ale warto wiedzieć, jak taki mechanizm
@@ -821,6 +827,10 @@ niewielkim nagłówku narzędziowym.
 
 \section{Ograniczanie pakietów za pomocą \texttt{concepts} (C++20)}
 \label{sec:variadic-concepts}
+
+To zapowiedź koncepcji omówionych szerzej w rozdziale~13.
+Przy pierwszej lekturze wystarczy zapamiętać, że warunek może
+dotyczyć każdego typu w pakiecie osobno.
 
 Nie każda operacja ma sens dla każdej możliwej kombinacji
 typów. W C++20 można czytelnie określać wymagania dla
@@ -1103,7 +1113,8 @@ Zmienna długość listy jednolitych danych w czasie wykonania & \texttt{std::ve
 
 \paragraph{Pytania kontrolne.}
 Spróbuj przewidzieć wyniki poniższych wyrażeń bez uruchamiania
-programu. Następnie zweryfikuj je za pomocą \texttt{static\_assert}:
+programu. Pierwsza, zakomentowana linia pokazuje celowy błąd;
+pozostałe można zweryfikować za pomocą \texttt{static\_assert}:
 
 \begin{lstlisting}
 // static_assert(sizeof...(int) == 1); // ERROR: int is not a pack
