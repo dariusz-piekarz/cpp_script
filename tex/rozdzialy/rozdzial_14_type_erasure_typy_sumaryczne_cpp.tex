@@ -11,7 +11,13 @@
 
 W programowaniu generycznym często chcemy posługiwać się różnymi typami
 przez wspólny interfejs. C++ oferuje kilka mechanizmów realizacji tego celu,
-ale mechanizmy te nie są zamienne. Istotne są co najmniej cztery pytania:
+ale mechanizmy te nie są zamienne.
+Wyobraźmy sobie aplikację z trzema poleceniami: zapisaniem pliku,
+dodaniem dwóch liczb i zakończeniem pracy. Gdy znamy wszystkie trzy
+rodzaje poleceń, możemy je wymienić w \texttt{std::variant}. Jeśli
+zewnętrzne moduły mają dodawać nowe polecenia bez zmiany tej listy,
+potrzebujemy otwartego interfejsu, np. klasy bazowej z funkcją wirtualną.
+Wybór mechanizmu zaczynamy więc od pytań:
 \begin{enumerate}
 \item Czy zestaw dozwolonych typów jest \emph{zamknięty} (ustalony z góry),
       czy \emph{otwarty} (może zostać rozszerzony o nowy typ)?
@@ -47,13 +53,13 @@ Szablon/\texttt{concept} & Typ znany przy instancjowaniu & Polimorfizm statyczny
 \end{tabularx}
 \end{center}
 
-\paragraph{Przykład motywujący.}
-Niech polecenie aplikacji będzie albo prośbą o zapisanie pliku, albo
-prośbą o dodanie dwóch liczb, albo poleceniem zakończenia programu.
-Jeśli znamy te trzy możliwości, użycie \texttt{variant} dobrze wyraża
-model danych. Gdy tworzymy system rozszerzeń umożliwiający niezależnym
-modułom dodawanie nowych rodzajów poleceń, lepszy bywa interfejs
-polimorficzny lub ręcznie zbudowany mechanizm type erasure.
+Najprostsza ściąga to: \texttt{optional<int>} oznacza liczbę albo jej
+brak, \texttt{variant<int, std::string>} jedną z dwóch znanych
+postaci wartości, a \texttt{any} wartość o typie, którego autor
+pojemnika nie musi znać. \texttt{function<void()>} przechowuje
+różne działania, które można wywołać w taki sam sposób. W kolejnych
+sekcjach zobaczymy, co z tych wyborów wynika dla sprawdzania typów,
+własności danych i kosztu wykonania.
 
 \section{\texttt{std::optional<T>}: wartość, której może nie być}
 
@@ -246,6 +252,7 @@ kompilator instancjuje jej operator wywołania dla różnych alternatyw.
 
 \begin{lstlisting}[caption={Jeden odwiedzający generyczny; kompletny program.}]
 #include <cassert>
+#include <cstddef>
 #include <string>
 #include <type_traits>
 #include <variant>
@@ -272,6 +279,7 @@ ujawnienie wszystkich operatorów wywołania za pomocą \texttt{using}.
 
 \begin{lstlisting}[caption={overloaded oraz std::visit (C++17); kompletny program.}]
 #include <cassert>
+#include <cstddef>
 #include <string>
 #include <variant>
 
@@ -623,6 +631,11 @@ int main() {
 \section{Własny mechanizm type erasure: \texttt{Printable}}
 \label{sec:cpp14-custom-erasure}
 
+To rozszerzenie pokazuje, co może znajdować się pod gotowym
+opakowaniem wymazującym typ. Przy pierwszej lekturze wystarczy
+rozumieć, kiedy użyć \texttt{variant}, \texttt{any} lub
+\texttt{function}; własną implementację można przeczytać później.
+
 Pokażemy teraz, jak samodzielnie zbudować typ o stałym interfejsie,
 który może przechowywać różne wartości drukowalne do strumienia. Celowo
 nie wykorzystamy dziedziczenia typów użytkownika po wspólnej klasie
@@ -860,7 +873,7 @@ we wszystkich zastosowaniach.
 \section{Granice bezpieczeństwa: wyjątki, czas życia i współbieżność}
 
 \paragraph{Wyjątki.}
-\texttt{optional::value()}, \texttt{variant::get}, \texttt{any\_cast}
+\texttt{optional::value()}, \texttt{std::get} dla wariantu, \texttt{any\_cast}
 i wywołanie pustego \texttt{std::function} mogą zgłaszać odpowiednie
 wyjątki. Konstrukcja zawartości i przypisanie także mogą rzucać,
 ponieważ wykonują operacje typu przechowywanego. Należy rozróżniać
@@ -934,7 +947,7 @@ opublikowania standardu.
 \end{enumerate}
 
 \section*{Podsumowanie rozdziału}
-\addcontentsline{toc}{section}{Podsumowanie rozdziału 14}
+\addcontentsline{toc}{section}{Podsumowanie rozdziału 10}
 
 \texttt{optional} modeluje brak lub obecność wartości, a
 \texttt{variant} modeluje zamkniętą sumę przypadków. \texttt{any}
@@ -948,7 +961,7 @@ przypadki istnieją, kto posiada obiekty, jakie operacje udostępniamy
 oraz czy zbiór typów ma pozostać otwarty}.
 
 \section*{Dokumentacja i literatura}
-\addcontentsline{toc}{section}{Dokumentacja i literatura rozdziału 14}
+\addcontentsline{toc}{section}{Dokumentacja i literatura rozdziału 10}
 \begin{itemize}
 \item \url{https://en.cppreference.com/w/cpp/utility/optional} --- \texttt{std::optional}.
 \item \url{https://en.cppreference.com/w/cpp/utility/variant} --- \texttt{std::variant}.
