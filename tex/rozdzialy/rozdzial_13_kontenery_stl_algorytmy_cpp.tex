@@ -9,6 +9,13 @@
 
 \section{Cel i zakres rozdziału}
 
+Kontener przechowuje grupę elementów i pozwala je odnajdywać lub
+zmieniać. Najprostsza mapa wyboru wygląda tak: \texttt{vector} jest
+listą z dostępem przez indeks, \texttt{map} słownikiem klucz--wartość,
+a \texttt{set} zbiorem wartości bez powtórzeń. Jeśli kolejność kluczy
+nie ma znaczenia, istnieją także haszujące warianty
+\texttt{unordered\_map} i \texttt{unordered\_set}.
+
 Biblioteka standardowa C++ udostępnia gotowe struktury danych, których wybór ma
 istotne konsekwencje dla złożoności operacji, lokalności pamięci, bezpieczeństwa
 wyjątkowego i poprawności iteratorów. Samo rozróżnienie między
@@ -216,7 +223,7 @@ osobnej dynamicznej alokacji dla swojej zawartości; pamięć elementów
 stanowi część samego obiektu \texttt{array}. Można używać iteratorów,
 \texttt{size()}, \texttt{data()} i algorytmów, analogicznie do wektora.
 
-\begin{lstlisting}[caption={std::array i algorytmy standardowe (C++11); kompletny program.}]
+\begin{lstlisting}[caption={std::array i algorytmy standardowe (C++17); kompletny program.}]
 #include <algorithm>
 #include <array>
 #include <cassert>
@@ -383,6 +390,9 @@ $ a,b $ nie spełniają ani \texttt{comp(a,b)}, ani \texttt{comp(b,a)},
 kontener uznaje je za równoważne jako klucze --- nawet gdy
 \texttt{operator==} zwraca \texttt{false}. Wymagania tego porządku
 są istotne również dla \texttt{sort} i \texttt{lower\_bound}.
+Na przykład komparator ignorujący wielkość liter uzna \texttt{"ABC"}
+i \texttt{"abc"} za ten sam klucz: druga próba wstawienia do
+\texttt{map} nie utworzy nowego elementu.
 
 \begin{lstlisting}[caption={Mapowanie bez rozrozniania wielkosci liter: prosty komparator; kompletny program.}]
 #include <cassert>
@@ -454,6 +464,7 @@ wyjąć węzeł, zmienić jego klucz i wstawić z powrotem. Trzeba pamiętać,
 #include <cassert>
 #include <map>
 #include <string>
+#include <utility>
 
 int main() {
     std::map<std::string, int> m{{"old", 7}};
@@ -480,6 +491,10 @@ Warunek odwrotny nie zachodzi: kolizje haszy są dozwolone i
 rozstrzygane przez porównanie kluczy. Iteracja po kontenerze
 nie ma stabilnego porządku i nie należy z niego korzystać jako z
 interfejsu logicznego programu.
+Można wyobrazić sobie hasz jako wskazówkę, w którym kubełku szukać.
+Jeśli dwa różne klucze trafią do tego samego kubełka, \texttt{Eq}
+sprawdza, czy są naprawdę równe. Stała w poniższym \texttt{PointHash}
+służy jedynie do wymieszania haszy obu współrzędnych.
 
 \begin{lstlisting}[caption={Wlasny hash i porownanie kluczy (C++20); kompletny program.}]
 #include <cassert>
@@ -521,7 +536,7 @@ współczynnik. \texttt{reserve(n)} żąda przygotowania na $n$ elementów,
 a \texttt{rehash(k)} na przynajmniej $k$ kubełków, z uwzględnieniem
 limitów wynikających z współczynnika wypełnienia.
 
-\begin{lstlisting}[caption={Rezerwowanie kubelek przed licznymi wstawkami (C++11); kompletny program.}]
+\begin{lstlisting}[caption={Rezerwowanie kubelek przed licznymi wstawkami (C++20); kompletny program.}]
 #include <cassert>
 #include <unordered_set>
 
@@ -609,7 +624,7 @@ przez metodę (np. \texttt{erase}, \texttt{insert}).
 
 \subsection{Bezpieczne usuwanie podczas iteracji}
 
-\begin{lstlisting}[caption={Usuwanie elementow map podczas iteracji (C++11); kompletny program.}]
+\begin{lstlisting}[caption={Usuwanie elementow map podczas iteracji (C++20); kompletny program.}]
 #include <cassert>
 #include <map>
 
@@ -652,7 +667,7 @@ Algorytm & Działanie i warunki \\
 Algorytmy oddzielają \emph{operację} od \emph{reprezentacji danych}.
 Wersje klasyczne przyjmują iteratory, a w C++20 wiele algorytmów
 w \texttt{std::ranges} można wywołać bezpośrednio na zakresie. Szczegóły
-kategorii iteratorów i widoków omówiliśmy w rozdziale 8; tutaj skupiamy
+kategorii iteratorów i widoków omawiamy w rozdziale~\ref{chap:ranges-views-cpp}; tutaj skupiamy
 się na doborze algorytmu i jego kontrakcie.
 
 \subsection{Wyszukiwanie, transformacje i agregacje}
@@ -810,7 +825,9 @@ Przechowywanie obiektów klas pochodnych przez wartość w
 \texttt{vector<Base>} może powodować \emph{object slicing}. Jeśli
 potrzebujemy polimorfizmu dynamicznego, naturalne jest np.
 \texttt{vector<unique\_ptr<Base>>}; gdy rodzina typów jest zamknięta,
-można rozważyć \texttt{vector<variant<...>>} (zob. rozdział 12).
+można rozważyć \texttt{vector<variant<...>>} (zob. rozdział~\ref{chap:cpp14-type-erasure}).
+Różnicę między polimorfizmem a obcięciem obiektu omawia
+rozdział~\ref{chap:cpp-object-model}.
 
 \begin{lstlisting}[caption={Kontener wlasciwych obiektow polimorficznych (C++14); kompletny program.}]
 #include <cassert>
@@ -845,7 +862,7 @@ wątek ich nie modyfikuje, a czas życia kontenera jest zachowany.
 Dla wielu kontenerów można także modyfikować \emph{różne istniejące}
 elementy równolegle, jeśli nie dochodzi do konfliktu pamięci; wyjątek
 stanowi m.in. specjalizacja \texttt{vector<bool>}. Zmiany strukturalne
-wymagają osobnej analizy i synchronizacji (zob. rozdział 1).
+wymagają osobnej analizy i synchronizacji (zob. rozdział~\ref{chap:concurrency}).
 
 \section{Złożoność, lokalność pamięci i pomiar wydajności}
 \label{sec:cpp13-performance}
@@ -866,6 +883,7 @@ są częścią kosztu rzeczywistego programu.
 #include <iostream>
 #include <list>
 #include <numeric>
+#include <utility>
 #include <vector>
 
 int main() {
@@ -972,7 +990,7 @@ bezpieczeństwo czasu życia i świadome wykorzystywanie algorytmów
 standardowych zamiast ręcznie pisanych pętli.
 
 \section*{Literatura i dokumentacja}
-\addcontentsline{toc}{section}{Literatura do rozdziału 13}
+\addcontentsline{toc}{section}{Literatura i dokumentacja}
 \begin{itemize}
 \item \url{https://en.cppreference.com/w/cpp/container} --- kontenery i
   zestawienie reguł unieważniania iteratorów.
