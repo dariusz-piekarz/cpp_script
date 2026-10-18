@@ -35,8 +35,9 @@ jest \emph{lambdą}: tworzy obiekt unikatowego typu domknięcia
 Przyjmujemy \textbf{C++20}. Lambdy wprowadzono w C++11, przechwytywanie
 inicjalizujące i generyczne lambdy w C++14, przechwytywanie kopii
 \texttt{*this} w C++17, a jawne listy parametrów szablonu lambdy
-w C++20. Wykorzystamy semantykę przenoszenia z rozdziału~6, szablony
-wariadyczne z rozdziału~4 i koncepcje z rozdziału~5.
+w C++20. Wykorzystamy semantykę przenoszenia z rozdziału~\ref{chap:move-semantics-cpp},
+szablony wariadyczne z rozdziału~\ref{chap:variadic-templates-cpp}
+i koncepcje z rozdziału~\ref{chap:concepts-cpp}.
 
 \section{Trzy podstawowe postacie kodu wywoływalnego}
 \label{sec:callables-forms}
@@ -161,9 +162,13 @@ int threshold = 10;
 auto above = [threshold](int x) {
     return x > threshold;
 };
+auto above_current = [&threshold](int x) {
+    return x > threshold;
+};
 threshold = 100;
 
-bool first = above(20);  // true: saved value is 10
+bool first = above(20);         // true: zapamietane 10
+bool second = above_current(20); // false: aktualne 100
 \end{lstlisting}
 
 \texttt{[threshold]} inicjalizuje składową obiektu domknięcia wartością
@@ -363,6 +368,7 @@ auto with_state = [offset](int x) { return x + offset; };
 \subsection{Parametry \texttt{auto} (C++14)}
 
 \begin{lstlisting}
+#include <string>
 auto print_twice = [](const auto& value) {
     return value + value;
 };
@@ -394,7 +400,8 @@ int total = sum_integrals(1, 2, 3, 4); // 10
 
 W przypadku \texttt{equal\_types} oba argumenty muszą dać ten sam
 dedukowany typ \texttt{T}. W drugim przykładzie łączymy \emph{concepts}
-z pakietem parametrów i wyrażeniem fold znanym z rozdziałów~4--5.
+z pakietem parametrów i wyrażeniem fold znanym z
+rozdziałów~\ref{chap:variadic-templates-cpp} i~\ref{chap:concepts-cpp}.
 
 \subsection{Uniwersalny wrapper z perfect forwarding}
 
@@ -422,8 +429,8 @@ funkcji i lambd, lecz także dla wskaźników do składowych.
 #include <concepts>
 #include <utility>
 
-auto absolute = [](int x) noexcept {
-    return x < 0 ? -x : x;
+auto positive = [](int x) noexcept {
+    return x > 0;
 };
 
 auto increment = []<std::integral T>(T x) -> T {
@@ -489,10 +496,10 @@ które pozwalają sprawdzić w czasie kompilacji poprawność wywołania.
 \begin{lstlisting}
 #include <type_traits>
 
-static_assert(std::is_invocable_v<decltype(absolute), int>);
-static_assert(!std::is_invocable_v<decltype(absolute),
+static_assert(std::is_invocable_v<decltype(positive), int>);
+static_assert(!std::is_invocable_v<decltype(positive),
                                    std::string>);
-static_assert(std::is_nothrow_invocable_v<decltype(absolute),
+static_assert(std::is_nothrow_invocable_v<decltype(positive),
                                           int>);
 \end{lstlisting}
 
@@ -578,7 +585,7 @@ lub przekazać go do szablonu, który nie wymaga kopiowania.
 \hline
 \textbf{Forma} & \textbf{Zalety} & \textbf{Ograniczenia} \\
 \hline
-\texttt{auto f = lambda} & Konkretny typ, bez koniecznej wymazywania typu, naturalna obsługa stanu & Zmienna ma ustalony typ domknięcia \\
+\texttt{auto f = lambda} & Konkretny typ, bez konieczności wymazywania typu, naturalna obsługa stanu & Zmienna ma ustalony typ domknięcia \\
 \hline
 \texttt{template<class F>} & Działa z wieloma typami, umożliwia inline i forwarding & Definicja szablonu zwykle dostępna w nagłówku; możliwe powiększanie kodu \\
 \hline
@@ -622,8 +629,9 @@ std::transform(xs.begin(), xs.end(), squares.begin(),
 
 Dla \texttt{std::find\_if} trzeba przed dereferencją sprawdzić, czy
 wynik jest różny od \texttt{xs.end()}. Dla \texttt{std::transform} zbiór
-docelowy musi mieć wystarczającą pojemność na zapisywane elementy
-(alternatywą jest iterator \texttt{std::back\_inserter}).
+docelowy musi już zawierać wystarczającą liczbę elementów: samo
+\texttt{reserve()} zwiększa \texttt{capacity()}, lecz nie \texttt{size()}.
+Alternatywą jest pusty wektor i iterator \texttt{std::back\_inserter}.
 
 \subsection{\texttt{std::ranges} i projekcje (C++20)}
 
@@ -743,6 +751,11 @@ automatycznie ochrony wewnętrznego stanu przed wyścigami danych.
 
 \subsection{Callback a czas życia właściciela}
 
+Typowy przebieg to: rejestrujemy callback, właściciel danych zostaje
+zniszczony, a ktoś później wywołuje callback. Jeśli lambda zachowała
+samą referencję lub surowy wskaźnik, dostęp byłby wtedy błędny.
+Słaby wskaźnik w poniższym przykładzie pozwala sprawdzić czas życia.
+
 \begin{lstlisting}
 #include <memory>
 
@@ -789,7 +802,8 @@ rekurencja oparta na \texttt{std::function}.
 \section{Lambdy w metaprogramowaniu: \texttt{std::visit} i \texttt{std::apply}}
 \label{sec:lambda-visit-apply}
 
-Dwa przydatne zastosowania łączą lambdy z mechanizmami z rozdziału~4.
+Dwa przydatne zastosowania łączą lambdy z mechanizmami z
+rozdziałów~\ref{chap:cpp14-type-erasure} i~\ref{chap:variadic-templates-cpp}.
 \texttt{std::visit} wybiera wywołanie na podstawie aktywnego typu
 \texttt{std::variant}, natomiast \texttt{std::apply} rozwija argumenty
 z krotki lub podobnej struktury.
