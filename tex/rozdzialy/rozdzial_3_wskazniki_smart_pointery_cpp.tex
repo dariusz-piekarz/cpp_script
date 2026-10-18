@@ -218,6 +218,9 @@ Wskaźnik może przechowywać adres miejsca, w którym obiekt już
 nie istnieje. Jest wtedy wskaźnikiem \emph{wiszącym}
 (ang. \emph{dangling pointer}). Dereferencja takiego wskaźnika
 prowadzi do niezdefiniowanego zachowania (\emph{undefined behavior}, UB).
+Przebieg jest prosty: powstaje \texttt{local}, wskaźnik zapamiętuje
+jego adres, funkcja się kończy i niszczy \texttt{local}, ale stary adres
+pozostaje w wartości wskaźnika. Sam adres nie przedłuża życia obiektu.
 
 \begin{lstlisting}
 int* bad() {
@@ -562,6 +565,9 @@ auto second = std::move(first);      // transfers ownership
 wskazywanego obiektu. Zwraca wyrażenie pozwalające wywołać konstruktor
 lub przypisanie przenoszące. W tym przypadku przenoszona jest
 \emph{własność wskaźnika}, a obiekt typu \texttt{int} nie zmienia adresu.
+Przed operacją \texttt{first} posiada obiekt, a \texttt{second} jeszcze
+nie istnieje. Po operacji \texttt{second} posiada ten sam obiekt,
+a \texttt{first == nullptr}. Nie utworzono drugiego \texttt{int}.
 
 \subsection{Przekazywanie do funkcji: kto jest właścicielem?}
 
@@ -719,6 +725,9 @@ obiekt zostaje zniszczony. Implementacja utrzymuje tzw.
 \emph{blok kontrolny} (\emph{control block}) zawierający między
 innymi liczniki właścicieli, informacje potrzebne do zniszczenia
 zasobu i ewentualny deleter.
+W przykładzie po \texttt{auto b = a} są dwaj właściciele. Po
+\texttt{b.reset()} zostaje jeden, więc obiekt nadal żyje. Dopiero
+zwolnienie ostatniego właściciela kończy jego życie.
 
 \paragraph{Schemat ideowy.}
 \begin{lstlisting}
@@ -883,6 +892,9 @@ Metoda \texttt{lock()} atomowo próbuje uzyskać
 \texttt{shared\_ptr<T>}. Jeżeli obiekt jeszcze istnieje,
 zwraca właściciela utrzymującego go przy życiu przez czas
 używania. W przeciwnym razie zwraca pusty \texttt{shared\_ptr}.
+Słaby wskaźnik nie dodaje właściciela: gdy zniknie ostatni
+\texttt{shared\_ptr}, obiekt jest niszczony, choć \texttt{weak\_ptr}
+może nadal istnieć. Wtedy \texttt{lock()} zwróci pusty wynik.
 
 \begin{lstlisting}
 std::weak_ptr<int> observer;
@@ -905,6 +917,10 @@ Preferuj jedną operację \texttt{lock()} i posługuj się
 otrzymanym \texttt{shared\_ptr}.
 
 \section{\texttt{enable\_shared\_from\_this} i wskaźnik \texttt{this}}
+
+Ta sekcja, wskaźnik aliasujący i PImpl są tematami dodatkowymi.
+Przy pierwszej lekturze można przejść do części o wyborze typu
+wskaźnika i wrócić do nich przy projektowaniu większego API.
 
 Gdy metoda obiektu zarządzanego przez \texttt{shared\_ptr}
 chce przekazać dalej \emph{współdzieloną własność do siebie},
