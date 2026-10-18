@@ -1,5 +1,5 @@
 % ROZDZIAL 10 — Organizacja pamieci i wydajnosc w C++20
-% Fragment do wlaczenia po rozdziale 9.
+% Kolejnosc rozdzialow okresla cpp.tex.
 % Wymagane pakiety: listings, array, amsmath, hyperref.
 % Uzycie: \input{rozdzial_10_pamiec_wydajnosc_cpp.tex}
 
@@ -8,9 +8,11 @@
 
 \section{Po co analizować organizację pamięci?}
 
-W rozdziałach o wskaźnikach (rozdział~3), semantyce przenoszenia
-(rozdział~6) i iteratorach (rozdział~8) interesowało nas głównie
-\emph{poprawne zarządzanie obiektami}. Teraz przyjrzymy się temu, jak
+W rozdziałach o wskaźnikach (rozdział~\ref{chap:wskazniki-cpp})
+i semantyce przenoszenia (rozdział~\ref{chap:move-semantics-cpp})
+interesowało nas głównie \emph{poprawne zarządzanie obiektami}.
+Iteratory omówimy później w rozdziale~\ref{chap:ranges-views-cpp}.
+Teraz przyjrzymy się temu, jak
 obiekty są reprezentowane w pamięci oraz w jaki sposób wybory
 programisty wpływają na liczbę alokacji i lokalność dostępu do danych.
 
@@ -38,6 +40,10 @@ W modelu C++ \emph{obszar pamięci} może istnieć bez żywego obiektu typu
 i, dla pewnych klas, odpowiednio wywołane konstruktory i destruktory.
 Samo uzyskanie adresu wystarczająco dużego bloku nie oznacza, że
 wolno traktować ten blok jak dowolny obiekt C++.
+Najprostsza kolejność to: przydzielić pamięć, skonstruować w niej
+obiekt, zakończyć jego życie przez destruktor i dopiero potem zwolnić
+pamięć. Zwykłe \texttt{new T} oraz \texttt{delete} łączą odpowiednie
+pary tych kroków; kontenery i inteligentne wskaźniki wykonują je za nas.
 
 \begin{lstlisting}
 #include <cstddef>
@@ -122,16 +128,13 @@ są trywialnie kopiowalne i mają równy rozmiar. Dodatkowo reprezentacja
 musi oznaczać poprawną wartość docelowego typu.
 
 \begin{lstlisting}
+#include <array>
 #include <bit>
-#include <cstdint>
+#include <cstddef>
 
 float f = 1.0f;
-// Przyklad zaklada sizeof(float) == sizeof(uint32_t).
-// Na typowej platformie wynik to kod bitowy IEEE 754.
-if constexpr (sizeof(float) == sizeof(std::uint32_t)) {
-    auto bits = std::bit_cast<std::uint32_t>(f);
-    (void)bits;
-}
+auto bits = std::bit_cast<std::array<std::byte, sizeof(float)>>(f);
+// Kolejnosc bajtow zalezy od platformy.
 \end{lstlisting}
 
 Nie mylmy \texttt{bit\_cast} z \texttt{reinterpret\_cast}:
@@ -190,6 +193,9 @@ pierwszy typ zajmuje zwykle 24 bajty, a drugi 16. \textbf{Nie są to
 wartości wymagane przez standard}. Samo przestawienie pól może
 zmniejszyć zapotrzebowanie na pamięć milionów rekordów, ale może też
 pogorszyć czytelność, stabilność ABI lub lokalność dostępu.
+Przy wyrównaniu \texttt{double} do 8 bajtów pole \texttt{value} musi
+zaczynać się pod adresem podzielnym przez 8. Dlatego po jednobajtowym
+\texttt{flag} kompilator wstawia w tym przykładzie siedem bajtów przerwy.
 
 \begin{center}
 \small
@@ -270,6 +276,10 @@ pola jawnie z bufora bajtów i nie wiązać formatu z layoutem klasy.
 
 \section{Wyrównane alokacje i czas życia obiektów}
 \label{sec:cpp10-lifetime}
+
+Następne przykłady z ręczną alokacją, \texttt{std::launder} i własnymi
+alokatorami są materiałem dodatkowym. W codziennym kodzie najpierw
+korzystaj z kontenerów, RAII, \texttt{sizeof}, \texttt{alignof} i pomiarów.
 
 \subsection{Różnica między alokacją a konstruowaniem}
 
@@ -767,7 +777,7 @@ niezależnych liczników, gdy zależy nam wyłącznie na atomowym
 zliczaniu; nie gwarantuje jednak synchronizacji innych danych.
 Usunięcie false sharing nie zastępuje poprawnego modelu pamięci
 współbieżnej. Szczegółowe zasady operacji atomowych były omawiane
-w rozdziale~1 o współbieżności.
+w rozdziale~\ref{chap:concurrency} o współbieżności.
 
 \section{Jak rzetelnie mierzyć wydajność?}
 \label{sec:cpp10-benchmark}
@@ -839,6 +849,9 @@ możemy sprawdzić arenę monotoniczną. Trzeba jednak rozróżnić
 \emph{koszt wypełnienia struktur} od \emph{kosztu przetwarzania}: arena
 zmienia zachowanie alokacji, nie gwarantuje poprawy pracy procesora
 nad danymi.
+Porównując oba układy, mierz osobno czas wczytania punktów oraz czas
+wykonania tego samego filtru na już przygotowanych danych. Dzięki temu
+koszt budowania SoA nie ukryje ewentualnej korzyści podczas filtrowania.
 
 Dla kodu numerycznego duży wpływ może mieć też wybór kolejności
 wymiarów macierzy, reprezentacji sąsiedztwa w siatce czy sposobu
