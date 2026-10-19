@@ -1,5 +1,5 @@
-% ROZDZIAL 9 — Zaawansowane metaprogramowanie w C++20
-% Fragment do wlaczenia po rozdziale 8.
+% Rozdzial 12 w kolejnosci cpp.tex — metaprogramowanie w C++20.
+% Fragment do wlaczenia po rozdziale 11.
 % Wymagane pakiety: listings, array, amsmath, hyperref.
 % Uzycie: \input{rozdzial_9_metaprogramowanie_cpp.tex}
 
@@ -11,9 +11,12 @@
 \emph{Metaprogramowanie} oznacza pisanie kodu, który na etapie kompilacji
 wyznacza typy, własności typów, wartości lub strukturę później
 kompilowanego programu. Szablon nie jest gotową funkcją czy klasą:
-stanowi przepis, z którego kompilator tworzy odpowiednie \emph{specjalizacje}
-(\textit{instantiations}). W C++20 do dyspozycji mamy kilka komplementarnych
-narzędzi:
+stanowi przepis, z którego kompilator tworzy konkretne wersje
+dla podanych typów. Nazywamy to \emph{instancjowaniem szablonu}.
+Na przykład wywołanie
+\texttt{twice(21)} w programie poniżej każe kompilatorowi przygotować
+wersję funkcji dla \texttt{int}; program podczas działania wywołuje
+już tę wersję. W C++20 do dyspozycji mamy kilka narzędzi:
 \begin{itemize}
 \item \textbf{szablony klas i funkcji} — generowanie kodu dla różnych typów;
 \item \textbf{\texttt{type\_traits}} — obliczanie własności i przekształcanie typów;
@@ -43,9 +46,11 @@ int a = twice(21);       // T = int
 // twice("text");       // static_assert fails
 \end{lstlisting}
 
-\paragraph{Związki z wcześniejszym materiałem.}
-Wykorzystamy szablony wariadyczne (rozdział~4), koncepcje (rozdział~5),
-przenoszenie i referencje (rozdział~6) oraz lambdy (rozdział~7).
+\paragraph{Związki z innymi rozdziałami.}
+Wykorzystamy szablony wariadyczne (rozdział~11),
+przenoszenie i referencje (rozdział~6) oraz lambdy (rozdział~9).
+Koncepcje szerzej poznamy w rozdziale~13; tutaj pokazujemy
+przede wszystkim mechanizmy, na których się opierają.
 Wszystkie oznaczone jako poprawne przykłady odnoszą się do \textbf{C++20}.
 
 \section{Instancjowanie szablonów, parametry i zależne nazwy}
@@ -140,6 +145,12 @@ mechanicznie wszędzie.
 
 \section{Metafunkcje i \texttt{std::integral\_constant}}
 \label{sec:cpp9-integral-constant}
+
+Poniższa silnia obliczana przez szablon pokazuje starszy styl
+metaprogramowania. Gdy wynikiem ma być zwykła liczba, funkcja
+\texttt{constexpr} jest dziś zazwyczaj prostsza. Szablony klas
+pozostają potrzebne zwłaszcza wtedy, gdy wynikiem obliczenia ma być
+\emph{typ}.
 
 Klasyczne metaprogramowanie szablonowe opierało się na klasach, które
 \emph{przenosiły wyniki obliczenia w swoich składowych statycznych}.
@@ -257,20 +268,6 @@ Pełna specjalizacja funkcji istnieje, ale jej interakcja z przeciążeniami
 bywa zaskakująca; w nowym kodzie zwykle preferujemy przeciążenia.
 
 \section{\texttt{type\_traits}: pytania o typy}
-
-\begin{center}\small
-\begin{tabularx}{\textwidth}{@{}p{0.38\textwidth}X@{}}
-\toprule
-Cecha typu & Co ustala podczas kompilacji \\
-\midrule
-\code{std::is_integral_v<T>} & Czy \code{T} jest typem całkowitym, w tym \code{bool} i typami znakowymi. \\
-\code{std::is_same_v<T, U>} & Czy oba zapisy oznaczają dokładnie ten sam typ. \\
-\code{std::is_base_of_v<B, D>} & Czy \code{B} jest klasą bazową \code{D} lub jest tym samym typem klasy. \\
-\texttt{std::is\_nothrow\_move\_}\newline\texttt{constructible\_v<T>} & Czy skonstruowanie \code{T} z rvalue \code{T} jest dostępne i nie zgłasza wyjątków. \\
-\code{std::remove_cvref_t<T>} & Usuwa z typu referencję oraz kwalifikatory \code{const}/\code{volatile} z poziomu głównego. \\
-\bottomrule
-\end{tabularx}
-\end{center}
 \label{sec:cpp9-traits}
 
 Biblioteka \texttt{<type\_traits>} jest zbiorem standardowych metafunkcji.
@@ -500,6 +497,10 @@ Typ wyniku wywołania można również wyznaczyć za pomocą gotowej metafunkcji
 \section{SFINAE: błędne podstawienie to nie zawsze błąd kompilacji}
 \label{sec:cpp9-sfinae}
 
+Ta część pomaga czytać biblioteki napisane przed C++20.
+W nowym kodzie wymagania wobec typów zwykle prościej wyrazić
+przez \texttt{requires}, opisane w rozdziale~13.
+
 \textbf{SFINAE} (\textit{Substitution Failure Is Not An Error}) mówi,
 że niektóre błędy powstałe podczas podstawiania argumentów do szablonu
 \emph{nie kończą kompilacji}: dana specjalizacja zostaje wyłączona
@@ -556,6 +557,9 @@ nie ma sensu; specjalizacja częściowa nie jest więc wybierana.
 Analogicznie można badać poprawność wyrażenia z \texttt{decltype}:
 
 \begin{lstlisting}
+#include <type_traits>
+#include <utility>
+
 template<class, class = void>
 struct has_preincrement : std::false_type {};
 
@@ -570,7 +574,7 @@ static_assert(has_preincrement<int>::value);
 \subsection{SFINAE kontra \texttt{requires} (C++20)}
 
 Konstrukcję wykrywającą operację możemy wyrazić bezpośrednio za pomocą
-koncepcji z rozdziału~5:
+koncepcji z rozdziału~13:
 
 \begin{lstlisting}
 #include <concepts>
@@ -632,7 +636,7 @@ argumentów szablonu.
 \label{sec:cpp9-type-lists}
 
 Metaprogramowanie dobrze współpracuje z pakietami parametrów
-(rozdział~4). Zamiast tworzyć klasyczne rekurencyjne listy typów,
+(rozdział~11). Zamiast tworzyć klasyczne rekurencyjne listy typów,
 często możemy używać rozwinięcia pakietu i wyrażenia zwijającego.
 
 \begin{lstlisting}
@@ -814,9 +818,14 @@ algorytmu. Umożliwia to wybór zachowania bez wirtualnych wywołań,
 a kompilator może całkowicie usunąć niepotrzebne operacje:
 
 \begin{lstlisting}
+#include <limits>
+#include <stdexcept>
+
 struct Checked {
     static int divide(int a, int b) {
         if (b == 0) throw std::invalid_argument("zero");
+        if (a == std::numeric_limits<int>::min() && b == -1)
+            throw std::overflow_error("result outside int");
         return a / b;
     }
 };
@@ -832,14 +841,14 @@ struct Calculator {
     }
 };
 
-// Calculator<Checked> safe;
-// Calculator<Fast> fast; // caller must ensure b != 0
+// Calculator<Checked> checks both invalid integer cases;
+// Calculator<Fast> requires a nonzero divisor and no overflow.
 \end{lstlisting}
 
-Polityka \texttt{Fast} nie zabezpiecza dzielenia przez zero: wykonanie
-\texttt{a/b} dla \texttt{b==0} jest niezdefiniowanym zachowaniem dla
-liczb całkowitych. Dobór polityki jest częścią kontraktu API.
-W przykładzie wymagany jest nagłówek \texttt{<stdexcept>}.
+Polityka \texttt{Fast} nie zabezpiecza dzielenia przez zero ani
+przepełnienia \texttt{INT\_MIN / -1}; oba przypadki mają
+niezdefiniowane zachowanie dla \texttt{int}. \texttt{Checked}
+odrzuca je przed dzieleniem. Dobór polityki jest częścią kontraktu API.
 
 W realnym kodzie szablon polityki można ograniczyć koncepcją, a jeśli
 liczba wariantów jest niewielka, zwykłe \texttt{if constexpr} może być
@@ -919,7 +928,7 @@ template int triple<int>(int);
 Ten przykład przedstawia ideę rozdzielenia deklaracji i jawnego
 instancjowania; obie oznaczone części należy umieścić w odpowiednich
 plikach, a dla wywołań innych typów zapewnić dostęp do definicji.
-Warto pamiętać o regule ODR z rozdziału~2.
+Warto pamiętać o regule ODR z rozdziału~4.
 
 \section{Jaką technikę wybrać?}
 
