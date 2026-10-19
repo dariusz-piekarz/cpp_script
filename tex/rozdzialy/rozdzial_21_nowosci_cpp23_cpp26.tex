@@ -12,16 +12,19 @@ wszystkie kompilatory i biblioteki standardowe już ją dostarczają.
 W szczególności trzeba odróżniać: (1) zgodność kompilatora z regułami
 \emph{języka}, (2) implementację odpowiedniego nagłówka w \emph{bibliotece
 standardowej} oraz (3) gotowość systemu budowania i pakietowania.
-Opisy w tym rozdziale dotyczą C++23 i pakietu funkcji C++26
+Według raportu redakcyjnego WG21 N5051 dokument N5050 jest końcowym
+projektem C++26 i podstawą głosowania nad projektem normy (DIS).
+Opisy w tym rozdziale dotyczą funkcji przyjętych do tego projektu
 według stanu na październik 2026; dostępność należy sprawdzić dla
 konkretnego środowiska GCC/libstdc++, Clang/libc++ lub MSVC/STL.
+Samo wybranie trybu C++26 nie oznacza obsługi wszystkich przykładów.
 
 \begin{center}\small
 \begin{tabularx}{\textwidth}{@{}p{0.30\textwidth}X@{}}
 \toprule
 Warstwa & Praktyczna weryfikacja \\
 \midrule
-Standard języka & \code{-std=c++23}, \code{-std=c++2c} (lub wariant kompilatora), \code{__cplusplus} i makra \code{__cpp_*}. \\
+Standard języka & Tryb C++23/C++26 danego kompilatora, \code{__cplusplus} i makra \code{__cpp_*}; sprawdzenie kompilacji przykładu. \\
 Biblioteka standardowa & \code{<version>}, makra \code{__cpp_lib_*}, dostępność nagłówków i linkowania. \\
 Narzędzia budowania & Wsparcie CMake, modułów, diagnostyki i zależności BMI. \\
 Platforma & Implementacja wielowątkowości, wektoryzacji, I/O, architektury procesora. \\
@@ -100,7 +103,7 @@ std::expected<int, std::string> parse_integer(std::string_view text) {
                                         text.data() + text.size(),
                                         value);
     if (error != std::errc{} || ptr != text.data() + text.size())
-        return std::unexpected("invalid integer");
+        return std::unexpected<std::string>{"invalid integer"};
     return value;
 }
 
@@ -162,10 +165,13 @@ int main() {
 }
 \end{lstlisting}
 
-\nota{Dokładna składnia operatora indeksowania i dostępność nagłówka
-\code{<mdspan>} mogą być zależne od implementacji i późniejszych
-poprawek. Nie wolno zwracać \code{mdspan} do lokalnego wektora,
-który zostanie zniszczony po wyjściu z funkcji.}
+Przy domyślnym układzie \code{layout_right} wiersze leżą kolejno
+w pamięci: \code{matrix[1, 2]} wskazuje \code{a[5]}. Widok
+\code{mdspan} nie kopiuje elementów, więc zapis zmienia oryginalny
+\code{vector}. W przykładzie dwuwymiarowym zapis \code{matrix[1, 2]}
+jest składnią C++23. Dostępność nagłówka \code{<mdspan>} zależy od
+biblioteki standardowej. Nie wolno zwracać takiego widoku do lokalnego
+wektora, który zostanie zniszczony po wyjściu z funkcji.
 
 \section{C++23: generatory, wymazywanie typu i inne klasy użytkowe}
 
@@ -245,6 +251,10 @@ int main() {
 Dla funkcji, których implementacja nie wspiera jeszcze \code{ranges::to},
 można zastosować ręczną iterację i \code{push_back} albo
 \code{ranges::copy} wraz z odpowiednim inserterem.
+\code{values} tylko opisuje sposób pobierania liczb; \code{result}
+posiada własne elementy. Późniejsze użycie \code{result} nie wymaga
+ponownego przechodzenia przez filtr. To przydatne, gdy dane wejściowe
+mogą się zmienić albo wynik trzeba przechowywać dłużej.
 
 \section{C++23: składnia języka --- deducing this i \texttt{if consteval}}
 
@@ -283,6 +293,7 @@ constexpr int double_value(int n) {
     if consteval {
         return n * 2;
     } else {
+        std::cout << "runtime call\n";
         return n + n;
     }
 }
@@ -290,9 +301,97 @@ static_assert(double_value(21) == 42);
 int main() { std::cout << double_value(3) << '\n'; }
 \end{lstlisting}
 
-W rzeczywistym projekcie rozdzielenie ścieżek powinno być
-uzasadnione innym dostępnym zestawem mechanizmów na etapie
-kompilacji i wykonania, a nie sztucznym powielaniem identycznego kodu.
+Podczas \code{static_assert} wybrana jest gałąź kompilacyjna i
+nie ma wydruku. Zwykłe wywołanie w \code{main} może użyć \code{std::cout}.
+W praktyce osobne gałęzie mają sens, gdy obie sytuacje rzeczywiście
+wymagają innych operacji.
+
+\section{C++23: kontenery uporządkowane o zwartej reprezentacji}
+
+\code{std::flat_map} i \code{std::flat_set} to adaptery kontenerowe,
+których klucze i wartości są przechowywane w sekwencyjnych
+strukturach danych, a nie w węzłach drzewa takich jak \code{std::map}.
+Pozwala to uzyskać dobrą lokalność danych i efektywne wyszukiwanie,
+zwłaszcza gdy zbiór jest stosunkowo statyczny. Z drugiej strony
+wstawianie lub usuwanie w środku może wymagać przesuwania elementów.
+
+\begin{lstlisting}[caption={Mapa o sekwencyjnym przechowywaniu (C++23).}]
+#include <flat_map>
+#include <iostream>
+
+int main() {
+    std::flat_map<int, int> lookup;
+    lookup.emplace(2, 20);
+    lookup.emplace(1, 10);
+    std::cout << lookup.at(2) << '\n';
+}
+\end{lstlisting}
+
+Dla zastosowań numerycznych często opłaca się samemu porównać
+\code{flat_map}, \code{unordered_map} i posortowany \code{vector}
+z wyszukiwaniem \code{lower_bound}. Wynik zależy m.in. od liczby
+rekordów, częstotliwości modyfikacji i wielkości elementów.
+\code{flat_map} zachowuje porządek kluczy jak \code{map}, ale jego
+sekwencyjne magazyny mogą wymagać przesuwania danych przy zmianach.
+Jeśli przechowujemy iteratory do elementów, reguły ich unieważniania
+trzeba sprawdzić osobno; nie należy przenosić założeń z \code{map}.
+
+\section{C++23: \texttt{spanstream}, \texttt{stacktrace} i funkcje pomocnicze}
+
+\code{std::spanstream} umożliwia operacje strumieniowe na zewnętrznym,
+ciągłym buforze. Nie przejmuje jego własności, dlatego po zakończeniu
+czasu życia bufora korzystanie ze strumienia jest błędem.
+\code{std::stacktrace} ułatwia uzyskanie śladu wywołań; jakość
+symbolizacji i obecność informacji o nazwach funkcji są zależne
+od platformy, opcji kompilacji oraz sposobu linkowania.
+
+\begin{lstlisting}[caption={Zapis do bufora o stalej pojemnosci przez ospanstream (C++23).}]
+#include <iostream>
+#include <span>
+#include <spanstream>
+
+int main() {
+    char buffer[32]{};
+    std::ospanstream out{std::span<char>{buffer}};
+    out << "score=" << 42;
+    auto written = out.span();
+    std::cout.write(written.data(), written.size());
+}
+\end{lstlisting}
+
+\code{std::ostringstream} tworzy i powiększa własny bufor tekstowy;
+\code{std::ospanstream} pisze do bufora przekazanego przez wywołującego.
+Po wyczerpaniu miejsca strumień przejdzie w stan błędu, zamiast
+samodzielnie powiększyć tablicę. Dlatego rozmiar bufora i stan
+strumienia trzeba sprawdzić, jeśli dane mogą być dłuższe.
+
+Mniejsze, lecz praktyczne ułatwienia obejmują:
+\begin{description}[style=nextline]
+\item[\code{std::byteswap}] Odwrócenie kolejności bajtów dla
+odpowiedniego typu całkowitego, przydatne w kodowaniu protokołów.
+\item[\code{std::to_underlying}] Jawna konwersja wartości typu wyliczeniowego
+na jego typ bazowy.
+\item[\code{std::forward_like}] Przenoszenie wzorca kwalifikatorów
+\code{const} i kategorii wartości z jednego typu na inne wyrażenie,
+przydatne przy pisaniu generycznych adapterów.
+\item[\code{std::bind_back}] Wygodne częściowe wiązanie argumentów
+od prawej strony listy parametrów.
+\end{description}
+
+\begin{lstlisting}[caption={Konwersja enum i zamiana kolejnosci bajtow (C++23).}]
+#include <bit>
+#include <cstdint>
+#include <iostream>
+#include <utility>
+
+enum class Status : std::uint32_t { ready = 0x12345678u };
+
+int main() {
+    auto raw = std::to_underlying(Status::ready);
+    auto swapped = std::byteswap(raw);
+    std::cout << std::hex << raw << ' ' << swapped << '\n';
+}
+\end{lstlisting}
 
 \section{C++26: stały rozmiar przechowywania bez alokacji}
 \label{sec:cpp21-inplace}
@@ -303,46 +402,89 @@ elementów jest umieszczona w samym obiekcie. Różni się więc od
 \code{std::array<T,N>}, która zawsze zawiera \code{N} elementów.
 Nie jest zwykłym \code{vector}: przy przekroczeniu pojemności
 nie może zwiększyć jej przez alokację.
+"Bez alokacji dla elementów" oznacza pamięć wewnątrz obiektu
+\code{inplace_vector}; sam obiekt może nadal zostać utworzony na stercie.
 
 \begin{lstlisting}[caption={Kontener inplace\_vector (C++26; wymagane wsparcie biblioteki).}]
 #include <inplace_vector>
 #include <iostream>
 
 int main() {
-    std::inplace_vector<int, 8> values;
+    std::inplace_vector<int, 2> values;
     values.push_back(10);
     values.push_back(20);
-    std::cout << values.size() << '\n';
+    std::cout << values.size() << '/' << values.capacity() << '\n';
+    if (!values.try_push_back(30))
+        std::cout << "no free slot\n";
 }
 \end{lstlisting}
 
+Gdy pojemność jest pełna, \code{push_back} zgłasza \code{std::bad_alloc}
+choć sam kontener nie alokuje pamięci na elementy. Wariant
+\code{try_push_back} zwraca pusty wynik \code{optional}, więc można
+obsłużyć brak miejsca bez wyjątku. Konstruktor dodawanego elementu
+nadal może zgłosić własny wyjątek.
+
 \code{std::hive} to kolejna nowa struktura kontenerowa C++26,
 ukierunkowana na efektywne wstawianie i usuwanie elementów oraz
-określone gwarancje stabilności istniejących elementów.
+stabilność nieusuniętych elementów. \code{insert}/\code{emplace}
+unieważnia iterator końca, ale pozostawia ważne iteratory i referencje
+do dotychczasowych elementów. \code{erase} unieważnia uchwyty do
+usuniętych elementów; pozostałe zachowują ważność.
 Nie stanowi zamiennika \code{vector} dla obliczeń wymagających
 ciągłego bloku pamięci i lokalności odczytów.
+
+\begin{lstlisting}[caption={Iterator do nieusunietego elementu hive pozostaje poprawny (C++26).}]
+#include <hive>
+#include <iostream>
+
+int main() {
+    std::hive<int> values;
+    auto keep = values.emplace(20);
+    auto remove = values.emplace(10);
+    values.erase(remove);
+    values.emplace(30);
+    std::cout << *keep << '\n'; // nadal 20
+}
+\end{lstlisting}
+
+W \code{vector} dołożenie elementu może przenieść cały bufor i
+unieważnić iteratory. \code{hive} zachowuje iterator do elementu,
+który nadal istnieje; iterator do usuniętego elementu nie jest ważny.
 
 \section{C++26: SIMD, algebra liniowa i wielowątkowość}
 \label{sec:cpp21-simd}
 
-Nagłówek \code{<simd>} i typy \code{std::simd} służą do jawnego
+Nagłówek \code{<simd>} i typy z przestrzeni \code{std::simd},
+np. \code{std::simd::vec<float>}, służą do jawnego
 wyrażania obliczeń na paczkach wartości, potencjalnie mapowanych
 na instrukcje wektorowe procesora. Ich wykorzystanie nie zwalnia
 z pomiarów; wydajność zależy od architektury, wyrównania,
 przepustowości pamięci i zachowania kompilatora.
 
-\begin{lstlisting}[caption={Schemat obliczenia na SIMD (C++26, fragment pogladowy).}]
-// #include <simd>
-// Wymaga biblioteki z implementacja C++26.
-// std::simd<float> a(1.0f), b(2.0f);
-// auto c = a + b;
-// Typ i sposob ladowania zalezy od przyjetego ABI/implementacji.
+\begin{lstlisting}[caption={Dodawanie kolejnych pasm wartosci SIMD (C++26; wymaga <simd>).}]
+#include <simd>
+#include <iostream>
+
+int main() {
+    std::simd::vec<float> a(1.0f), b(2.0f);
+    auto c = a + b;
+    std::cout << c[0] << '\n'; // 3 w pierwszym pasmie
+}
 \end{lstlisting}
+
+\code{a + b} dodaje odpowiadające sobie elementy paczki; liczba
+elementów zależy od wybranego typu/ABI. SIMD nie uruchamia nowych
+wątków. Wsparcie nagłówka \code{<simd>} trzeba osobno sprawdzić
+w bibliotece standardowej.
 
 C++26 rozwija także narzędzia algebry liniowej w \code{<linalg>}
 i mechanizmy asynchroniczne oparte na \emph{senders/receivers}
 (\code{<execution>}). Nowy model wykonania opisuje kompozycję zadań,
 obsługę błędów, anulowanie i relację z harmonogramem pracy.
+\code{<simd>} opisuje działania na paczkach liczb, \code{<linalg>}
+dostarcza operacje na wektorach i macierzach (często widzianych przez
+\code{mdspan}), a \code{<execution>} opisuje pracę asynchroniczną.
 Sama obecność nagłówka nie dowodzi, że dany executor lub scheduler
 działa w pożądany sposób; szczegółowe semantyki zależą od wybranych
 operacji i implementacji.
@@ -354,7 +496,7 @@ w zarządzaniu czasem życia obiektów w strukturach współbieżnych.
 Nie usuwają one automatycznie problemu ABA ani nie sprawiają,
 że dowolna struktura z \code{std::atomic<T*>} jest bezpieczna.
 Należy osobno uzasadnić porządek pamięci, gwarancje postępu
-i moment fizycznego zniszczenia obiektów (por. rozdział 16).
+i moment fizycznego zniszczenia obiektów (por. rozdział~\ref{chap:cpp16-advanced-concurrency}).
 
 \section{C++26: język -- pack indexing, refleksja i kontrakty}
 
@@ -363,20 +505,44 @@ określonego elementu pakietu parametrów bez rekurencyjnego
 rozpakowywania. Jego wsparcie zależy od kompilatora.
 
 \begin{lstlisting}[caption={Indeksowanie pakietu typow (C++26, tylko kompilator ze wsparciem).}]
+#include <type_traits>
+
 template<class... Ts>
 using first_type = Ts...[0];
 
-static_assert(sizeof(first_type<int, double>) == sizeof(int));
+static_assert(std::is_same_v<first_type<int, double>, int>);
 \end{lstlisting}
 
-W C++26 rozwijane są również: \emph{static reflection} (nagłówek
-\code{<meta>} i odpowiednia składnia refleksji) oraz
-\emph{kontrakty} (np. asercje kontraktowe i wsparcie z
-\code{<contracts>}). Są to znaczące nowe możliwości,
-ale składnia i zakres praktycznego użycia wymagają konkretnego
-kompilatora z odpowiednim wsparciem. Nie podajemy tu pozornie
-przenośnego przykładu refleksji lub kontraktów, który mógłby
-nie kompilować się w typowej instalacji C++26.
+\emph{Refleksja statyczna} pozwala pytać o typy i deklaracje podczas
+kompilacji. Operator \verb|^^| tworzy opis, a funkcje z \code{<meta>}
+odczytują jego własności. Przykład pyta, czy opis \code{int}
+reprezentuje typ całkowity:
+
+\begin{lstlisting}[caption={Proste zapytanie refleksyjne (C++26; wymaga wsparcia kompilatora i <meta>).}]
+#include <meta>
+
+constexpr std::meta::info reflected = ^^int;
+static_assert(std::meta::is_integral_type(reflected));
+\end{lstlisting}
+
+\emph{Kontrakt} zapisuje warunek oczekiwany przez funkcję. W C++26
+\code{pre} opisuje warunek przed wywołaniem, a \code{post} warunek
+po poprawnym zakończeniu. Dla liczb nieujemnych przykład wymaga
+niezerowego dzielnika:
+
+\begin{lstlisting}[caption={Warunek wstepny funkcji (C++26; wymaga wsparcia kontraktow).}]
+unsigned divide(unsigned numerator, unsigned denominator)
+    pre(denominator != 0)
+{
+    return numerator / denominator;
+}
+\end{lstlisting}
+
+Sposób sprawdzania naruszenia kontraktu zależy od trybu wykonania
+i konfiguracji implementacji. Taki warunek nie zastępuje zwykłej
+obsługi błędu dla danych wejściowych, którym należy pozwolić być
+niepoprawnymi. Zarówno refleksja, jak i kontrakty mogą jeszcze nie
+być dostępne w używanym kompilatorze mimo wybrania trybu C++26.
 
 \subsection{Co dzieje się z \texttt{constexpr}?}
 
@@ -386,6 +552,90 @@ zasoby systemowe i dynamiczne struktury mogą automatycznie istnieć
 w stałym wyrażeniu. Warto oddzielać możliwość \emph{wykonania obliczenia}
 przy kompilacji od zdolności utworzenia \emph{trwałego obiektu}
 z zasobami zarządzanymi dynamicznie.
+
+\section{C++26: \texttt{function\_ref} i funkcje bez własności}
+
+\code{std::function_ref} reprezentuje niewłasnościowy widok na
+obiekt wywoływalny. Przydaje się, gdy funkcja przyjmuje callback
+na czas jednego wywołania i nie zamierza go zachować.
+W odróżnieniu od \code{std::function}, nie przejmuje własności
+lambdy ani jej przechwyconych danych. Podstawowym zagrożeniem
+jest zatem pozostawienie widoku po zakończeniu życia callbacku.
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}p{0.33\textwidth}X@{}}
+\toprule
+Typ callbacku & Kiedy go użyć \\
+\midrule
+\code{std::function} (C++11) & Funkcja ma przechować kopiowalny callback. \\
+\code{std::move_only_function} (C++23) & Funkcja ma przechować callback, który można przenieść, ale nie skopiować. \\
+\code{std::function_ref} (C++26) & Funkcja tylko wywołuje cudzy callback i nie przechowuje go na później. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\begin{lstlisting}[caption={Callback uzywany tylko podczas wywolania funkcji (C++26).}]
+#include <functional>
+#include <iostream>
+
+void repeat(int n, std::function_ref<void(int)> callback) {
+    for (int i = 0; i < n; ++i)
+        callback(i);
+}
+
+int main() {
+    repeat(3, [](int i) { std::cout << i << ' '; });
+}
+\end{lstlisting}
+
+Jest to typ zgodny z celem opisanym w rozdziale~\ref{chap:cpp20-api}: odróżniamy
+przekazanie callbacku na czas wywołania od przechowywania go we
+współdzielonym stanie zadań.
+
+\section{C++26: interpretacja nowego modelu wykonania}
+
+Model \emph{senders/receivers} wprowadza pojęcia opisujące wynik
+operacji asynchronicznej oraz jej kontynuację. W odróżnieniu od
+prostego \code{std::async}, wyrażenie złożone z wielu etapów może
+przenosić informacje o błędzie i anulowaniu, a wykonanie może być
+zależne od schedulera dostarczonego przez bibliotekę.
+
+Nie należy jednak utożsamiać wyrażenia opisującego zadanie z natychmiast
+uruchomioną pracą. Ważne są trzy oddzielne momenty:
+\begin{enumerate}
+\item utworzenie opisu obliczenia (\emph{sender});
+\item połączenie z odbiorcą wyniku (\emph{receiver});
+\item rozpoczęcie operacji w wybranym środowisku wykonawczym.
+\end{enumerate}
+
+Poniżej \code{just} tworzy opis wartości, a \code{then} dodaje
+przekształcenie. Dopiero \code{std::this_thread::sync_wait} uruchamia
+operację i czeka na wynik. Ten przykład nie wymaga osobnego wątku:
+
+\begin{lstlisting}[caption={Opis i uruchomienie prostego zadania (C++26; wymaga <execution>).}]
+#include <execution>
+#include <iostream>
+#include <tuple>
+#include <utility>
+
+int main() {
+    auto work = std::execution::just(21)
+              | std::execution::then([](int n) { return n * 2; });
+    auto result = std::this_thread::sync_wait(std::move(work));
+    if (result)
+        std::cout << std::get<0>(*result) << '\n'; // 42
+}
+\end{lstlisting}
+
+\code{sync_wait} zwraca pusty wynik po sygnale anulowania; błędy
+przenosi zgodnie z kontraktem operacji. Do wykonania na innej
+puli wątków potrzebny jest odpowiedni scheduler.
+
+Gdy aplikacja ma już własny executor i korutyny, migracja powinna
+zacząć się od próbnego adaptera i testów anulowania, a nie od
+mechanicznego zastąpienia wszystkich \code{future}. Biblioteki
+systemowe mogą udostępniać własne executory, często o innym modelu
+kolejek i innych gwarancjach zamknięcia.
 
 \section{Jak wdrażać C++23/26 do istniejącej biblioteki?}
 \label{sec:cpp21-migration}
@@ -431,136 +681,6 @@ int main() {
 }
 \end{lstlisting}
 
-\section{Zestawienie funkcjonalności i rekomendacje}
-\begin{center}\footnotesize
-\begin{tabularx}{\textwidth}{@{}p{0.33\textwidth}p{0.11\textwidth}X@{}}
-\toprule
-Funkcjonalność & Standard & Główne zastosowanie \\
-\midrule
-\code{expected}, \code{print} & C++23 & Jawny wynik/błąd; formatowane I/O. \\
-\code{mdspan}, \code{generator} & C++23 & Widoki wielowymiarowe; leniwe zakresy korutyn. \\
-\code{move_only_function} & C++23 & Wywoływalne obiekty tylko przenoszalne. \\
-\code{ranges::to}, \code{views::zip} & C++23 & Składanie i materializacja zakresów. \\
-Deducing this, \code{if consteval} & C++23 & Ergonomia szablonów i ewaluacja stała. \\
-\code{inplace_vector}, \code{hive} & C++26 & Kontenery o szczególnych gwarancjach pamięci i stabilności. \\
-SIMD, linalg, senders/receivers & C++26 & Obliczenia i asynchroniczne wykonanie. \\
-Refleksja, kontrakty & C++26 & Metaprogramowanie i opis warunków poprawności. \\
-\bottomrule
-\end{tabularx}
-\end{center}
-
-\nota{Powyższe przyporządkowanie do wersji standardu nie jest
-obietnicą dostępności w dowolnej instalacji C++23/C++26. Najlepszym
-źródłem danych o narzędziu jest wynik własnego testu kompilacji,
-zgodny z dokumentacją danej standardowej biblioteki.}
-
-\section{C++23: kontenery uporządkowane o zwartej reprezentacji}
-
-\code{std::flat_map} i \code{std::flat_set} to adaptery kontenerowe,
-których klucze i wartości są przechowywane w sekwencyjnych
-strukturach danych, a nie w węzłach drzewa takich jak \code{std::map}.
-Pozwala to uzyskać dobrą lokalność danych i efektywne wyszukiwanie,
-zwłaszcza gdy zbiór jest stosunkowo statyczny. Z drugiej strony
-wstawianie lub usuwanie w środku może wymagać przesuwania elementów.
-
-\begin{lstlisting}[caption={Mapa o sekwencyjnym przechowywaniu (C++23).}]
-#include <flat_map>
-#include <iostream>
-
-int main() {
-    std::flat_map<int, int> lookup;
-    lookup.emplace(2, 20);
-    lookup.emplace(1, 10);
-    std::cout << lookup.at(2) << '\n';
-}
-\end{lstlisting}
-
-Dla zastosowań numerycznych często opłaca się samemu porównać
-\code{flat_map}, \code{unordered_map} i posortowany \code{vector}
-z wyszukiwaniem \code{lower_bound}. Wynik zależy m.in. od liczby
-rekordów, częstotliwości modyfikacji i wielkości elementów.
-
-\section{C++23: \texttt{spanstream}, \texttt{stacktrace} i funkcje pomocnicze}
-
-\code{std::spanstream} umożliwia operacje strumieniowe na zewnętrznym,
-ciągłym buforze. Nie przejmuje jego własności, dlatego po zakończeniu
-czasu życia bufora korzystanie ze strumienia jest błędem.
-\code{std::stacktrace} ułatwia uzyskanie śladu wywołań; jakość
-symbolizacji i obecność informacji o nazwach funkcji są zależne
-od platformy, opcji kompilacji oraz sposobu linkowania.
-
-Mniejsze, lecz praktyczne ułatwienia obejmują:
-\begin{description}[style=nextline]
-\item[\code{std::byteswap}] Odwrócenie kolejności bajtów dla
-odpowiedniego typu całkowitego, przydatne w kodowaniu protokołów.
-\item[\code{std::to_underlying}] Jawna konwersja wartości typu wyliczeniowego
-na jego typ bazowy.
-\item[\code{std::forward_like}] Przenoszenie wzorca kwalifikatorów
-\code{const} i kategorii wartości z jednego typu na inne wyrażenie,
-przydatne przy pisaniu generycznych adapterów.
-\item[\code{std::bind_back}] Wygodne częściowe wiązanie argumentów
-od prawej strony listy parametrów.
-\end{description}
-
-\begin{lstlisting}[caption={Konwersja enum i zamiana kolejnosci bajtow (C++23).}]
-#include <bit>
-#include <cstdint>
-#include <iostream>
-#include <utility>
-
-enum class Status : std::uint32_t { ready = 0x12345678u };
-
-int main() {
-    auto raw = std::to_underlying(Status::ready);
-    auto swapped = std::byteswap(raw);
-    std::cout << std::hex << raw << ' ' << swapped << '\n';
-}
-\end{lstlisting}
-
-\section{C++26: \texttt{function\_ref} i funkcje bez własności}
-
-\code{std::function_ref} reprezentuje niewłasnościowy widok na
-obiekt wywoływalny. Przydaje się, gdy funkcja przyjmuje callback
-na czas jednego wywołania i nie zamierza go zachować.
-W odróżnieniu od \code{std::function}, nie przejmuje własności
-lambdy ani jej przechwyconych danych. Podstawowym zagrożeniem
-jest zatem pozostawienie widoku po zakończeniu życia callbacku.
-
-\begin{lstlisting}[caption={Przyklad zastosowania function\_ref (C++26; fragment).}]
-#include <functional>
-
-void repeat(int n, std::function_ref<void(int)> callback) {
-    for (int i = 0; i < n; ++i)
-        callback(i);
-}
-\end{lstlisting}
-
-Jest to typ zgodny z celem opisanym w rozdziale 20: odróżniamy
-przekazanie callbacku na czas wywołania od przechowywania go we
-współdzielonym stanie zadań.
-
-\section{C++26: interpretacja nowego modelu wykonania}
-
-Model \emph{senders/receivers} wprowadza pojęcia opisujące wynik
-operacji asynchronicznej oraz jej kontynuację. W odróżnieniu od
-prostego \code{std::async}, wyrażenie złożone z wielu etapów może
-przenosić informacje o błędzie i anulowaniu, a wykonanie może być
-zależne od schedulera dostarczonego przez bibliotekę.
-
-Nie należy jednak utożsamiać wyrażenia opisującego zadanie z natychmiast
-uruchomioną pracą. Ważne są trzy oddzielne momenty:
-\begin{enumerate}
-\item utworzenie opisu obliczenia (\emph{sender});
-\item połączenie z odbiorcą wyniku (\emph{receiver});
-\item rozpoczęcie operacji w wybranym środowisku wykonawczym.
-\end{enumerate}
-
-Gdy aplikacja ma już własny executor i korutyny, migracja powinna
-zacząć się od próbnego adaptera i testów anulowania, a nie od
-mechanicznego zastąpienia wszystkich \code{future}. Biblioteki
-systemowe mogą udostępniać własne executory, często o innym modelu
-kolejek i innych gwarancjach zamknięcia.
-
 \section{Eksperymentalne wdrażanie nowego API bez utraty przenośności}
 
 Niektóre biblioteki \code{<experimental/...>} dostarczały wybrane
@@ -584,6 +704,31 @@ maszynie deweloperskiej może okazać się mniej korzystny na systemie
 o innym cache, szerokości SIMD albo liczbie rdzeni.
 
 
+\section{Zestawienie funkcjonalności i rekomendacje}
+\begin{center}\footnotesize
+\begin{tabularx}{\textwidth}{@{}p{0.33\textwidth}p{0.11\textwidth}X@{}}
+\toprule
+Funkcjonalność & Standard & Główne zastosowanie \\
+\midrule
+\code{expected}, \code{print} & C++23 & Jawny wynik/błąd; formatowane I/O. \\
+\code{mdspan}, \code{generator} & C++23 & Widoki wielowymiarowe; leniwe zakresy korutyn. \\
+\code{move_only_function} & C++23 & Wywoływalne obiekty tylko przenoszalne. \\
+\code{ranges::to}, \code{views::zip} & C++23 & Składanie i materializacja zakresów. \\
+Deducing this, \code{if consteval} & C++23 & Ergonomia szablonów i ewaluacja stała. \\
+\code{inplace_vector}, \code{hive} & C++26 & Kontenery o szczególnych gwarancjach pamięci i stabilności. \\
+\code{std::simd::vec}, \code{<linalg>} & C++26 & Paczki liczb i operacje na wektorach/macierzach. \\
+\code{<execution>} & C++26 & Składanie zadań, obsługa wyniku i anulowania. \\
+\code{function_ref}, hazard pointers, RCU & C++26 & Widok callbacku i odzyskiwanie pamięci we współbieżności. \\
+Indeksowanie pakietów, refleksja, kontrakty & C++26 & Metaprogramowanie i opis warunków poprawności. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\nota{Powyższe przyporządkowanie do wersji standardu nie jest
+obietnicą dostępności w dowolnej instalacji C++23/C++26. Najlepszym
+źródłem danych o narzędziu jest wynik własnego testu kompilacji,
+zgodny z dokumentacją danej standardowej biblioteki.}
+
 \section*{Podsumowanie rozdziału}
 \addcontentsline{toc}{section}{Podsumowanie rozdziału}
 
@@ -599,6 +744,9 @@ standardu, stanu wdrożenia i wymagań aplikacji.
 \addcontentsline{toc}{section}{Literatura i dokumentacja}
 \begingroup\sloppy
 \begin{itemize}
+\item \url{https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2026/n5051.html} --- raport redakcyjny WG21: N5050 jako końcowy projekt C++26 i podstawa DIS.
+\item \url{https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2026/n5050.pdf} --- projekt normy C++26.
+\item \url{https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2024/} i \url{https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2025/} --- oficjalne wykazy przyjętych dokumentów WG21.
 \item \url{https://en.cppreference.com/w/cpp/23} --- zestawienie C++23.
 \item \url{https://en.cppreference.com/w/cpp/26} --- zestawienie C++26.
 \item \url{https://en.cppreference.com/w/cpp/compiler_support} --- wsparcie kompilatorów i bibliotek.
