@@ -299,13 +299,12 @@ int main() {
 }
 \end{lstlisting}
 
-Destruktor \code{Widget} jest definiowany \emph{po} pełnej definicji
-\code{Impl}. Jest to istotne dla destrukcji \code{unique_ptr<Impl>}.
-Wersja z domyślnym przenoszeniem dopuszcza obiekt \code{Widget}
-w stanie \emph{moved-from} z pustym \code{impl_}; użytkownik nie może
-wtedy wywoływać \code{name()} bez dodatkowo określonego kontraktu.
-Jeśli wymagane jest, by każdy \code{Widget} zawsze miał implementację,
-należy inaczej zaprojektować przenoszenie.
+Destruktor \code{Widget} definiujemy po pełnej definicji \code{Impl}.
+Dzięki temu \code{unique_ptr<Impl>} może zniszczyć obiekt.
+Po domyślnym przeniesieniu źródłowy \code{Widget} może mieć puste
+\code{impl_}. Nie wolno wtedy wywołać na nim \code{name()} bez
+dodatkowo określonego kontraktu. Jeśli każdy \code{Widget} ma zawsze
+mieć implementację, trzeba inaczej zaprojektować przenoszenie.
 
 \subsection{Stabilność ABI nie jest automatyczna}
 
