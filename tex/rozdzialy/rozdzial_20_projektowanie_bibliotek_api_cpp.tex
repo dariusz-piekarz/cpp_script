@@ -61,7 +61,7 @@ Parametr & Interpretacja w typowym interfejsie \\
 \subsection{Parametry i brak zbędnej alokacji}
 
 \begin{lstlisting}[caption={Interfejs operujacy na dowolnym ciaglym buforze (C++20).}]
-#include <numeric>
+#include <cstddef>
 #include <span>
 #include <stdexcept>
 
@@ -77,8 +77,7 @@ double weighted_sum(std::span<const double> a,
 }
 \end{lstlisting}
 
-W tym fragmencie należy dołączyć \code{<stdexcept>} do pliku, w którym
-umieszczamy definicję. Stosowanie \code{span} pozwala przyjmować
+Stosowanie \code{span} pozwala przyjmować
 \code{vector}, \code{array} i tablice bez narzucania własności.
 Jednocześnie nie wolno zachować widoku dłużej niż trwa jego bufor.
 
@@ -151,24 +150,27 @@ realizować \emph{strict weak ordering}; przypadkowy predykat typu
 
 template<class R>
 concept SummableRange = std::ranges::input_range<R> &&
-    requires(std::ranges::range_value_t<R> a,
-             std::ranges::range_value_t<R> b) {
-        { a + b } -> std::convertible_to<std::ranges::range_value_t<R>>;
+    std::default_initializable<std::ranges::range_value_t<R>> &&
+    requires(std::ranges::range_value_t<R>& result,
+             std::ranges::range_reference_t<R> value) {
+        result = result + value;
     };
 
 template<SummableRange R>
 auto sum_values(R&& range) {
     using T = std::ranges::range_value_t<R>;
-    T result{}; // dodatkowy wymog: T musi byc default-initializable
+    T result{};
     for (auto&& value : range) result = result + value;
     return result;
 }
 \end{lstlisting}
 
-Powyższy przykład umyślnie ujawnia ważną lekcję: użycie \texttt{T result\{\}}
-dodaje wymóg domyślnej inicjalizacji, którego koncept nie sprawdza.
-Poprawny kontrakt produkcyjny powinien go dopisać lub przyjmować
-wartość początkową od wywołującego.
+Wymóg \code{default_initializable} odpowiada instrukcji \code{T result\{\}}.
+Wyrażenie w \code{requires} sprawdza dokładnie przypisanie wykonywane
+w pętli, także gdy element zakresu jest typem pośrednim, a nie \code{T&}.
+To nadal nie dowodzi sensu matematycznego sumowania. Jeśli wartość
+domyślna nie jest elementem neutralnym dla dodawania, funkcja powinna
+przyjmować wartość początkową od wywołującego.
 
 \section{Obsługa błędów: wyjątki, typ wyniku i status}
 
@@ -209,7 +211,7 @@ std::optional<unsigned> parse_digit(std::string_view x) {
 
 std::expected<int, std::string> parse_id(std::string text) {
     if (text.empty())
-        return std::unexpected("empty identifier");
+        return std::unexpected<std::string>{"empty identifier"};
     return static_cast<int>(text.size());
 }
 \end{lstlisting}
@@ -243,7 +245,7 @@ public:
 
 Nagłówki udostępniające wszystkie pola klas narzucają zależności
 kompilacyjne, a zmiana ich układu może naruszać ABI bibliotek
-współdzielonych. Idiom PImpl (\\emph{pointer to implementation})
+współdzielonych. Idiom PImpl (\emph{pointer to implementation})
 przenosi szczegóły do osobnego typu. Cena: alokacja, pośredni dostęp
 i potrzeba poprawnego zarządzania funkcjami specjalnymi.
 
@@ -456,6 +458,9 @@ Ograniczenie kompilacyjne nie zastępuje dokumentacji: każda polityka
 \code{Sink} musi sama zapewniać odpowiednie własności współbieżne,
 a \code{Logger} nie powinien obiecywać większej odporności na błędy
 niż implementacja przekazanej polityki.
+W pokazanym \code{CounterSink} wskaźnik musi pozostać ważny przez czas
+używania loggera; dwa wątki nie mogą jednocześnie zwiększać tego samego
+zwykłego licznika bez synchronizacji.
 
 \section{Bezpieczeństwo wątkowe i reentrancy}
 
@@ -496,7 +501,7 @@ target_link_libraries(example PRIVATE geometry)
 \nota{Deklaracje modułów C++20 mogą zmniejszyć zależność od klasycznego
 preprocesora, ale same w sobie nie zapewniają stabilności ABI.
 Konfiguracja modułów i dostępność \code{import std;} zależą od
-wersji narzędzi; szczegóły omówiono w rozdziale 17.}
+wersji narzędzi; szczegóły omówiono w rozdziale~\ref{chap:cpp17-build-abi-modules}.}
 
 \section{Wersjonowanie i testowanie kontraktu}
 
@@ -628,6 +633,10 @@ int main() {
     for (int i = 0; i < 100; ++i) values.push_back(i);
 }
 \end{lstlisting}
+
+\code{monotonic_buffer_resource} najpierw korzysta z tablicy
+\code{storage}, ale po jej zapełnieniu może pobrać dodatkową pamięć
+z zasobu nadrzędnego. Sama tablica nie narzuca więc twardego limitu.
 
 \section{Dokumentacja API na przykładzie kontraktu operacji}
 
