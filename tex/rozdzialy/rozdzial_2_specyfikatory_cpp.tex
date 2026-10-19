@@ -818,9 +818,9 @@ int main() {
 \texttt{bool flag = ready}. Słowo \texttt{explicit} nie zabrania
 inicjalizacji bezpośredniej ani jawnego \texttt{static\_cast}.
 
-Od C++20 można uzależnić tę własność od warunku obliczanego podczas
-kompilacji: \texttt{explicit(condition)}. Prawdziwy warunek działa jak
-\texttt{explicit}, a fałszywy jak jego brak:
+Od C++20 możemy napisać \texttt{explicit(condition)}. Gdy warunek
+jest prawdziwy, działa jak \texttt{explicit}; gdy jest fałszywy,
+pozwala na konwersję niejawną:
 
 \begin{lstlisting}[caption={Warunkowe explicit od C++20 (kompletny program).}]
 template<bool AllowImplicit>
