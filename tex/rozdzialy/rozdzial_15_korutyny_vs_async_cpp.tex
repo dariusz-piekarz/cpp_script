@@ -144,10 +144,14 @@ W ogólnym modelu wywołanie korutyny przebiega w następujących etapach:
 \item \texttt{co\_return} uruchamia \texttt{return\_value} lub
       \texttt{return\_void}; nieobsłużony wyjątek trafia do
       \texttt{unhandled\_exception()}.
-\item Niszczone są obiekty lokalne, a korutyna wykonuje końcowy
-      \texttt{co\_await} na wyniku \texttt{promise.final\_suspend()}.
+\item Niszczone są obiekty lokalne. Korutyna przechodzi do końcowego
+      punktu zawieszenia.
 \item Ramka zostaje ostatecznie zniszczona we właściwym momencie.
 \end{enumerate}
+
+W końcowym punkcie zawieszenia wywoływana jest metoda
+\texttt{final\_suspend()} obiektu obietnicy. Jej wynik jest obsługiwany
+przez \texttt{co\_await}.
 
 Kolejność i czas \emph{zwolnienia ramki} zależą od przyjętej polityki
 własności. Dla \texttt{final\_suspend = suspend\_always} ramkę zwykle
