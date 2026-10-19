@@ -1,5 +1,5 @@
-% ROZDZIAL 5 -- Concepts i requires w C++20
-% Fragment do wlaczenia do glownego dokumentu po rozdziale 4.
+% Rozdzial 13 w kolejnosci cpp.tex -- concepts i requires w C++20.
+% Fragment do wlaczenia do glownego dokumentu po rozdziale 12.
 % Wymagane w preambule: pakiet listings i ustawienie language=C++.
 % Uzycie: \input{rozdzial_5_concepts_cpp.tex}
 
@@ -120,6 +120,12 @@ i lambdach.
 
 \section{Dwie role słowa \texttt{requires}}
 
+W zapisie \texttt{requires requires(T x) \{ x.size(); \}}
+oba słowa mają inne zadania: pierwsze mówi, \emph{kiedy wolno użyć
+szablonu}, a drugie sprawdza, czy dla typu \texttt{T} poprawne jest
+wyrażenie \texttt{x.size()}. Kod \texttt{x.size()} nie zostaje
+tu uruchomiony.
+
 \begin{center}\small
 \begin{tabularx}{\textwidth}{@{}p{0.34\textwidth}X@{}}
 \toprule
@@ -168,10 +174,8 @@ void increment_again(T& x) {
 }
 \end{lstlisting}
 
-Pierwsze \texttt{requires} w ostatnim przykładzie zaczyna klauzulę;
-drugie wprowadza wyrażenie sprawdzające wymagania. To poprawna
-składnia, choć przy wielokrotnym użyciu lepiej utworzyć nazwaną
-koncepcję.
+Taki zapis jest poprawny, choć przy wielokrotnym użyciu tego
+samego warunku czytelniejsza jest nazwana koncepcja.
 
 \section{Cztery rodzaje wymagań w \texttt{requires-expression}}
 
@@ -492,7 +496,11 @@ std::derived_from<T, Animal>
 Ograniczenia uczestniczą w wyborze przeciążenia. Jeśli dwie funkcje
 są dopasowane do argumentów, kompilator może preferować tę,
 której ograniczenie jest bardziej szczegółowe (ang.
-\emph{subsumption}).
+\emph{subsumption}). W przykładzie poniżej typ \texttt{int}
+spełnia zarówno \texttt{integral}, jak i bardziej szczegółowe
+\texttt{signed\_integral}, więc wybrana zostanie druga wersja.
+Formalne reguły porównywania ograniczeń są bardziej złożone;
+przy pierwszej lekturze wystarczy ten przypadek.
 
 \begin{lstlisting}
 #include <concepts>
@@ -602,9 +610,10 @@ Nie używaj jednak złożonego systemu specjalizacji, jeżeli
 prosta funkcja przeciążona lub \texttt{if constexpr}
 lepiej wyraża zamysł.
 
-\section{Koncepcje i pakiety parametrów: kontynuacja rozdziału 4}
+\section{Koncepcje i pakiety parametrów}
 \label{sec:concepts-variadic}
 
+Pakiety parametrów poznaliśmy w rozdziale~11.
 Koncepcje bardzo dobrze współpracują z \emph{variadic templates}.
 Możemy nakładać warunek na każdy element pakietu typów
 za pomocą \emph{fold expression}.
@@ -786,7 +795,9 @@ iterację jednokierunkową. Warunek \texttt{input\_range}
 wyraża strukturę danych, a \texttt{convertible\_to}
 -- oczekiwany rodzaj elementów. Zastosowaliśmy
 \texttt{std::optional<double>}, aby pusty zakres nie powodował
-dzielenia przez zero. Dla zastosowań numerycznych należy
+dzielenia przez zero. Dla danych \texttt{\{2, 4, 6\}}
+wynik to \texttt{4.0}; dla pustego wektora wynikiem jest
+pusty \texttt{optional}. Dla zastosowań numerycznych należy
 dodatkowo rozważyć stabilność sumowania, przepełnienia i
 znaczenie konwersji do \texttt{double}.
 
