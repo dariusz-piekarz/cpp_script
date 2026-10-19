@@ -202,7 +202,7 @@ uzgodniony mechanizm synchronizacji.}
 
 Mutex zapewnia wyłączność, ale nie sygnalizuje gotowości danych.
 \code{std::condition_variable} pozwala czekać bez aktywnego odpytywania.
-Do oczekiwania używamy \code{std::unique_lock<std::mutex>}, ponieważ
+Do oczekiwania używamy \code{std::unique_lock}, ponieważ
 \code{wait()} musi na czas snu zwolnić mutex, a po obudzeniu zablokować
 go ponownie. Predykat opisuje stan, na który czeka konsument.
 
@@ -1134,16 +1134,15 @@ int main() {
 
 \subsection{Semafory, zapadki i bariery w C++20}
 
-\begin{description}[style=nextline]
-\item[\code{std::counting_semaphore<N>}]
+\begin{itemize}
+\item \code{std::counting_semaphore<N>} ---
 Ogranicza liczbę równoczesnych wejść. Operacja \code{acquire()}
 pobiera zezwolenie, a \code{release()} je zwraca.
-\item[\code{std::latch}]
-Jednorazowy punkt synchronizacji: po odpowiedniej liczbie zgłoszeń
+\item \code{std::latch} --- jednorazowa zapadka. Po odpowiedniej liczbie zgłoszeń
 \code{count_down()} czekające wątki mogą kontynuować.
-\item[\code{std::barrier}]
+\item \code{std::barrier} ---
 Punkt synchronizacji wielokrotnego użytku dla kolejnych faz pracy.
-\end{description}
+\end{itemize}
 
 \begin{lstlisting}[caption={Semafor dopuszcza maksymalnie dwa zadania naraz (C++20).}]
 #include <chrono>
@@ -1575,18 +1574,18 @@ zakładając że nikt nie zmienia równolegle rozmiaru ani struktury wektora.
 
 \subsection{\texttt{shared}, \texttt{private}, \texttt{firstprivate}, \texttt{lastprivate}}
 
-\begin{description}[style=nextline]
-\item[\code{shared(x)}] Wątki odnoszą się do tego samego obiektu.
+\begin{itemize}
+\item \code{shared(x)} --- wątki odnoszą się do tego samego obiektu.
 Dostępy konfliktowe wymagają ochrony lub podziału danych.
-\item[\code{private(x)}] Każdy uczestnik ma własny egzemplarz
+\item \code{private(x)} --- każdy uczestnik ma własny egzemplarz
 (z zachowaniem reguł inicjalizacji odpowiednich typów);
 nie należy zakładać skopiowania początkowej wartości zmiennej pierwotnej.
-\item[\code{firstprivate(x)}] Nowy egzemplarz zostaje zainicjalizowany
+\item \code{firstprivate(x)} --- nowy egzemplarz zostaje zainicjalizowany
 wartością odpowiadającej mu zmiennej sprzed regionu.
-\item[\code{lastprivate(x)}] Po regionie wynik z logicznie ostatniej
+\item \code{lastprivate(x)} --- po regionie wynik z logicznie ostatniej
 iteracji (niekoniecznie wykonanej na końcu w czasie rzeczywistym)
 zostaje przypisany do zmiennej pierwotnej.
-\end{description}
+\end{itemize}
 
 \begin{lstlisting}[caption={Przykład firstprivate i lastprivate w OpenMP.}]
 #include <iostream>
@@ -1683,16 +1682,16 @@ Doboru dokonujemy na podstawie pomiarów, nie wyłącznie intuicji.
 
 \subsection{Synchronizacja: \texttt{critical}, \texttt{atomic}, \texttt{barrier}, \texttt{nowait}}
 
-\begin{description}[style=nextline]
-\item[\code{critical}] Chroni region wykonywany jednocześnie najwyżej
+\begin{itemize}
+\item \code{critical} --- chroni region wykonywany jednocześnie najwyżej
 przez jeden wątek w danej grupie nazwanych regionów krytycznych.
-\item[\code{atomic}] Zapewnia atomową obsługę wspieranego wyrażenia
+\item \code{atomic} --- zapewnia atomową obsługę wspieranego wyrażenia
 (np. inkrementacji); nie obejmuje dowolnego bloku instrukcji.
-\item[\code{barrier}] Wymaga, żeby uczestnicy zespołu dotarli do
+\item \code{barrier} --- wymaga, żeby uczestnicy zespołu dotarli do
 punktu synchronizacji, zanim którykolwiek przejdzie dalej.
-\item[\code{nowait}] Usuwa domyślną barierę tam, gdzie klauzula jest
+\item \code{nowait} --- usuwa domyślną barierę tam, gdzie klauzula jest
 dopuszczalna; wymaga osobnego rozumowania o zależnościach danych.
-\end{description}
+\end{itemize}
 
 \begin{lstlisting}[caption={Dwie alternatywy zwiększania licznika.}]
 int counter = 0;
