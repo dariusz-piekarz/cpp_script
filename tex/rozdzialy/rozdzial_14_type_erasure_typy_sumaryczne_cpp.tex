@@ -348,14 +348,13 @@ int main() {
 
 \subsection{Stan \texttt{valueless\_by\_exception}}
 
-\texttt{variant} może w wyjątkowych okolicznościach utracić aktywną
-alternatywę wskutek nieudanego przypisania lub rekonstrukcji typu,
-którego operacja zgłasza wyjątek. Stan ten identyfikujemy przez
-\texttt{valueless\_by\_exception()}, a \texttt{index()} zwraca w nim
-\texttt{std::variant\_npos}. W takim stanie \texttt{std::visit} zgłasza
-\texttt{std::bad\_variant\_access}. Nie należy jednak traktować
-\texttt{valueless\_by\_exception()} jako zwykłej ,,pustej'' alternatywy;
-przeznaczony do tego jest \texttt{std::monostate}.
+Wyjątek podczas przypisania lub tworzenia nowej wartości może
+pozostawić \texttt{variant} bez aktywnej alternatywy. Ten stan
+wykrywa metoda \texttt{valueless\_by\_exception()}.
+Wtedy \texttt{index()} zwraca \texttt{std::variant\_npos}.
+Wywołanie \texttt{std::visit} zgłasza \texttt{std::bad\_variant\_access}.
+Nie jest to zwykła ,,pusta'' alternatywa. Jeśli jest potrzebna,
+można użyć \texttt{std::monostate}.
 
 \paragraph{Ważne ograniczenia.}
 \texttt{variant} nie przechowuje typów referencyjnych ani \texttt{void};
@@ -906,8 +905,8 @@ zakładać przy kompilacji z \texttt{-std=c++20}:
       jawna wartość błędu;
 \item \textbf{C++23:} \texttt{std::move\_only\_function} --- opakowanie
       dla obiektów wywoływalnych, które nie muszą być kopiowalne;
-\item \textbf{C++23:} monadyczne operacje \texttt{optional::and\_then},
-      \texttt{optional::transform} i \texttt{optional::or\_else};
+\item \textbf{C++23:} operacje monadyczne dla \texttt{std::optional}:
+      \texttt{and\_then}, \texttt{transform} i \texttt{or\_else};
 \item \textbf{C++26:} \texttt{std::function\_ref} --- niewłaścicielski
       widok na obiekt wywoływalny, którego czas życia musi zostać
       zapewniony przez wywołującego.
