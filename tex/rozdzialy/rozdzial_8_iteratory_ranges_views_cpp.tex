@@ -1,5 +1,5 @@
-% ROZDZIAL 8 — Iteratory, ranges i views (C++20)
-% Fragment do włączenia po rozdziale 7.
+% ROZDZIAL 14 — Iteratory, ranges i views (C++20 oraz dodatki C++23)
+% Fragment do włączenia po rozdziale 13.
 % Wymagane pakiety: listings, array, amsmath (opcjonalnie), hyperref.
 % Użycie: \input{rozdzial_8_iteratory_ranges_views_cpp.tex}
 
@@ -25,7 +25,7 @@ std::ranges::sort(xs);          // C++20
 
 Nowy model pozwala przekazać \emph{zakres} (\textit{range}) jako jeden
 obiekt oraz formułować wymagania wobec niego poprzez \emph{koncepcje}
-(\textit{concepts}, rozdział~5). Oddzielną innowacją są \emph{widoki}
+(\textit{concepts}, rozdział~13). Oddzielną innowacją są \emph{widoki}
 (\textit{views}): lekkie reprezentacje danych, często przekształcane
 \textbf{leniwe}, to znaczy dopiero podczas ich przeglądania.
 
@@ -47,7 +47,8 @@ W całym rozdziale przyjmujemy standard \textbf{C++20} oraz nagłówki
 \texttt{<algorithm>}, \texttt{<iterator>}, \texttt{<ranges>},
 \texttt{<concepts>}, \texttt{<vector>} i pozostałe nagłówki wymienione
 w przykładach. W dalszych sekcjach posłużymy się semantyką przenoszenia
-(rozdział~6) i lambdami (rozdział~7).
+(rozdział~6) i lambdami (rozdział~9). Dodatki oznaczone jako C++23
+wymagają nowszego standardu.
 
 \section{Iteratory: uogólnienie wskaźników}
 \label{sec:cpp8-iterators}
@@ -119,24 +120,11 @@ elementu nie unieważnia iteratorów do pozostałych elementów, ale nie
 oznacza to, że można dalej używać iteratora do elementu usuniętego.
 
 \section{Kategorie iteratorów i ich wymagania}
-
-\begin{center}\small
-\begin{tabularx}{\textwidth}{@{}p{0.31\textwidth}X@{}}
-\toprule
-Kategoria & Dostępne możliwości \\
-\midrule
-\code{input_iterator} & Jednokierunkowy odczyt; wielokrotne przejście może być niemożliwe. \\
-\code{forward_iterator} & Jednokierunkowe, wielokrotne przechodzenie po tym samym zakresie. \\
-\code{bidirectional_iterator} & Także przechodzenie wstecz operatorem \code{--}. \\
-\code{random_access_iterator} & Skoki o odległość i porównania kolejności w stałym czasie. \\
-\code{contiguous_iterator} & Elementy zajmują kolejne miejsca w pamięci, jak w \code{vector}. \\
-\bottomrule
-\end{tabularx}
-\end{center}
 \label{sec:cpp8-iterator-categories}
 
-Zestaw koncepcji C++20 opisuje operacje i własności iteratorów, a nie
-jedynie nazwy klas. Najważniejsze kategorie zestawia tabela.
+Koncepcje C++20 opisują, co można zrobić z iteratorem. Kolejne
+kategorie pozwalają na coraz więcej operacji; osobno istnieje iterator
+służący do zapisu. Tabela pokazuje te różnice na przykładach.
 
 \begin{center}
 \small
@@ -197,6 +185,10 @@ Wybór algorytmu jest zatem ograniczony kategorią iteratora.
 
 \section{Własny iterator i własny zakres}
 \label{sec:cpp8-own-iterator}
+
+To rozszerzenie pokazuje, skąd biorą się wymagania iteratorów. Do
+zwykłego korzystania z kontenerów i widoków nie trzeba pisać własnego
+iteratora.
 
 Zbudujemy iterator generujący kolejne liczby całkowite. Nie będzie on
 przechowywać ani wskaźnika, ani kontenera: całą potrzebną informacją
@@ -298,7 +290,7 @@ jednokrotnych źródeł danych przejście oznacza również ich zużycie.
 
 \section{Koncepcje zakresów w praktyce}
 
-Własności zakresów sprawdzamy za pomocą koncepcji z rozdziału~5.
+Własności zakresów sprawdzamy za pomocą koncepcji z rozdziału~13.
 Najważniejsze z nich to:
 \begin{itemize}
 \item \texttt{input\_range} i \texttt{forward\_range},
@@ -380,7 +372,7 @@ auto it = std::ranges::find(people, 32, &Person::age);
 W wywołaniu \texttt{sort(people, \{\}, \&Person::age)} puste
 nawiasy oznaczają domyślny komparator \texttt{std::ranges::less},
 a wskaźnik do składowej to projekcja. Standard używa mechanizmu
-\texttt{std::invoke}, omówionego w rozdziale~7.
+\texttt{std::invoke}, omówionego w rozdziale~9.
 
 \section{Widoki: \textit{view} nie jest synonimem kontenera}
 \label{sec:cpp8-views}
@@ -422,7 +414,6 @@ Adaptor widoku & Działanie \\
 \code{views::take(n)} & Ogranicza iterację do najwyżej \code{n} elementów. \\
 \code{views::drop(n)} & Pomija pierwsze \code{n} elementów zakresu. \\
 \code{views::iota(a, b)} & Generuje kolejne wartości od \code{a} do granicy \code{b}. \\
-\code{ranges::to<vector>} & Materializuje zakres do kontenera; funkcja jest dostępna od C++23, nie w samym C++20. \\
 \bottomrule
 \end{tabularx}
 \end{center}
@@ -544,11 +535,8 @@ Zachowując wynik na później, trzeba zapewnić odpowiedni czas życia
 cudzysłowy i escapowanie pól zgodnie z pełnym formatem CSV.
 
 \paragraph{Uwaga na wersję standardu.}
-\texttt{std::views::zip} i \texttt{std::views::enumerate} są
-konstrukcjami \textbf{C++23}, podobnie jak \texttt{std::ranges::to}.
-Nie są dostępne w czystym C++20. W standardzie C++20 wynik można zebrać do kontenera np.
-algorytmem \texttt{ranges::copy} z iteratorem wstawiającym
-\texttt{std::back\_inserter}.
+Omówione dotąd adaptory pochodzą z C++20. Dalsze możliwości, takie jak
+\texttt{views::zip} i \texttt{ranges::to}, pojawiły się w C++23.
 
 \section{Materializacja wyniku i koszt przetwarzania}
 \label{sec:cpp8-materialize}
@@ -579,10 +567,49 @@ gwarancja, że widoki zawsze będą szybsze: koszty iteracji, predykatów,
 przepływu sterowania i optymalizacji zależą od konkretnego kodu i
 kompilatora. W zadaniach krytycznych wykonuj pomiary.
 
+\section{Przydatne dodatki do Ranges w C++23}
+\label{sec:cpp8-cpp23}
+
+C++23 rozszerza zestaw widoków. \texttt{chunk(n)} dzieli zakres na
+\emph{kolejne grupy} po najwyżej \(n\) elementów, a \texttt{slide(n)}
+przesuwa \emph{okno} długości \(n\) o jeden element. Dla tych samych
+danych dają więc inne wyniki:
+
+\begin{lstlisting}
+#include <ranges>
+#include <vector>
+
+std::vector<int> xs{1, 2, 3, 4, 5};
+auto groups = xs | std::views::chunk(2);
+// [1, 2], [3, 4], [5]
+auto windows = xs | std::views::slide(2);
+// [1, 2], [2, 3], [3, 4], [4, 5]
+\end{lstlisting}
+
+\texttt{views::zip(a, b)} łączy odpowiadające sobie elementy dwóch
+zakresów i kończy się wraz z krótszym z nich. \texttt{views::enumerate}
+dołącza do elementu jego indeks, zaczynając od zera. Te widoki nadal
+przetwarzają dane podczas iteracji, bez tworzenia kontenera wynikowego.
+
+W C++23 wynik widoku można łatwiej zapisać w kontenerze przez
+\texttt{std::ranges::to}. Jest to operacja \emph{natychmiastowa}:
+
+\begin{lstlisting}
+auto evens = std::ranges::to<std::vector<int>>(
+    xs | std::views::filter([](int x) { return x % 2 == 0; }));
+// evens == {2, 4}; evens owns its elements
+\end{lstlisting}
+
+Do skompilowania tych przykładów potrzebny jest standard C++23 oraz
+implementacja biblioteki, która udostępnia wymienione funkcje. W C++20
+wynik zbiera się na przykład przez \texttt{std::ranges::copy} i
+\texttt{std::back\_inserter}, jak w poprzedniej sekcji.
+
 \section{Własność danych, czas życia i \texttt{borrowed\_range}}
 \label{sec:cpp8-lifetime}
 
-To najważniejsza część praktycznego korzystania z Ranges. Widoki
+Najprostsza reguła brzmi: jeżeli widok tylko odwołuje się do danych,
+dane muszą istnieć przez cały czas używania widoku. Widoki
 \textbf{nie zawsze posiadają} bazowe dane. W przypadku
 \texttt{std::views::all} przeprowadzamy istotne rozróżnienie:
 
@@ -630,6 +657,8 @@ auto make_owning_view() {
 
 \subsection{Co naprawdę mówi \texttt{borrowed\_range}?}
 
+To pojęcie przydaje się głównie do określenia, czy algorytm może
+bezpiecznie zwrócić iterator z przekazanego zakresu.
 Koncepcja \texttt{borrowed\_range<R>} oznacza w uproszczeniu, że
 iteratory otrzymane z zakresu typu \texttt{R} mogą pozostać ważne
 po zniszczeniu \emph{samego obiektu zakresu} (o ile dane, do których
@@ -729,6 +758,10 @@ danych. Przenoszenie lub realokacja nie są automatycznie śledzone.
 \section{Własny widok za pomocą \texttt{view\_interface}}
 \label{sec:cpp8-custom-view}
 
+Ten przykład jest rozszerzeniem dla osób, które chcą tworzyć własne
+typy widoków. Przy korzystaniu z gotowych \texttt{std::views}
+nie trzeba implementować \texttt{view\_interface}.
+
 Na końcu zbudujemy \emph{własny widok} generujący kwadraty liczb
 całkowitych od zera do \(n-1\). Użyjemy
 \texttt{std::ranges::view\_interface}, które dostarcza wygodnych
@@ -814,12 +847,16 @@ std::ranges::transform(source,
 auto lazy = source | std::views::transform(
     [](int x) { return x * x; });
 // lazy does not own a vector of squared values
+
+source[0] = 10;
+// eager[0] is still 1
+// *lazy.begin() is now 100
 \end{lstlisting}
 
 Wariant pierwszy wymaga pamięci na trzy elementy i kończy obliczenia
-przed kolejną instrukcją. Wariant drugi może obliczać wartości dopiero
-przy dereferencji iteratorów. Po zmianie \texttt{source} kolejne
-odczyty widoku \texttt{lazy} mogą odzwierciedlać nowe dane.
+przed kolejną instrukcją. Wariant drugi oblicza kwadrat przy odczycie
+elementu widoku. Ponieważ \texttt{lazy} odwołuje się do
+\texttt{source}, odczyt po zmianie źródła daje nową wartość.
 
 \section{Projektowanie API z wykorzystaniem Ranges}
 \label{sec:cpp8-api}
