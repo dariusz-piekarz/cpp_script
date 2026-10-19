@@ -1109,11 +1109,10 @@ zmiennej przez wartość zazwyczaj żadnego z nich.
 \section{Przykład przekrojowy: kolejka zadań}
 \label{sec:move-project}
 
-Rozważmy prosty bufor zadań przechowujący funkcje do
-późniejszego wykonania. Użyjemy \texttt{std::unique\_ptr},
-aby zadanie jednoznacznie posiadało zasób. Poniższy przykład
-jest niezależny od wielowątkowości; \emph{kolejka zadań}
-nie uruchamia niczego w osobnym wątku.
+Rozważmy prostą kolejkę zadań wykonywanych później.
+Lambda przechowuje \texttt{std::shared\_ptr}, dzięki czemu zasób
+istnieje do czasu jej wykonania. Przykład działa w jednym
+wątku; zadania uruchamia dopiero wywołanie \texttt{run()}.
 
 \begin{lstlisting}
 #include <functional>
