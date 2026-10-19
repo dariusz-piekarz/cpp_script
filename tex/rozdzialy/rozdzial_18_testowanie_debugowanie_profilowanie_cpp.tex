@@ -293,9 +293,9 @@ ręcznie deklarować funkcję. Plik nagłówkowy może wyglądać tak:
 double average(std::span<const double> xs);
 \end{lstlisting}
 
-Plik \code{average.cpp} zawiera kod pierwszego przykładu
-z~tej części rozdziału (z~dołączonym \code{average.hpp});
-w~pliku testów umieszczamy testy z~sekcji~\ref{sec:cpp18-gtest}.
+W pliku \code{average.cpp} jest kod pierwszego przykładu z tej części
+rozdziału. Dołączamy do niego \code{average.hpp}, a testy umieszczamy
+w osobnym pliku, jak w sekcji~\ref{sec:cpp18-gtest}.
 
 \begin{lstlisting}[language=bash,caption={Struktura projektu z GoogleTest.}]
 project/
