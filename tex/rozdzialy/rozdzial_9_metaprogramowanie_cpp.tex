@@ -655,9 +655,8 @@ static_assert(!contains_v<int>);
 \end{lstlisting}
 
 Zamiast tworzyć specjalizacje dla każdego elementu pakietu, korzystamy
-z jednego \texttt{fold expression}. Gdy potrzebna jest reprezentacja
-indeksów \texttt{0,1,...,N-1}, biblioteka udostępnia
-\texttt{std::make\_index\_sequence<N>}:
+z jednego \texttt{fold expression}. Do utworzenia indeksów
+$0,1,\ldots,N-1$ służy \texttt{std::make\_index\_sequence<N>}:
 
 \begin{lstlisting}
 #include <tuple>
