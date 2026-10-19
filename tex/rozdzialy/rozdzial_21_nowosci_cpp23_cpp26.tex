@@ -368,17 +368,17 @@ samodzielnie powiększyć tablicę. Dlatego rozmiar bufora i stan
 strumienia trzeba sprawdzić, jeśli dane mogą być dłuższe.
 
 Mniejsze, lecz praktyczne ułatwienia obejmują:
-\begin{description}[style=nextline]
-\item[\code{std::byteswap}] Odwrócenie kolejności bajtów dla
+\begin{itemize}
+\item \code{std::byteswap} --- odwrócenie kolejności bajtów dla
 odpowiedniego typu całkowitego, przydatne w kodowaniu protokołów.
-\item[\code{std::to_underlying}] Jawna konwersja wartości typu wyliczeniowego
+\item \code{std::to_underlying} --- jawna konwersja wartości typu wyliczeniowego
 na jego typ bazowy.
-\item[\code{std::forward_like}] Przenoszenie wzorca kwalifikatorów
+\item \code{std::forward_like} --- przenoszenie wzorca kwalifikatorów
 \code{const} i kategorii wartości z jednego typu na inne wyrażenie,
 przydatne przy pisaniu generycznych adapterów.
-\item[\code{std::bind_back}] Wygodne częściowe wiązanie argumentów
+\item \code{std::bind_back} --- wygodne częściowe wiązanie argumentów
 od prawej strony listy parametrów.
-\end{description}
+\end{itemize}
 
 \begin{lstlisting}[caption={Konwersja enum i zamiana kolejnosci bajtow (C++23).}]
 #include <bit>
@@ -594,7 +594,7 @@ Jest to typ zgodny z celem opisanym w rozdziale~\ref{chap:cpp20-api}: odróżnia
 przekazanie callbacku na czas wywołania od przechowywania go we
 współdzielonym stanie zadań.
 
-\section{C++26: interpretacja nowego modelu wykonania}
+\section{C++26: model wykonania zadań}
 
 Model \emph{senders/receivers} wprowadza pojęcia opisujące wynik
 operacji asynchronicznej oraz jej kontynuację. W odróżnieniu od
@@ -611,7 +611,7 @@ uruchomioną pracą. Ważne są trzy oddzielne momenty:
 \end{enumerate}
 
 Poniżej \code{just} tworzy opis wartości, a \code{then} dodaje
-przekształcenie. Dopiero \code{std::this_thread::sync_wait} uruchamia
+przekształcenie. Dopiero \path{std::this_thread::sync_wait} uruchamia
 operację i czeka na wynik. Ten przykład nie wymaga osobnego wątku:
 
 \begin{lstlisting}[caption={Opis i uruchomienie prostego zadania (C++26; wymaga <execution>).}]
