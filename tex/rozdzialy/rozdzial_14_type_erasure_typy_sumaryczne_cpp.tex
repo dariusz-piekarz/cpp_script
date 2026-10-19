@@ -872,9 +872,9 @@ we wszystkich zastosowaniach.
 \section{Granice bezpieczeństwa: wyjątki, czas życia i współbieżność}
 
 \paragraph{Wyjątki.}
-\texttt{optional::value()}, \texttt{std::get} dla wariantu, \texttt{any\_cast}
-i wywołanie pustego \texttt{std::function} mogą zgłaszać odpowiednie
-wyjątki. Konstrukcja zawartości i przypisanie także mogą rzucać,
+Odczyt przez \texttt{optional::value()}, \texttt{std::get} z wariantu
+lub \texttt{any\_cast} może zgłosić wyjątek. Podobnie działa wywołanie
+pustego \texttt{std::function}. Konstrukcja zawartości i przypisanie także mogą rzucać,
 ponieważ wykonują operacje typu przechowywanego. Należy rozróżniać
 \emph{brak wartości} (normalny stan \texttt{optional}) od
 \emph{niepowodzenia operacji}, któremu warto nadać osobną reprezentację.
