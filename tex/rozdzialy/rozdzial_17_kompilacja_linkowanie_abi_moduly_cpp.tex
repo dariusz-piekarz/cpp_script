@@ -91,7 +91,7 @@ int main() {
 \begin{lstlisting}[language=bash,caption={Wybrane etapy budowania przy uzyciu GCC/Clang.}]
 g++ -std=c++20 -E hello.cpp -o hello.ii  # Preprocesor
 # Produkt poprzedniego etapu moze byc duzy.
-g++ -std=c++20 -S hello.cpp -o hello.s   # Asembler
+g++ -std=c++20 -S hello.cpp -o hello.s   # Kod asemblerowy
 
 g++ -std=c++20 -c hello.cpp -o hello.o   # Kod obiektowy
 g++ hello.o -o hello                      # Linkowanie
@@ -190,7 +190,7 @@ przez preprocesor. Wielokrotne dołączenie tego samego nagłówka
 w~jednej TU mogłoby więc prowadzić do powtórzenia definicji klasy.
 Chronimy się przez \emph{include guard}:
 
-\begin{lstlisting}[caption={Klasyczna os?ona nag?owka.}]
+\begin{lstlisting}[caption={Klasyczna osłona nagłówka.}]
 #ifndef LIB_WIDGET_HPP
 #define LIB_WIDGET_HPP
 
@@ -217,13 +217,13 @@ powinna mieć jedną definicję w~programie. Reguły ODR zawierają
 wyjątki pozwalające na identyczne definicje w~różnych TU, np. dla
 odpowiednich funkcji \code{inline}, klas i~szablonów.
 
-\begin{lstlisting}[caption={Typowa pu?apka: definicja zwyk?ej funkcji w nag?owku.}]
+\begin{lstlisting}[caption={Typowa pułapka: definicja zwykłej funkcji w nagłówku.}]
 // BAD: wrong.hpp, dolaczony do dwoch plikow .cpp
 int twice(int x) { return 2 * x; }
 // Dwie zewnetrzne definicje -> naruszenie ODR.
 \end{lstlisting}
 
-\begin{lstlisting}[caption={Definicja inline przeznaczona do nag?owka.}]
+\begin{lstlisting}[caption={Definicja inline przeznaczona do nagłówka.}]
 // Plik: twice.hpp
 #pragma once
 inline int twice(int x) { return 2 * x; }
@@ -253,7 +253,7 @@ int main() { return request_limit == 100 ? 0 : 1; }
 \end{lstlisting}
 
 Od C++17 w~nagłówkach można również definiować \emph{zmienne inline}:
-\begin{lstlisting}[caption={Zmienna inline w nag?owku (C++17).}]
+\begin{lstlisting}[caption={Zmienna inline w nagłówku (C++17).}]
 #pragma once
 inline constexpr int default_timeout_ms = 250;
 inline int global_counter = 0;
@@ -331,7 +331,7 @@ linkera. Szczególnie groźne jest warunkowe definiowanie tej samej
 klasy w~dwóch TU w~inny sposób, np. przy użyciu sprzecznych
 makr kompilacji:
 
-\begin{lstlisting}[caption={Przyk?ad niezgodnych definicji typu (celowo b?edny).}]
+\begin{lstlisting}[caption={Przykład niezgodnych definicji typu (celowo błędny).}]
 // Plik: config.hpp
 struct Config {
 #ifdef EXTRA_FIELD
@@ -400,7 +400,7 @@ ma nazwę zgodną z~łącznością języka C. Nie jest to gwarancja pełnej
 zgodności ABI z~dowolną biblioteką C: znaczenie mają także deklaracje
 typów i~konwencja wywołania ustalona dla danej platformy.
 
-\begin{lstlisting}[language=bash,caption={Demanglowanie i inspekcja symboli (przyk?ady narzedziowe).}]
+\begin{lstlisting}[language=bash,caption={Demanglowanie i inspekcja symboli (przykłady narzędziowe).}]
 g++ -std=c++20 -c overload.cpp -o overload.o
 nm overload.o
 nm -C overload.o
@@ -573,7 +573,7 @@ int main() {
 }
 \end{lstlisting}
 
-\begin{lstlisting}[language=bash,caption={Budowanie przyk?adu wtyczki (Linux/ELF).}]
+\begin{lstlisting}[language=bash,caption={Budowanie przykładu wtyczki (Linux/ELF).}]
 g++ -std=c++20 -fPIC -shared plugin.cpp -o libplugin.so
 g++ -std=c++20 loader.cpp -ldl -o loader
 ./loader
@@ -669,6 +669,7 @@ private:
 
 \begin{lstlisting}[caption={PImpl: plik widget.cpp.}]
 #include "widget.hpp"
+#include <stdexcept>
 #include <utility>
 
 struct Widget::Impl {
@@ -681,12 +682,21 @@ Widget::~Widget() = default;
 Widget::Widget(Widget&&) noexcept = default;
 Widget& Widget::operator=(Widget&&) noexcept = default;
 
-int Widget::value() const { return impl_->value; }
-void Widget::set_value(int value) { impl_->value = value; }
+int Widget::value() const {
+    if (!impl_) throw std::logic_error("Widget was moved from");
+    return impl_->value;
+}
+void Widget::set_value(int value) {
+    if (!impl_) throw std::logic_error("Widget was moved from");
+    impl_->value = value;
+}
 \end{lstlisting}
 
 Destruktor jest zdefiniowany w~\code{widget.cpp}, gdzie \code{Impl}
 jest kompletny; to istotne przy \code{std::unique_ptr<Impl>}.
+Po przeniesieniu źródłowy \code{Widget} ma pusty \code{impl_}.
+Można go zniszczyć lub przypisać mu nową wartość, ale odczyt i zapis
+przez powyższe metody zgłoszą wtedy \code{std::logic_error}.
 PImpl nie zapewnia automatycznie pełnej stabilności ABI: nadal
 liczy się zgodność kompilatora, standardowej biblioteki, eksportu
 symboli, konwencji wywołania i~pozostałych publicznych deklaracji.
@@ -700,7 +710,7 @@ oraz nieprzezroczystych uchwytach (\emph{opaque handles}). Zamiast
 przekazywać \code{std::string} lub klasy z~funkcjami wirtualnymi,
 przekazuje się proste typy i~wskaźniki.
 
-\begin{lstlisting}[caption={Przyk?adowy szkic stabilniejszego interfejsu binarnego.}]
+\begin{lstlisting}[caption={Przykładowy szkic stabilniejszego interfejsu binarnego.}]
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -747,7 +757,7 @@ CMake modeluje budowanie przez \emph{targety}: bibliotekę, program,
 interfejsową bibliotekę nagłówkową i~ich właściwości.
 
 Przykładowa struktura:
-\begin{lstlisting}[caption={Uk?ad plikow klasycznej biblioteki CMake.}]
+\begin{lstlisting}[caption={Układ plików klasycznej biblioteki CMake.}]
 project/
   CMakeLists.txt
   include/
@@ -825,7 +835,7 @@ wymagań i~publiczne nagłówki używane przez konsumentów.
 
 \subsection{Diagnostyka, sanitizatory, LTO i~build types}
 
-\begin{lstlisting}[language=bash,caption={Przyk?adowe flagi diagnostyczne GCC/Clang.}]
+\begin{lstlisting}[language=bash,caption={Przykładowe flagi diagnostyczne GCC/Clang.}]
 g++ -std=c++20 -O0 -g -Wall -Wextra -Wpedantic \
     -fsanitize=address,undefined main.cpp -o app_debug
 
@@ -857,7 +867,7 @@ wymaga wsparcia kompilatora i~systemu budowania.
 \subsection{Pierwszy moduł: \texttt{export module} i~\texttt{import}}
 
 Rozważmy dwa pliki:
-\begin{lstlisting}[caption={Interfejs modu?u geometry: plik geometry.cppm.}]
+\begin{lstlisting}[caption={Interfejs modułu geometry: plik geometry.cppm.}]
 export module geometry;
 
 export int square(int x) {
@@ -869,7 +879,7 @@ int hidden_helper(int x) {
 }
 \end{lstlisting}
 
-\begin{lstlisting}[caption={Klient modu?u: plik main.cpp.}]
+\begin{lstlisting}[caption={Klient modułu: plik main.cpp.}]
 #include <iostream>
 import geometry;
 
@@ -908,7 +918,7 @@ Zależności muszą być budowane w~poprawnym porządku:
 
 Dla prostego modułu \code{geometry.cppm} w~Clangu obsługującym
 standardowe moduły można zastosować:
-\begin{lstlisting}[language=bash,caption={Budowanie przyk?adowego modu?u w Clangu (tryb BMI).}]
+\begin{lstlisting}[language=bash,caption={Budowanie przykładowego modułu w Clangu (tryb BMI).}]
 clang++ -std=c++20 geometry.cppm --precompile -o geometry.pcm
 clang++ -std=c++20 -c geometry.pcm -o geometry.o
 clang++ -std=c++20 -fmodule-file=geometry=geometry.pcm \
@@ -921,7 +931,7 @@ Dla GCC~14 (wsparcie modułów C++20 było w~tej wersji nadal rozwijane)
 trzeba dodatkowo włączyć eksperymentalny mechanizm
 \code{-fmodules-ts}. W~przykładach z~GCC~14 przydatne bywa jawne
 wskazanie języka przy rozszerzeniu \code{.cppm}:
-\begin{lstlisting}[language=bash,caption={Budowanie tego samego modu?u z GCC 14.}]
+\begin{lstlisting}[language=bash,caption={Budowanie tego samego modułu z GCC 14.}]
 g++ -std=c++20 -fmodules-ts -x c++ -c geometry.cppm \
     -o geometry.o
 # GCC tworzy potrzebne dane interfejsu w gcm.cache/.
@@ -941,7 +951,7 @@ Moduł może rozdzielać interfejs od implementacji bez tradycyjnego
 nagłówka. Jednostka implementacji deklaruje \code{module name;},
 a~nie \code{export module name;}:
 
-\begin{lstlisting}[caption={Dwa pliki jednego modu?u: interface.cppm i implementation.cpp.}]
+\begin{lstlisting}[caption={Dwa pliki jednego modułu: engine.cppm i engine.cpp.}]
 // Plik: engine.cppm
 export module engine;
 export int run(int value);
@@ -961,7 +971,7 @@ implementacji importuje interfejs swojego modułu niejawnie.
 Tradycyjny nagłówek może wymagać makr konfigurujących jego treść.
 W~takim przypadku można skorzystać z~\emph{global module fragment}:
 
-\begin{lstlisting}[caption={Global module fragment: tradycyjny include przed modu?em.}]
+\begin{lstlisting}[caption={Global module fragment: tradycyjny include przed modułem.}]
 module;
 #include <string>
 #include <utility>
@@ -985,7 +995,7 @@ modułem standardowej biblioteki \code{import std;}.
 Duży moduł można podzielić na partycje. Nazwa po dwukropku oznacza
 partycję wewnątrz jednego modułu, a~nie odrębny nazwany moduł.
 
-\begin{lstlisting}[caption={Dwie jednostki interfejsu modu?u z partycja.}]
+\begin{lstlisting}[caption={Dwie jednostki interfejsu modułu z partycją.}]
 // Plik: math_detail.cppm
 export module mathlib:detail;
 export int triple(int x) { return 3 * x; }
@@ -1023,7 +1033,7 @@ tekstowo wklejany przez \code{\#include}.
 Od CMake~3.28 dostępne są mechanizmy skanowania modułów i~specjalny
 typ zbioru plików \code{CXX_MODULES}. Przykład projektu:
 
-\begin{lstlisting}[language={},caption={CMakeLists.txt projektu korzystajacego z modu?ow C++20.}]
+\begin{lstlisting}[language={},caption={CMakeLists.txt projektu korzystającego z modułów C++20.}]
 cmake_minimum_required(VERSION 3.28)
 project(GeometryModules LANGUAGES CXX)
 
@@ -1037,7 +1047,7 @@ add_executable(app main.cpp)
 target_link_libraries(app PRIVATE geometry)
 \end{lstlisting}
 
-\begin{lstlisting}[language=bash,caption={Konfiguracja modu?ow przy uzyciu generatora Ninja.}]
+\begin{lstlisting}[language=bash,caption={Konfiguracja modułów przy użyciu generatora Ninja.}]
 cmake -S . -B build -G Ninja
 cmake --build build
 ./build/app
@@ -1060,7 +1070,7 @@ nazwanego modułu \code{std} w~tym standardzie. \code{import std;}
 jest standaryzowane w~C++23; obsługa zależy od kompilatora, dostawcy
 biblioteki standardowej i~wersji systemu budowania.
 
-\begin{lstlisting}[caption={Nazwany modu? standardowej biblioteki (C++23, zalezny od wsparcia).}]
+\begin{lstlisting}[caption={Nazwany moduł standardowej biblioteki (C++23, zależny od wsparcia).}]
 import std;
 
 int main() {
