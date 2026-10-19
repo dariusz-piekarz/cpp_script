@@ -829,13 +829,13 @@ auto stringify = overloaded{
 std::string result = std::visit(stringify, value); // "Hello"
 \end{lstlisting}
 
-Każda lambda dostarcza jeden \texttt{operator()}. Dziedziczenie
-wariadyczne i deklaracja \texttt{using Fs::operator()...} tworzą zbiór
-przeciążeń, spośród których kompilator wybiera odpowiednią funkcję.
-W tym przykładzie wszystkie warianty wywołania zwracają ten sam typ,
-\texttt{std::string}, czego wymaga tu pojedyncze wywołanie
-\texttt{std::visit}. Konstrukcja jest przydatna przy przetwarzaniu
-stanów programu i heterogenicznych danych.
+Każda lambda ma własny \texttt{operator()}. Szablon
+\texttt{overloaded} dziedziczy po lambdach. Deklaracja
+\texttt{using Fs::operator()...} udostępnia ich operatory jako
+przeciążenia. Kompilator wybiera pasujący operator. W tym
+przykładzie oba przypadki zwracają \texttt{std::string}; wymaga tego
+wywołanie \texttt{std::visit}. Tak można obsługiwać stany programu
+i dane różnych typów.
 
 \subsection{Rozwijanie krotki przez \texttt{std::apply}}
 
