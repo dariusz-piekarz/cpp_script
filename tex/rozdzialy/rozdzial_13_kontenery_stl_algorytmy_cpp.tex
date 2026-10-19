@@ -431,10 +431,10 @@ zastosować osobne, świadomie wybrane reguły normalizacji i kolacji.
 
 \subsection{Wyszukiwanie heterogeniczne}
 
-Jeżeli komparator jest \emph{transparentny} (np. \texttt{std::less<>}),
-\texttt{std::map<std::string,T,std::less<>>} umożliwia wyszukiwanie
-przez \texttt{std::string\_view} bez konieczności tworzenia tymczasowego
-\texttt{std::string}. Heterogeniczne przeciążenia \texttt{find} są dostępne
+Jeżeli komparator mapy jest \emph{transparentny} (np. \texttt{std::less<>}),
+możemy szukać w mapie o kluczach \texttt{std::string} za pomocą
+\texttt{std::string\_view}, bez tworzenia tymczasowego ciągu znaków.
+Heterogeniczne przeciążenia \texttt{find} są dostępne
 od C++14, a \texttt{contains} od C++20.
 
 \begin{lstlisting}[caption={Heterogeniczne wyszukiwanie w map (C++20); kompletny program.}]
@@ -822,10 +822,10 @@ int main() {
 \subsection{Własność elementów w kontenerach polimorficznych}
 
 Przechowywanie obiektów klas pochodnych przez wartość w
-\texttt{vector<Base>} może powodować \emph{object slicing}. Jeśli
-potrzebujemy polimorfizmu dynamicznego, naturalne jest np.
-\texttt{vector<unique\_ptr<Base>>}; gdy rodzina typów jest zamknięta,
-można rozważyć \texttt{vector<variant<...>>} (zob. rozdział~\ref{chap:cpp14-type-erasure}).
+\texttt{vector<Base>} może powodować \emph{object slicing}. Dla
+polimorfizmu dynamicznego używamy np. wektora wskaźników
+\texttt{unique\_ptr<Base>}. Przy zamkniętej rodzinie typów można użyć
+wektora z elementami \texttt{variant} (zob. rozdział~\ref{chap:cpp14-type-erasure}).
 Różnicę między polimorfizmem a obcięciem obiektu omawia
 rozdział~\ref{chap:cpp-object-model}.
 
