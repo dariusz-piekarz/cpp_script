@@ -282,11 +282,10 @@ kontrolowane oczekiwanie na koniec pracy przed zniszczeniem mocka.
 \subsection{CMake i CTest: mały projekt wieloplikowy}
 \label{sec:cpp18-cmake-test}
 
-Poniższa organizacja zakłada, że \code{average} ma deklarację w~pliku
-\code{average.hpp}, definicję w~\code{average.cpp}, a~testy w~pliku
-\code{average_test.cpp}. W~przykładzie \code{average_test.cpp}
-należy dodać \verb|#include "average.hpp"| zamiast deklarować
-funkcję ręcznie. Plik nagłówkowy może wyglądać następująco:
+Funkcja \code{average} ma deklarację w~pliku \code{average.hpp}
+i definicję w~pliku \code{average.cpp}. Testy umieszczamy w~pliku
+\code{average_test.cpp}; dołączają one \code{average.hpp}, zamiast
+ręcznie deklarować funkcję. Plik nagłówkowy może wyglądać tak:
 
 \begin{lstlisting}[caption={Plik average.hpp: deklaracja API testowanej funkcji.}]
 #pragma once
