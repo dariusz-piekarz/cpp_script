@@ -540,9 +540,9 @@ w~powyższej postaci dotyczą konkretnego toolchainu, nie ISO C++.
 \subsection{\texttt{dlopen}, \texttt{dlsym} i~granica interfejsu wtyczki}
 
 Bibliotekę można także załadować podczas działania procesu, bez
-linkowania jej wprost z~aplikacją. Na POSIX często używa się
-\code{dlopen}/\code{dlsym}, natomiast na Windows odpowiedników
-\code{LoadLibrary}/\code{GetProcAddress}.
+linkowania jej wprost z~aplikacją. Na POSIX służą do tego funkcje
+\code{dlopen} i~\code{dlsym}. Na Windows podobną rolę pełnią
+\code{LoadLibrary} i~\code{GetProcAddress}.
 
 \begin{lstlisting}[caption={Prosta wtyczka C ABI: biblioteka i klient POSIX (dwa pliki).}]
 // Plik: plugin.cpp
@@ -692,8 +692,9 @@ void Widget::set_value(int value) {
 }
 \end{lstlisting}
 
-Destruktor jest zdefiniowany w~\code{widget.cpp}, gdzie \code{Impl}
-jest kompletny; to istotne przy \code{std::unique_ptr<Impl>}.
+Definicję destruktora umieszczamy w~\code{widget.cpp}. Tam typ
+\code{Impl} jest kompletny, czego potrzebuje destruktor
+\code{std::unique_ptr<Impl>}.
 Po przeniesieniu źródłowy \code{Widget} ma pusty \code{impl_}.
 Można go zniszczyć lub przypisać mu nową wartość, ale odczyt i zapis
 przez powyższe metody zgłoszą wtedy \code{std::logic_error}.
@@ -1198,6 +1199,7 @@ BMI/CMI i~kolejności kompilacji.
 
 \section*{Literatura i~dokumentacja}
 \addcontentsline{toc}{section}{Literatura i dokumentacja}
+\begingroup\sloppy
 \begin{itemize}
 \item ISO/IEC 14882:2020, zagadnienia \emph{translation units},
       \emph{linkage}, \emph{One Definition Rule} i~\emph{modules}.
@@ -1217,3 +1219,4 @@ BMI/CMI i~kolejności kompilacji.
       --- widoczność symboli w~ELF.
 \item John Lakos, \emph{Large-Scale C++ Software Design}, Addison-Wesley, 1996.
 \end{itemize}
+\endgroup
