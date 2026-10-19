@@ -964,10 +964,10 @@ W~dobrym API warto określić, co dzieje się z~wynikiem po anulowaniu:
       przed zniszczeniem współdzielonych danych.
 \end{itemize}
 
-Żadne z~tych pytań nie ma jednej odpowiedzi dla wszystkich bibliotek.
-Sama metoda \code{future.wait_for()} nie anuluje zadań, a~korutyna
-z~rozdziału~\ref{chap:cpp15-coroutines} wymaga mechanizmu propagacji żądania anulowania
-przez awaitery i~executor.
+Żadne z tych pytań nie ma jednej odpowiedzi dla wszystkich bibliotek.
+Metoda \code{future.wait_for()} czeka tylko przez ograniczony czas;
+nie anuluje zadania. Korutyna z rozdziału~\ref{chap:cpp15-coroutines}
+wymaga przekazania żądania anulowania przez awaitery i executor.
 
 \section{Fałszywe współdzielenie (\emph{false sharing}) i~cache coherence}
 \label{sec:cpp16-false-sharing}
@@ -1083,14 +1083,14 @@ lepszą abstrakcją może być algorytm równoległy lub dyrektywa OpenMP.
 \subsection{Polityki wykonania standardowych algorytmów}
 
 Nagłówek \code{<execution>} udostępnia od C++17 między innymi:
-\begin{description}[style=nextline]
-\item[\code{std::execution::seq}] Wykonanie sekwencyjne.
-\item[\code{std::execution::par}] Implementacja może wykonywać pracę
+\begin{itemize}
+\item \code{std::execution::seq} --- wykonanie sekwencyjne.
+\item \code{std::execution::par} --- implementacja może wykonywać pracę
       równolegle; nie daje gwarancji, że rzeczywiście użyje wielu wątków.
-\item[\code{std::execution::par_unseq}] Zezwala dodatkowo na
+\item \code{std::execution::par_unseq} --- zezwala dodatkowo na
       niesekwencyjne wykonywanie, w~tym wektoryzację; nakłada ważne
       ograniczenia na wykonywane funkcje i~synchronizację.
-\end{description}
+\end{itemize}
 
 \begin{lstlisting}[caption={Równoległa transformacja bez współdzielonych zapisów (C++17).}]
 #include <algorithm>
