@@ -206,13 +206,16 @@ std::optional<unsigned> parse_digit(std::string_view x) {
 \end{lstlisting}
 
 \begin{lstlisting}[caption={Rozbudowany blad jako expected (C++23; fragment).}]
+#include <cstddef>
 #include <expected>
 #include <string>
+#include <string_view>
 
-std::expected<int, std::string> parse_id(std::string text) {
+std::expected<std::size_t, std::string>
+nonempty_length(std::string_view text) {
     if (text.empty())
-        return std::unexpected<std::string>{"empty identifier"};
-    return static_cast<int>(text.size());
+        return std::unexpected<std::string>{"empty text"};
+    return text.size();
 }
 \end{lstlisting}
 
