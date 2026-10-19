@@ -405,13 +405,15 @@ int main() {
 
 \subsection{Iterowanie i symbole łączy}
 
-\code{directory_iterator} przechodzi po jednym poziomie, natomiast
-\code{recursive_directory_iterator} schodzi do podkatalogów.
-\code{exists}, \code{is_regular_file}, \code{is_symlink}, \code{status},
-\code{symlink_status}, \code{canonical} i \code{weakly_canonical}
-mają różne znaczenie. Domyślnie nie należy utożsamiać ścieżki
-tekstowej z tożsamością rzeczywistego pliku: łącza symboliczne,
-uprawnienia i zmiany katalogów mogą zmienić wynik.
+\code{directory_iterator} przechodzi po jednym poziomie, a
+\path{recursive_directory_iterator} schodzi do podkatalogów.
+\code{exists} sprawdza istnienie ścieżki, \code{is_regular_file}
+zwykły plik, a \code{is_symlink} dowiązanie symboliczne.
+\code{status} podąża za dowiązaniem, zaś \code{symlink_status}
+opisuje samo dowiązanie. \code{canonical} wyznacza pełną ścieżkę
+istniejącego pliku; \code{weakly_canonical} dopuszcza nieistniejący
+końcowy fragment. Ścieżka tekstowa nie zawsze wskazuje ten sam plik:
+dowiązania, uprawnienia i zmiany katalogów mogą zmienić wynik.
 
 \begin{lstlisting}[caption={Wypisanie zwyklych plikow z katalogu (C++17).}]
 #include <filesystem>
@@ -487,8 +489,8 @@ std::string_view bad() {
 \end{lstlisting}
 
 Zmiana rozmiaru \code{std::string} może unieważnić wcześniejsze widoki.
-Dodatkowo \code{string_view::substr} nie kopiuje znaków, natomiast
-\code{string::substr} zwraca nowy \code{string}. W API akceptującym
+Dodatkowo \path{string_view::substr} nie kopiuje znaków, natomiast
+\path{string::substr} zwraca nowy \code{string}. W API akceptującym
 tekst wejściowy dobrze jest dokumentować, kto posiada pamięć i jak
 długo wywoływana funkcja może jej używać.
 
@@ -699,10 +701,9 @@ std::string format_integer(int value) {
 }
 \end{lstlisting}
 
-Warto odróżnić brak alokacji w samej konwersji od alokacji przy
-zbudowaniu wynikowego \code{std::string}. Można zamiast tego pisać
-do bufora zarządzanego przez wywołującego; wtedy jego czas życia i
-pojemność stają się elementem kontraktu.
+Sama konwersja nie musi alokować pamięci, ale utworzenie wynikowego
+\code{std::string} może to zrobić. Można też pisać do bufora
+wywołującego; wtedy trzeba określić jego pojemność i czas życia.
 
 \section{Małe protokoły binarne: odczyt kontrolowany}
 
@@ -814,10 +815,9 @@ Unicode i operacje językowe & Walidacja UTF-8 i wyspecjalizowana biblioteka. \\
 \end{tabularx}
 \end{center}
 
-\nota{Trzy częste błędy to: \code{while(!eof())}, ignorowanie błędu
-zapisu oraz zachowywanie \code{string_view} do zniszczonego bufora.
-Z kolei w kodzie wrażliwym na bezpieczeństwo samo sprawdzenie, czy
-ścieżka istnieje, nie zapewnia bezpiecznego otwarcia.}
+\nota{Częste błędy to pętla \code{while(!eof())}, ignorowanie błędu
+zapisu i zachowywanie \code{string_view} do zniszczonego bufora.
+Sprawdzenie istnienia ścieżki nie gwarantuje jej bezpiecznego otwarcia.}
 
 \section*{Literatura i dokumentacja}
 \addcontentsline{toc}{section}{Literatura i dokumentacja}
