@@ -917,11 +917,11 @@ int main() {
 }
 \end{lstlisting}
 
-CRTP nie jest bezpośrednim zamiennikiem wszystkich interfejsów
-wirtualnych: wyrażenie \texttt{Printable<A>*} nie jest uniwersalnym
-wskaźnikiem do dowolnego \texttt{Printable<B>}. Może natomiast
-umożliwiać \emph{static dispatch}, implementację domieszek
-(\emph{mixins}) i wykrywanie błędów już przy instancjowaniu szablonów.
+CRTP nie zastępuje każdego interfejsu wirtualnego. Wskaźniki
+\texttt{Printable<A>*} i \texttt{Printable<B>*} mają różne typy;
+nie da się ich używać zamiennie jako jednego interfejsu.
+CRTP umożliwia natomiast statyczny wybór funkcji (\emph{static dispatch}),
+tworzenie domieszek (\emph{mixins}) oraz wykrywanie błędów przy instancjowaniu szablonów.
 
 \section{Polimorfizm bez dziedziczenia: \texttt{std::variant}}
 \label{sec:cpp12-variant}
