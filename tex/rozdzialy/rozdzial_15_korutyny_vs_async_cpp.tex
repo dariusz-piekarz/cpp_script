@@ -581,10 +581,10 @@ jedynie odkłada wywołanie do momentu ręcznego wznowienia.
 Ważna różnica dotyczy czasu życia. Gdy ostatni uchwyt do stanu
 asynchronicznego utworzonego przez \texttt{std::async} z polityką
 \texttt{launch::async} jest niszczony i praca wciąż trwa, destruktor
-może czekać na jej ukończenie (w typowym przypadku rzeczywiście czeka).
-Poniższe dwa wywołania mogą więc wykonać się praktycznie sekwencyjnie:
+czeka na zakończenie powiązanego wątku.
+Pierwsze z poniższych wywołań zakończy się, zanim rozpocznie się drugie:
 
-\begin{lstlisting}[caption={Zignorowane future mogą wymuszać oczekiwanie; fragment.}]
+\begin{lstlisting}[caption={Zignorowany future wymusza oczekiwanie; fragment.}]
 // Funkcje slow_a i slow_b wykonuja dlugie obliczenia.
 // std::async(std::launch::async, slow_a);
 // std::async(std::launch::async, slow_b);
