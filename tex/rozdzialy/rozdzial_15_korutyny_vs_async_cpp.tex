@@ -60,15 +60,15 @@ Konstrukcja & Działanie w korutynie \\
 \end{center}
 
 C++20 wprowadził następujące konstrukcje składniowe:
-\begin{description}
-\item[\texttt{co\_await expr}] Zastosuj protokół oczekiwania do wyrażenia;
+\begin{itemize}
+\item \texttt{co\_await expr} --- zastosuj protokół oczekiwania do wyrażenia;
       zależnie od niego możesz zawiesić korutynę i później ją wznowić.
-\item[\texttt{co\_yield expr}] Udostępnij kolejną wartość generatora;
+\item \texttt{co\_yield expr} --- udostępnij kolejną wartość generatora;
       składniowo jest to szczególna postać oczekiwania, wykorzystująca
       metodę \texttt{yield\_value} obiektu \texttt{promise\_type}.
-\item[\texttt{co\_return expr}] Zakończ korutynę i przekaż wynik
+\item \texttt{co\_return expr} --- zakończ korutynę i przekaż wynik
       przez odpowiednie \texttt{return\_value} albo \texttt{return\_void}.
-\end{description}
+\end{itemize}
 
 Funkcja zawierająca jeden z tych operatorów (w odpowiednim kontekście)
 rozpoznawana jest jako korutyna. Typ jej zwracanej wartości musi
@@ -636,7 +636,7 @@ wykorzystująca wewnętrznie \texttt{std::promise<T>} i
 \texttt{std::future<T>}.
 
 W przeciwieństwie do poprzedniego przykładu ramka ma strategię
-\emph{samozniszczenia} przez \texttt{final\_suspend = suspend\_never}.
+\emph{samozniszczenia}: \texttt{final\_suspend} zwraca \texttt{suspend\_never}.
 Nie przechowujemy już zewnętrznego uchwytu właścicielskiego:
 po zakończeniu korutyna sama domyka swój cykl życia, a klient posiada
 wyłącznie \texttt{future}. W tej uproszczonej konstrukcji executor
@@ -968,8 +968,8 @@ obliczenia, a następnie wybieramy model wykonania i własności zasobów.
       w kolejce uchwyt do jego ramki.
 \item Mylenie automatycznej propagacji wyjątków w \texttt{std::async}
       z obowiązkami implementatora \texttt{promise\_type}.
-\item Traktowanie \texttt{std::stop\_token} jako mechanizmu
-      przymusowego przerwania dowolnego \texttt{co\_await}.
+\item Zakładanie, że \texttt{std::stop\_token} przymusowo przerywa
+      dowolne \texttt{co\_await}.
 \item Równoczesne wznawianie tej samej korutyny z kilku wątków.
 \item Uznanie, że zawieszenie i wznowienie zawsze kosztuje mniej
       niż zwykłe wywołanie funkcji.
@@ -1005,7 +1005,7 @@ i czas życia ramki. W obu przypadkach należy rozdzielać trzy pytania:
 \item \url{https://en.cppreference.com/w/cpp/coroutine/suspend_always} --- podstawowe awaitery.
 \item \url{https://en.cppreference.com/w/cpp/thread/async} --- \texttt{std::async} i polityki uruchamiania.
 \item \url{https://en.cppreference.com/w/cpp/thread/future} --- \texttt{std::future}.
-\item \url{https://en.cppreference.com/w/cpp/coroutine/generator} --- \texttt{std::generator} (C++23).
+\item \href{https://en.cppreference.com/w/cpp/coroutine/generator}{Dokumentacja \texttt{std::generator}} (C++23).
 \item Lewis Baker, \emph{C++ Coroutines: Understanding the Compiler Transformations}
       --- seria publikacji o modelu wykonania korutyn.
 \item David Mazières, \emph{My Tutorial and Take on C++20 Coroutines}, 2021.
