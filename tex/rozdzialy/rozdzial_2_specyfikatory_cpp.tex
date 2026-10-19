@@ -699,7 +699,7 @@ void example() {
     auto& original = shared_value();   // int&: ten sam obiekt
     x = 15;                            // nie zmienia shared_value()
     original = 20;                     // zmienia shared_value()
-    decltype(auto) y = shared_value(); // int&: także referencja
+    decltype(auto) y = shared_value(); // int&: rowniez referencja
     y = 21;
     (void)a;
     (void)b;
