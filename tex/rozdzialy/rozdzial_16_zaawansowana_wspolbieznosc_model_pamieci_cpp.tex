@@ -10,7 +10,7 @@
 
 \section{Cel rozdziału i powiązanie z podstawami}
 
-W rozdziale~1 poznaliśmy wątki, mutexy, zmienne warunkowe, operacje
+W rozdziale~\ref{chap:concurrency} poznaliśmy wątki, mutexy, zmienne warunkowe, operacje
 atomowe, \code{std::async}, pule wątków i~OpenMP. Sama znajomość tych
 interfejsów nie wystarcza jednak do samodzielnego projektowania
 algorytmów współbieżnych. Trzeba odpowiedzieć na trudniejsze pytania:
@@ -783,7 +783,7 @@ krótkich zadań nie powinny automatycznie oznaczać tysiąca wątków.
 
 \subsection{Pula wątków: bezpieczne zamknięcie i~propagacja wyjątków}
 
-Następny przykład rozwija pulę z~rozdziału~1. Używa mutexa
+Następny przykład rozwija pulę z~rozdziału~\ref{chap:concurrency}. Używa mutexa
 oraz zmiennej warunkowej. Łatwy dowód poprawności i~przewidywalne
 zachowanie przy zamykaniu są często ważniejsze niż
 niepotwierdzony \emph{lock-free}.
@@ -832,7 +832,7 @@ public:
             for (unsigned i = 0; i < count; ++i)
                 workers_.emplace_back([this] { worker_loop(); });
         } catch (...) {
-            close();  // zwolnij pracownikow przed rozwijaniem stosu
+            close();  // obudz pracownikow; ich destruktory wykonaja join
             throw;
         }
     }
@@ -903,7 +903,8 @@ Statyczny przydział zadań może zostawić jeden wątek przeciążony,
 gdy inne nie mają już pracy. Przechwytywanie pracy pomiędzy lokalnymi
 kolejkami poprawia \emph{równoważenie obciążenia}.
 
-Typowy projekt stosuje:\begin{enumerate}
+Typowy projekt stosuje:
+\begin{enumerate}
 \item właścicielski dostęp pracownika do jednego końca jego kolejki;
 \item kradzież elementów przez inne wątki z~drugiego końca;
 \item atomowe indeksy i~protokół obsługujący konflikt właściciela
@@ -965,7 +966,7 @@ W~dobrym API warto określić, co dzieje się z~wynikiem po anulowaniu:
 
 Żadne z~tych pytań nie ma jednej odpowiedzi dla wszystkich bibliotek.
 Sama metoda \code{future.wait_for()} nie anuluje zadań, a~korutyna
-z~rozdziału~15 wymaga mechanizmu propagacji żądania anulowania
+z~rozdziału~\ref{chap:cpp15-coroutines} wymaga mechanizmu propagacji żądania anulowania
 przez awaitery i~executor.
 
 \section{Fałszywe współdzielenie (\emph{false sharing}) i~cache coherence}
@@ -977,7 +978,7 @@ pomiędzy pamięciami podręcznymi. Wtedy zapis przez różne rdzenie
 może wymagać kosztownych transferów linii cache, choć z~punktu
 widzenia C++ nie ma wyścigu danych.
 
-\begin{lstlisting}[caption={Rozdzielenie intensywnie zapisywanych liczników (C++17).}]
+\begin{lstlisting}[caption={Rozdzielenie intensywnie zapisywanych liczników (C++20; stała wyrównania od C++17).}]
 #include <atomic>
 #include <cstdint>
 #include <iostream>
@@ -1007,7 +1008,7 @@ implementacji dotyczącą rozdzielania obiektów często modyfikowanych
 przez różne wątki; w~praktyce jej obsługa zależy od kompilatora
 i~biblioteki standardowej. \code{alignas} może zwiększać zużycie
 pamięci, zatem nie należy bez pomiarów wyrównywać w~ten sposób
-każdego pola. Rozdział~10 omawia szerzej cache locality i~organizację
+każdego pola. Rozdział~\ref{chap:cpp-memory-performance} omawia szerzej cache locality i~organizację
 danych AoS/SoA.
 
 \subsection{Co mierzyć przy ocenie skalowalności?}
@@ -1114,7 +1115,7 @@ niektóre kompilacje wymagają dodatkowej biblioteki wykonawczej.
 
 \subsection{C++ i~OpenMP: dwa poziomy abstrakcji}
 
-OpenMP, omawiany szczegółowo w~rozdziale~1, umożliwia między innymi
+OpenMP, omawiany szczegółowo w~rozdziale~\ref{chap:concurrency}, umożliwia między innymi
 równoległe pętle, redukcje i~zależności pomiędzy zadaniami.
 W~obliczeniach numerycznych typowe rozwiązanie wygląda tak:
 
@@ -1138,9 +1139,10 @@ Kodowanie redukcji przez \code{reduction} pozwala uniknąć współdzielenia
 jednego licznika zapisywanego przez wszystkie wątki. Kolejność
 sumowania liczb zmiennoprzecinkowych może być odmienna niż przy
 obliczeniu sekwencyjnym, a~zatem wynik może różnić się przez
-zaokrąglenia. Liczba wątków i~harmonogram OpenMP mogą być
-kontrolowane m.in. przez \code{OMP_NUM_THREADS}, \code{OMP_SCHEDULE}
-i~funkcje biblioteczne OpenMP.
+zaokrąglenia. Liczbę wątków można ustawić m.in. przez
+\code{OMP_NUM_THREADS}; \code{OMP_SCHEDULE} wpływa na harmonogram
+tylko przy \code{schedule(runtime)}. Powyższy przykład jawnie
+wybiera \code{schedule(static)}.
 
 \nota{Mieszanie pul wątków, OpenMP, równoległych algorytmów STL
 oraz zadań asynchronicznych może prowadzić do \emph{oversubscription}:
