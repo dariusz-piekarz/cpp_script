@@ -122,10 +122,12 @@ zastępuje testów dla danych znanych dopiero podczas wykonania.}
 
 \subsection{Niezależne testy danych wejściowych}
 
-Poniższy program można skompilować i~uruchomić bez dodatkowej biblioteki.
-Sprawdza wynik, wyjątek i~przypadek jednoelementowy.
+Poniższą funkcję \code{main} umieść pod definicją \code{average}
+z~poprzedniego listingu. Test nie wymaga zewnętrznej biblioteki.
+Sprawdza wynik, wyjątek i~przypadek jednoelementowy. Kompiluj go
+bez \code{-DNDEBUG}, aby wyrażenia \code{assert} były wykonywane.
 
-\begin{lstlisting}[caption={Samodzielny test funkcji average (C++20).}]
+\begin{lstlisting}[caption={Test funkcji average bez frameworka; dołącz pod jej definicją (C++20).}]
 #include <cassert>
 #include <cmath>
 #include <stdexcept>
@@ -708,16 +710,21 @@ BENCHMARK(BM_Accumulate)->Arg(1024)->Arg(1 << 20);
 BENCHMARK_MAIN();
 \end{lstlisting}
 
-\begin{lstlisting}[language=bash,caption={Budowanie z biblioteka Google Benchmark dostarczona przez CMake.}]
-# W CMakeLists.txt:
-# find_package(benchmark CONFIG REQUIRED)
-# add_executable(bench benchmark_sum.cpp)
-# target_compile_features(bench PRIVATE cxx_std_20)
-# target_link_libraries(bench PRIVATE benchmark::benchmark)
+\begin{lstlisting}[language={},caption={CMakeLists.txt dla przykładu Google Benchmark.}]
+cmake_minimum_required(VERSION 3.20)
+project(BenchmarkSum LANGUAGES CXX)
+find_package(benchmark CONFIG REQUIRED)
+add_executable(bench benchmark_sum.cpp)
+target_compile_features(bench PRIVATE cxx_std_20)
+target_link_libraries(bench PRIVATE benchmark::benchmark)
+\end{lstlisting}
 
-./bench --benchmark_repetitions=10
-./bench --benchmark_out=results.json \
-        --benchmark_out_format=json
+\begin{lstlisting}[language=bash,caption={Budowanie i powtarzanie pomiaru.}]
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+./build/bench --benchmark_repetitions=10
+./build/bench --benchmark_out=results.json \
+              --benchmark_out_format=json
 \end{lstlisting}
 
 W~porównaniach równoległych trzeba ponadto ustalić liczbę wątków,
