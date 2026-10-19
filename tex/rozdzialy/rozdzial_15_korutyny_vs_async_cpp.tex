@@ -217,6 +217,7 @@ poprawną propagację błędów.
 #include <cassert>
 #include <coroutine>
 #include <exception>
+#include <limits>
 #include <stdexcept>
 #include <utility>
 
@@ -286,8 +287,11 @@ private:
 };
 
 Generator squares(int n) {
-    for (int i = 1; i <= n; ++i)
+    for (int i = 1; i <= n; ++i) {
+        if (i > std::numeric_limits<int>::max() / i)
+            throw std::overflow_error("square outside int");
         co_yield i * i;
+    }
 }
 
 int main() {
@@ -452,14 +456,18 @@ public:
     explicit Task(Handle h) noexcept : h_(h) {}
     Task(const Task&) = delete;
     Task& operator=(const Task&) = delete;
-    Task(Task&& x) noexcept : h_(std::exchange(x.h_, {})) {}
+    Task(Task&& x) noexcept
+        : h_(std::exchange(x.h_, {})),
+          taken_(std::exchange(x.taken_, false)) {}
     ~Task() { if (h_) h_.destroy(); }
 
     T get() {
         if (!h_) throw std::logic_error("Empty task");
+        if (taken_) throw std::logic_error("Result already consumed");
         if (!h_.done()) h_.resume();
         if (!h_.done())
             throw std::logic_error("Task needs an external scheduler");
+        taken_ = true;
         if (h_.promise().error)
             std::rethrow_exception(h_.promise().error);
         return std::move(*h_.promise().result);
@@ -467,6 +475,7 @@ public:
 
 private:
     Handle h_{};
+    bool taken_ = false;
 };
 
 Task<int> calculate(int x) {
@@ -481,7 +490,8 @@ int main() {
 
 Ten \texttt{Task<T>} jest pedagogiczny: nie ma przeciążenia
 \texttt{operator co\_await}, nie wspiera wielokrotnego pobierania
-wyniku i nie potrafi samodzielnie czekać na zdarzenia zewnętrzne.
+wyniku (drugie \texttt{get()} zgłasza błąd) i nie potrafi samodzielnie
+czekać na zdarzenia zewnętrzne.
 W szczególności \texttt{get()} nie może po prostu wielokrotnie
 wywoływać \texttt{resume()} na rzeczywistym zadaniu I/O: wznowienie
 przed ukończeniem operacji mogłoby naruszyć protokół awaitera.
@@ -789,10 +799,8 @@ Task<int> read_later(const int& ref) {
 }
 
 // NIEPOPRAWNE:
-// Task<int> bad() {
-//     Task<int> t = read_later(123);
-//     return t; // referencja w ramce moze byc juz wiszaca
-// }
+// auto task = read_later(123); // 123 znika na koncu tej instrukcji
+// int value = task.get();     // odczyt przez wiszaca referencje
 \end{lstlisting}
 
 Z reguły bezpieczniej przechowywać wewnątrz ramki wartości
@@ -968,7 +976,7 @@ obliczenia, a następnie wybieramy model wykonania i własności zasobów.
 \end{enumerate}
 
 \section*{Podsumowanie rozdziału}
-\addcontentsline{toc}{section}{Podsumowanie rozdziału 15}
+\addcontentsline{toc}{section}{Podsumowanie rozdziału}
 
 Korutyny C++20 są mechanizmem \emph{zawieszenia i kontynuacji},
 a nie samodzielnym środowiskiem asynchronicznym. Generator używa
@@ -986,7 +994,7 @@ i czas życia ramki. W obu przypadkach należy rozdzielać trzy pytania:
 \emph{kto wykonuje kod, kto posiada stan i kto decyduje o zakończeniu}.
 
 \section*{Literatura i dokumentacja}
-\addcontentsline{toc}{section}{Literatura i dokumentacja rozdziału 15}
+\addcontentsline{toc}{section}{Literatura i dokumentacja}
 \begin{itemize}
 \item \url{https://en.cppreference.com/w/cpp/language/coroutines} --- model korutyn C++20.
 \item \url{https://en.cppreference.com/w/cpp/coroutine/coroutine_handle} --- uchwyty i zarządzanie ramką.
