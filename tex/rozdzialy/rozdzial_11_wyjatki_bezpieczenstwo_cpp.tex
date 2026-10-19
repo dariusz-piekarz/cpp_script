@@ -681,9 +681,10 @@ kontraktów.
       Obsłuż wyjątek, zapisz informację diagnostyczną albo przekaż go wyżej.
 \item \textbf{Określ gwarancję niepowodzenia.} Dla operacji mutujących
       dane rozważ silną gwarancję i strategię „przygotuj–zatwierdź”.
-\item \textbf{Nie pozwalaj wyjątkom opuszczać funkcji startowej
-      \texttt{std::thread}.} Użyj \texttt{std::exception\_ptr},
-      \texttt{promise/future} lub odpowiedniego wyższego poziomu API.
+\item \textbf{Złap wyjątek w funkcji wątku.}
+      Nie pozwól mu opuścić funkcji startowej \texttt{std::thread}.
+      Do przekazania błędu użyj \texttt{std::exception\_ptr},
+      \texttt{promise/future} lub API wyższego poziomu.
 \item \textbf{Wybierz właściwy model błędu.} Brak zwykłego wyniku,
       przewidywalna porażka operacji i naruszenie kontraktu to różne
       sytuacje.
