@@ -202,11 +202,9 @@ uzgodniony mechanizm synchronizacji.}
 
 Mutex zapewnia wyłączność, ale nie sygnalizuje gotowości danych.
 \code{std::condition_variable} pozwala czekać bez aktywnego odpytywania.
-Do oczekiwania z predykatem używamy blokady
-\begin{center}
-\code{std::unique_lock<std::mutex>}.
-\end{center}
-Predykat opisuje stan, na który czeka konsument.
+Do oczekiwania używamy \code{std::unique_lock<std::mutex>}, ponieważ
+\code{wait()} musi na czas snu zwolnić mutex, a po obudzeniu zablokować
+go ponownie. Predykat opisuje stan, na który czeka konsument.
 
 \begin{lstlisting}[caption={Producent i konsument z warunkiem gotowości (C++11).}]
 #include <condition_variable>
@@ -1221,22 +1219,31 @@ public:
     explicit ThreadPool(std::size_t count) {
         if (count == 0) throw std::invalid_argument("count=0");
         workers_.reserve(count);
-        for (std::size_t i = 0; i < count; ++i) {
-            workers_.emplace_back([this] {
-                for (;;) {
-                    std::function<void()> work;
-                    {
-                        std::unique_lock lock(m_);
-                        cv_.wait(lock, [&] {
-                            return closing_ || !tasks_.empty();
-                        });
-                        if (closing_ && tasks_.empty()) return;
-                        work = std::move(tasks_.front());
-                        tasks_.pop();
+        try {
+            for (std::size_t i = 0; i < count; ++i) {
+                workers_.emplace_back([this] {
+                    for (;;) {
+                        std::function<void()> work;
+                        {
+                            std::unique_lock lock(m_);
+                            cv_.wait(lock, [&] {
+                                return closing_ || !tasks_.empty();
+                            });
+                            if (closing_ && tasks_.empty()) return;
+                            work = std::move(tasks_.front());
+                            tasks_.pop();
+                        }
+                        work(); // poza sekcja krytyczna
                     }
-                    work(); // poza sekcja krytyczna
-                }
-            });
+                });
+            }
+        } catch (...) {
+            {
+                std::lock_guard lock(m_);
+                closing_ = true;
+            }
+            cv_.notify_all(); // obudz juz utworzonych pracownikow
+            throw; // workers_ dolaczy ich podczas zwijania konstrukcji
         }
     }
 
@@ -1290,6 +1297,9 @@ anulowania pojedynczego zadania. Destruktor wykonuje model
 dokończyć prace oczekujące w kolejce i czeka na zakończenie pracowników.
 Wywołujący musi zadbać, żeby inne wątki nie używały obiektu puli podczas
 jego niszczenia. Nie należy też niszczyć puli z jej własnego pracownika.
+Jeśli tworzenie kolejnego pracownika rzuci wyjątek, konstruktor
+sygnalizuje zamknięcie i budzi już utworzone wątki. W przeciwnym razie
+ich destruktory mogłyby czekać na pracowników śpiących bez końca.
 
 \nota{Gdy pula ma jednego pracownika, zadanie oczekujące synchronicznie
 na \code{future} innego zadania umieszczonego w \emph{tej samej} puli
@@ -1303,6 +1313,10 @@ składowych wykorzystywanych przez pracowników.}
 odbiorcy jednego tokenu, a sygnał pozostaje ustawiony po wywołaniu
 \code{request_stop()}. Mechanizm sam nie przerywa instrukcji,
 blokującego wywołania systemowego ani obliczenia, które ignoruje token.
+W poniższym przykładzie źródło tworzymy samodzielnie, więc przekazujemy
+jego token zwykłemu \code{std::thread}. \code{std::jthread} ma własne
+źródło zatrzymania; jego destruktor nie wysłałby żądania do utworzonego
+tu osobno \code{source}.
 
 \begin{lstlisting}[caption={Jedna prośba o zatrzymanie i kilka punktów kontroli.}]
 #include <chrono>
@@ -1322,9 +1336,10 @@ void work(std::stop_token token) {
 
 int main() {
     std::stop_source source;
-    std::jthread worker(work, source.get_token());
+    std::thread worker(work, source.get_token());
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
     source.request_stop();
+    worker.join();
 }
 \end{lstlisting}
 
@@ -1917,14 +1932,12 @@ standardowej. \emph{Ranges views} z C++20 są zazwyczaj przede
 wszystkim leniwymi adaptatorami zakresów, nie automatycznym
 mechanizmem równoległego planowania.
 
-\subsection{Studium numeryczne: porównanie trzech sposobów sumowania}
+\subsection{Studium numeryczne: porównanie dwóch sposobów sumowania}
 
-Rozważmy trzy warianty: zwykły \code{std::accumulate}, równoległe
-sumowanie przez \code{std::async} oraz OpenMP \code{reduction}.
-W przykładzie\footnote{Przy dzieleniu dużego wektora na wiele części
-należy uwzględnić balans obciążenia, rozmiary porcji i koszt
-agregacji wyników.} obliczamy sumę kwadratów wejściowych liczb
-przez OpenMP, a następnie porównujemy z referencyjną pętlą:
+Poniżej porównujemy zwykłą pętlę z redukcją OpenMP. Obie obliczają sumę
+kwadratów tych samych liczb. Wersję z \code{std::async} pokazano
+wcześniej, w sekcji~\ref{sec:numerical}; tutaj mierzymy koszt podziału
+iteracji przez OpenMP.
 
 \begin{lstlisting}[caption={Praktyczny przykład: suma kwadratów OpenMP z pomiarem.}]
 #include <cmath>
@@ -2032,8 +2045,8 @@ pracowników; pojawia się ryzyko \emph{oversubscription}.
 \textbf{Standard} & \textbf{Wybrane mechanizmy} \\
 \midrule
 C++11 & \code{thread}, \code{mutex}, \code{condition_variable}, \code{atomic}, \code{promise}, \code{future}, \code{async}, \code{packaged_task}, \code{call_once}, \code{thread_local}. \\
-C++14 & M.in. ułatwienia związane z lambdami, np. inicjalizujące przechwycenie użyte w przykładzie \code{promise}. \\
-C++17 & \code{scoped_lock}, \code{shared_mutex}, \code{shared_lock} (ta ostatnia od C++14). \\
+C++14 & \code{shared_lock} oraz inicjalizujące przechwycenie w lambdach, użyte w przykładzie \code{promise}. \\
+C++17 & \code{scoped_lock}, \code{shared_mutex}. \\
 C++20 & \code{jthread}, \code{stop_token}, \code{atomic::wait}, \code{semaphore}, \code{latch}, \code{barrier}, \code{osyncstream}. \\
 \bottomrule
 \end{tabularx}
