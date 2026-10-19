@@ -618,9 +618,9 @@ to jednak, że każde API powinno przyjmować ręcznie zarządzane wskaźniki:
 lepsza wydajność musi być uzasadniona pomiarem.
 
 Biblioteka \code{std::pmr} pozwala oddzielić politykę alokacji od
-typu danych. Przyjmowanie \code{std::pmr::memory_resource*} oznacza
-jednak dodatkowe zobowiązanie: zasób pamięci musi istnieć co najmniej
-tak długo, jak kontenery wykorzystujące go do zwalniania pamięci.
+typu danych. Gdy API przyjmuje wskaźnik do zasobu pamięci, wywołujący
+musi zapewnić, że zasób istnieje co najmniej tak długo, jak kontenery
+wykorzystujące go do zwalniania pamięci.
 
 \begin{lstlisting}[caption={Kontener PMR z buforem przydzielonym przez klienta (C++17).}]
 #include <array>
