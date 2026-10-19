@@ -84,11 +84,12 @@ Operacja & Znaczenie \\
 \end{center}
 \label{sec:cpp21-expected}
 
-\code{std::expected<T,E>} reprezentuje wynik typu \code{T} albo błąd
-typu \code{E}. W przeciwieństwie do \code{std::optional<T>} przenosi
-informację, \emph{dlaczego} operacja się nie powiodła. Nie jest
-zamiennikiem wyjątków w każdej sytuacji: użytkownik musi obsłużyć
-stan błędu, a \code{value()} może zgłosić \code{bad_expected_access}.
+Typ \code{std::expected<T,E>} przechowuje wynik albo błąd. Parametr
+\code{T} określa typ wyniku, a \code{E} typ błędu. W odróżnieniu od
+\code{std::optional<T>} można więc przekazać przyczynę niepowodzenia.
+Nie jest to zamiennik wyjątków w każdej sytuacji: użytkownik musi
+obsłużyć stan błędu, a \code{value()} może zgłosić
+\code{bad_expected_access}.
 
 \begin{lstlisting}[caption={Parser z jawnym typem bledu (kompletny program C++23).}]
 #include <charconv>
@@ -219,21 +220,22 @@ int main() {
 }
 \end{lstlisting}
 
-Ponadto C++23 dodaje m.in. \code{std::byteswap}, \code{std::to_underlying},
-\code{std::forward_like}, \code{std::bind_back}, \code{std::flat_map},
-\code{std::flat_set}, \code{std::stacktrace} i \code{<spanstream>}.
-Każda z tych konstrukcji ma własny zakres użycia i niezależne
-wymagania implementacyjne.
-
 \section{C++23: Ranges i materializacja widoków}
 \label{sec:cpp21-ranges}
 
-C++23 rozbudowuje bibliotekę Ranges m.in. o \code{views::zip},
-\code{views::chunk}, \code{views::slide}, \code{views::stride},
-\code{views::enumerate} i \code{ranges::to}. Część algorytmów
-czyta wyniki leniwie; \code{ranges::to} materializuje widok w
-kontenerze. To duża zmiana ergonomii, ale reguły czasu życia
-widoków i koszt materializacji nadal obowiązują.
+C++23 dodaje kilka nowych sposobów oglądania zakresów:
+\begin{itemize}
+\item \code{views::zip} łączy odpowiadające sobie elementy kilku zakresów;
+\item \code{views::chunk} dzieli zakres na kolejne bloki;
+\item \code{views::slide} tworzy nakładające się okna;
+\item \code{views::stride} wybiera elementy w zadanym odstępie;
+\item \code{views::enumerate} dołącza indeks do każdego elementu.
+\end{itemize}
+
+Te widoki pobierają elementy dopiero podczas iteracji. Funkcja
+\code{ranges::to} tworzy z zakresu własny kontener. Nadal trzeba
+pilnować czasu życia danych widocznych przez widok i pamiętać
+o koszcie utworzenia kontenera.
 
 \begin{lstlisting}[caption={Przekazanie wynikow widoku do wektora (C++23).}]
 #include <iostream>
